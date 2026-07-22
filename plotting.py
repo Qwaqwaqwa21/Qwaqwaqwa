@@ -683,9 +683,21 @@ def plot_well_panel(well_name, merged_curves, tracks_config, depth_min, depth_ma
 
     plt.tight_layout(rect=[0.015, 0.12, 0.985, panel_title_y - 0.05], h_pad=0.1, w_pad=0.1)
 
+    interval_table = build_interval_table(merged_curves, tracks_config)
+
+    return fig, interval_table
+
+
+def build_interval_table(merged_curves, tracks_config):
+    """
+    Строит таблицу интервалов записи (кровля/подошва + мин/макс) по всем кривым,
+    перечисленным в tracks_config. Вынесено отдельно от plot_well_panel, чтобы
+    таблица была доступна и без построения matplotlib-фигуры (например, для
+    интерактивного Plotly-планшета).
+    """
     interval_table = []
 
-    for track_id, config, curves_present in active_tracks:
+    for track_id, config in tracks_config.items():
         if track_id == 0:
             continue
 
@@ -708,5 +720,4 @@ def plot_well_panel(well_name, merged_curves, tracks_config, depth_min, depth_ma
                 })
 
     interval_table.sort(key=lambda x: float(x['Кровля, м']))
-
-    return fig, interval_table
+    return interval_table

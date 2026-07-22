@@ -14,7 +14,8 @@ from io import BytesIO
 
 from las_io import find_las_files, read_las_robust, load_all_las_with_metadata, merge_curves_by_mnemonic
 from mnemonics import get_mnemo_path, load_mnemo_dict, save_mnemo_dict
-from plotting import load_tracks_config, plot_well_panel
+from plotting import load_tracks_config, plot_well_panel, build_interval_table
+from plotting_plotly import plot_well_panel_plotly
 from ui_helpers import render_encoding_preview
 from qc import build_qc_report
 
@@ -535,6 +536,13 @@ with tab2:
                 st.session_state.selected_encoding_step2 = chosen_enc
 
             # 3. Визуализация
+            display_mode = st.radio(
+                "Тип отображения:",
+                ["Статичный (PNG, для печати)", "Интерактивный (для анализа на экране)"],
+                key="display_mode_step2",
+                horizontal=True
+            )
+
             if st.button("🎨 Построить планшеты", key="visualize_step2"):
                 if st.session_state.selected_encoding_step2:
                     try:
@@ -545,6 +553,7 @@ with tab2:
                         # Читаем заново на каждый клик, чтобы правки tracks_config.yaml
                         # подхватывались без перезапуска приложения.
                         tracks_config = load_tracks_config()
+                        interactive = display_mode.startswith("Интерактивный")
 
                         for well_name, well_files in wells_data.items():
                             st.subheader(f"Скважина: {well_name}")
@@ -553,32 +562,42 @@ with tab2:
                                 well_files, overlap_m=100
                             )
 
-                            fig, interval_table = plot_well_panel(
-                                well_name,
-                                merged_curves,
-                                tracks_config,
-                                depth_min,
-                                depth_max,
-                                figsize_width_cm=50
-                            )
+                            if interactive:
+                                fig_plotly = plot_well_panel_plotly(
+                                    well_name, merged_curves, tracks_config, depth_min, depth_max
+                                )
+                                interval_table = build_interval_table(merged_curves, tracks_config)
+                                if fig_plotly:
+                                    st.plotly_chart(fig_plotly, use_container_width=True, key=f"plotly_{well_name}")
+                                fig = fig_plotly
+                            else:
+                                fig, interval_table = plot_well_panel(
+                                    well_name,
+                                    merged_curves,
+                                    tracks_config,
+                                    depth_min,
+                                    depth_max,
+                                    figsize_width_cm=50
+                                )
+
+                                if fig:
+                                    st.pyplot(fig)
+
+                                    buf = BytesIO()
+                                    fig.savefig(buf, format='png', dpi=150, bbox_inches='tight')
+                                    buf.seek(0)
+                                    st.download_button(
+                                        label="💾 Скачать планшет (PNG)",
+                                        data=buf.getvalue(),
+                                        file_name=f"planhet_{well_name}.png",
+                                        mime="image/png",
+                                        key=f"download_planhet_{well_name}"
+                                    )
+                                    # Фигуры matplotlib не закрываются автоматически —
+                                    # без этого память растёт с числом скважин за сессию.
+                                    plt.close(fig)
 
                             if fig:
-                                st.pyplot(fig)
-
-                                buf = BytesIO()
-                                fig.savefig(buf, format='png', dpi=150, bbox_inches='tight')
-                                buf.seek(0)
-                                st.download_button(
-                                    label="💾 Скачать планшет (PNG)",
-                                    data=buf.getvalue(),
-                                    file_name=f"planhet_{well_name}.png",
-                                    mime="image/png",
-                                    key=f"download_planhet_{well_name}"
-                                )
-                                # Фигуры matplotlib не закрываются автоматически —
-                                # без этого память растёт с числом скважин за сессию.
-                                plt.close(fig)
-
                                 if interval_table and len(interval_table) > 0:
                                     st.subheader("📊 Таблица интервалов (кровля / подошва)")
                                     df_table = pd.DataFrame(interval_table)
