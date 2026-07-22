@@ -6,7 +6,7 @@ import streamlit as st
 
 from las_io import read_las_robust
 
-ENCODINGS = ['cp1251', 'utf-8', 'utf-8-sig', 'ibm866']
+ENCODINGS = ['cp1251', 'utf-8', 'utf-8-sig', 'ibm866', 'koi8-r']
 
 
 def preview_las_header(filepath, encoding='cp1251'):
@@ -56,6 +56,7 @@ def preview_las_header(filepath, encoding='cp1251'):
             'curves_info': curves_info[:10],
             'total_curves': len(curves_info),
             'has_cyrillic': has_cyrillic,
+            'encoding_warning': getattr(las, '_encoding_warning', None),
             'error': None
         }
 
@@ -65,6 +66,7 @@ def preview_las_header(filepath, encoding='cp1251'):
             'curves_info': [],
             'total_curves': 0,
             'has_cyrillic': False,
+            'encoding_warning': None,
             'error': str(e)[:100]
         }
 
@@ -87,6 +89,9 @@ def display_preview_result_horizontal(encoding, preview_data):
 
     st.markdown(f"**`{encoding}`** {status_emoji} • {well_str} • {curves_str}")
 
+    if preview_data.get('encoding_warning'):
+        st.warning(f"⚠️ {preview_data['encoding_warning']}")
+
     if preview_data['well_fields']:
         st.text("  Поля заголовка:")
         for key, value in preview_data['well_fields'].items():
@@ -103,8 +108,8 @@ def display_preview_result_horizontal(encoding, preview_data):
 def render_encoding_preview(las_files, state_key, button_key):
     """
     Общий блок "Предпросмотр кодировок", ранее продублированный в трёх вкладках.
-    Показывает первый файл в 4 кодировках и сохраняет результат в
-    st.session_state[state_key] для последующего выбора кодировки.
+    Показывает первый файл во всех кандидатах из ENCODINGS и сохраняет результат
+    в st.session_state[state_key] для последующего выбора кодировки.
     """
     if st.button("🔍 Предпросмотр кодировок", key=button_key):
         st.write("**Результаты предпросмотра для первого файла:**")

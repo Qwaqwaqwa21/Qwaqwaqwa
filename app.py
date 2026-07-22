@@ -12,7 +12,7 @@ from datetime import datetime
 import traceback
 from io import BytesIO
 
-from las_io import find_las_files, read_las_robust, load_all_las_with_metadata, merge_curves_by_mnemonic
+from las_io import find_las_files, read_las_robust, load_all_las_with_metadata, merge_curves_by_mnemonic, write_las_file
 from mnemonics import get_mnemo_path, load_mnemo_dict, save_mnemo_dict
 from plotting import load_tracks_config, plot_well_panel, build_interval_table
 from plotting_plotly import plot_well_panel_plotly
@@ -489,14 +489,7 @@ with tab1:
                                     new_las.append_curve(new_name, df[new_name].values, unit=unit, descr=descr)
 
                                 output_file = output_path / file_data['file_name']
-                                try:
-                                    new_las.write(str(output_file), version=2.0, encoding='utf-8-sig')
-                                except TypeError as e:
-                                    if "unexpected keyword argument 'encoding'" in str(e):
-                                        with open(output_file, 'w', encoding='utf-8-sig') as f:
-                                            new_las.write(f, version=2.0)
-                                    else:
-                                        raise
+                                write_las_file(new_las, output_file, encoding='utf-8-sig')
 
                                 success_count += 1
 
@@ -794,8 +787,7 @@ with tab3:
                                 out_filename = f"merged_{well_name}_Step{step_str}.las"
                                 out_path = out_folder / out_filename
                                 try:
-                                    with open(out_path, 'w', encoding='utf-8-sig') as f:
-                                        new_las.write(f, version=2.0)
+                                    write_las_file(new_las, out_path, encoding='utf-8-sig')
                                     log(f"    💾 Сохранено: {out_filename} ({added_count} кривых)")
                                     results.append({
                                         'Скважина': well_name,
