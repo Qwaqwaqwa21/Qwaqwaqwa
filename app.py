@@ -18,6 +18,7 @@ from plotting import load_tracks_config, plot_well_panel, build_interval_table
 from plotting_plotly import plot_well_panel_plotly
 from ui_helpers import render_encoding_preview
 from qc import build_qc_report, build_well_score_summary
+from crossplots import build_crossplot, build_histogram
 
 # Настройки для кириллицы
 matplotlib.rcParams['font.family'] = 'DejaVu Sans'
@@ -44,7 +45,12 @@ st.set_page_config(page_title="LAS Визуализатор", layout="wide")
 st.title("📊 LAS Визуализатор")
 
 # Создание вкладок
-tab1, tab2, tab3 = st.tabs(["Шаг 1: Работа с мнемониками", "Шаг 2: Визуализация планшета", "🔗 Объединить LAS в 1"])
+tab1, tab2, tab3, tab4 = st.tabs([
+    "Шаг 1: Работа с мнемониками",
+    "Шаг 2: Визуализация планшета",
+    "🔗 Объединить LAS в 1",
+    "📈 Кроссплоты и гистограммы",
+])
 
 with tab1:
     st.header("Шаг 1: Работа с мнемониками")
@@ -833,3 +839,101 @@ with tab3:
                                         st.download_button(f"📥 {r['Файл']}", f.read(),
                                                          file_name=r['Файл'], mime="application/octet-stream",
                                                          key=f"dl_merge_{r['Скважина']}_{r['STEP']}")
+
+with tab4:
+    st.header("📈 Кроссплоты и гистограммы")
+    st.caption(
+        "Статистический анализ кривых: кроссплот двух кривых с линией линейной "
+        "регрессии (R²) — например, RHOB/NPHI для литологического анализа — и "
+        "гистограмма распределения одной кривой. Кроссплот и гистограмма строятся "
+        "по кривым одного файла, чтобы гарантированно сравнивать значения на "
+        "одинаковых глубинах."
+    )
+
+    folder_path_cp = st.text_input("Путь к папке с LAS-файлами:", key='folder_crossplot')
+
+    if folder_path_cp and Path(folder_path_cp).is_dir():
+        las_files = find_las_files(folder_path_cp)
+        if las_files:
+            st.success(f"✅ Найдено файлов: {len(las_files)}")
+
+            st.subheader("1. Выбор кодировки")
+            render_encoding_preview(las_files, 'preview_data_crossplot', 'preview_crossplot')
+
+            if st.session_state.get('preview_data_crossplot'):
+                enc_choice = st.radio(
+                    "Выберите кодировку:",
+                    options=list(st.session_state.preview_data_crossplot.keys()),
+                    key="enc_radio_crossplot", horizontal=True
+                )
+                st.session_state.selected_encoding_crossplot = enc_choice
+
+            if st.session_state.get('selected_encoding_crossplot') and st.button("📥 Загрузить данные", key="load_crossplot"):
+                try:
+                    st.session_state.crossplot_data = load_all_las_with_metadata(
+                        las_files, encoding=st.session_state.selected_encoding_crossplot
+                    )
+                    st.success(f"✅ Загружено скважин: {len(st.session_state.crossplot_data)}")
+                except Exception as e:
+                    st.error(f"❌ Ошибка загрузки: {e}")
+
+            if 'crossplot_data' in st.session_state:
+                wells_data = st.session_state.crossplot_data
+                well_name = st.selectbox("Скважина:", sorted(wells_data.keys()), key='crossplot_well')
+
+                well_files = wells_data.get(well_name, [])
+                file_options = {
+                    f"{fd['file_name']} ({len(fd['curves'])} кривых)": fd for fd in well_files
+                }
+
+                if not file_options:
+                    st.info("Для этой скважины нет загруженных файлов")
+                else:
+                    file_label = st.selectbox(
+                        "Файл:",
+                        list(file_options.keys()),
+                        key='crossplot_file',
+                        help="Кривые сравниваются внутри одного файла, чтобы значения гарантированно совпадали по глубине"
+                    )
+                    file_data = file_options[file_label]
+                    available_curves = sorted(file_data['curves'].keys())
+
+                    st.subheader("2. Кроссплот двух кривых")
+                    if len(available_curves) < 2:
+                        st.info("В выбранном файле недостаточно кривых для кроссплота (нужно минимум 2)")
+                    else:
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            x_curve = st.selectbox("Кривая X:", available_curves, key='crossplot_x')
+                            log_x = st.checkbox("Логарифмическая шкала X", key='crossplot_logx')
+                        with col2:
+                            default_y_index = 1 if len(available_curves) > 1 else 0
+                            y_curve = st.selectbox("Кривая Y:", available_curves,
+                                                   index=default_y_index, key='crossplot_y')
+                            log_y = st.checkbox("Логарифмическая шкала Y", key='crossplot_logy')
+                        show_regression = st.checkbox(
+                            "Показать линию линейной регрессии (R²)", value=True, key='crossplot_regression',
+                            help="Регрессия и R² считаются по тем же координатам, что и оси (по логарифмам значений, если ось логарифмическая)"
+                        )
+
+                        if st.button("🎨 Построить кроссплот", key='build_crossplot_btn'):
+                            fig_cp = build_crossplot(
+                                file_data['curves'][x_curve], file_data['curves'][y_curve],
+                                x_curve, y_curve, log_x=log_x, log_y=log_y,
+                                show_regression=show_regression, depth_values=file_data['depth']
+                            )
+                            if fig_cp:
+                                st.plotly_chart(fig_cp, use_container_width=True, key='crossplot_fig')
+                            else:
+                                st.warning("⚠️ Недостаточно валидных пар точек для построения кроссплота")
+
+                    st.subheader("3. Гистограмма распределения")
+                    hist_curve = st.selectbox("Кривая:", available_curves, key='hist_curve')
+                    bins = st.slider("Число интервалов гистограммы:", 5, 100, 30, key='hist_bins')
+
+                    if st.button("📊 Построить гистограмму", key='build_hist_btn'):
+                        fig_hist = build_histogram(file_data['curves'][hist_curve], hist_curve, bins=bins)
+                        if fig_hist:
+                            st.plotly_chart(fig_hist, use_container_width=True, key='hist_fig')
+                        else:
+                            st.warning("⚠️ Нет данных для построения гистограммы")
