@@ -17,7 +17,7 @@ from mnemonics import get_mnemo_path, load_mnemo_dict, save_mnemo_dict
 from plotting import load_tracks_config, plot_well_panel, build_interval_table
 from plotting_plotly import plot_well_panel_plotly
 from ui_helpers import render_encoding_preview
-from qc import build_qc_report
+from qc import build_qc_report, build_well_score_summary
 
 # Настройки для кириллицы
 matplotlib.rcParams['font.family'] = 'DejaVu Sans'
@@ -86,8 +86,19 @@ with tab1:
                         st.write(f"  • {well}: {len(files)} файл(ов)")
 
                     with st.expander("📋 QC-отчёт по данным", expanded=False):
+                        st.caption(
+                            "Автоматическая проверка качества данных: заполненность кривых, "
+                            "стабильность шага записи, дубли и развороты по глубине, доля "
+                            "статистических выбросов. Не заменяет проверку геологом, но "
+                            "помогает быстро найти проблемные скважины/файлы."
+                        )
                         qc_df = build_qc_report(wells_data)
                         if not qc_df.empty:
+                            score_df = build_well_score_summary(qc_df)
+                            st.markdown("**Оценка качества по скважинам** (0–100, чем выше — тем надёжнее)")
+                            st.dataframe(score_df, use_container_width=True)
+
+                            st.markdown("**Детали по каждой кривой**")
                             st.dataframe(qc_df, use_container_width=True)
                             qc_csv = qc_df.to_csv(index=False, encoding='utf-8-sig')
                             st.download_button(
@@ -648,8 +659,18 @@ with tab3:
                         st.write(f"• **{well}**: {len(files)} файлов")
 
                     with st.expander("📋 QC-отчёт по данным", expanded=False):
+                        st.caption(
+                            "Автоматическая проверка качества данных перед объединением: "
+                            "заполненность кривых, стабильность шага записи, дубли и "
+                            "развороты по глубине, доля статистических выбросов."
+                        )
                         qc_df = build_qc_report(wells_data)
                         if not qc_df.empty:
+                            score_df = build_well_score_summary(qc_df)
+                            st.markdown("**Оценка качества по скважинам** (0–100, чем выше — тем надёжнее)")
+                            st.dataframe(score_df, use_container_width=True)
+
+                            st.markdown("**Детали по каждой кривой**")
                             st.dataframe(qc_df, use_container_width=True)
                             qc_csv = qc_df.to_csv(index=False, encoding='utf-8-sig')
                             st.download_button(
