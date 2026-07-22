@@ -9,8 +9,10 @@ import matplotlib
 from io import StringIO
 import re
 import os
+import shutil
 import textwrap
 from collections import defaultdict
+from datetime import datetime
 import traceback
 from io import BytesIO
 
@@ -19,7 +21,10 @@ matplotlib.rcParams['font.family'] = 'DejaVu Sans'
 matplotlib.rcParams['figure.dpi'] = 100
 
 # === Константы ===
-MNEMO_PATH = r"Z:\Сбор площадных моделей\mnemo.xlsx"
+# Путь к словарю мнемоник настраивается через переменную окружения MNEMO_PATH
+# (по умолчанию — mnemo.xlsx рядом со скриптом, чтобы приложение запускалось
+# без доступа к конкретному сетевому диску).
+MNEMO_PATH = os.environ.get("MNEMO_PATH", str(Path(__file__).parent / "mnemo.xlsx"))
 
 # === Инициализация session_state ===
 if 'step1_data' not in st.session_state:
@@ -139,6 +144,15 @@ def display_preview_result_horizontal(encoding, preview_data):
             st.text(f"    ... и ещё {preview_data['total_curves'] - 10} кривых")
 
 # === Остальные вспомогательные функции (без изменений) ===
+def find_las_files(folder):
+    """Ищет .las файлы регистронезависимо (Windows часто отдаёт .LAS)"""
+    folder = Path(folder)
+    seen = {}
+    for path in folder.iterdir():
+        if path.is_file() and path.suffix.lower() == '.las':
+            seen[path.name] = path
+    return sorted(seen.values(), key=lambda p: p.name)
+
 def read_las_robust(filepath, encoding='cp1251'):
     """Надёжное чтение LAS-файла с обходом багов"""
     filepath = Path(filepath)
@@ -172,7 +186,7 @@ def get_well_name(las):
             return str(las.well.WELL.value).strip()
         else:
             return Path(las.well['SRVC'].value).stem if 'SRVC' in las.well else "UNKNOWN"
-    except:
+    except (KeyError, AttributeError, ValueError):
         return "UNKNOWN"
 
 def load_mnemo_dict(filepath):
@@ -204,8 +218,16 @@ def load_mnemo_dict(filepath):
         return {}, {}
 
 def save_mnemo_dict(filepath, canonical_to_aliases):
-    """Сохраняет обновлённый словарь мнемоник в Excel"""
+    """Сохраняет обновлённый словарь мнемоник в Excel, предварительно делая резервную копию"""
     try:
+        filepath = Path(filepath)
+        if filepath.exists():
+            backup_dir = filepath.parent / "mnemo_backups"
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            backup_path = backup_dir / f"{filepath.stem}_{timestamp}{filepath.suffix}"
+            shutil.copy2(filepath, backup_path)
+
         rows = []
         for canonical, aliases in canonical_to_aliases.items():
             row = [canonical] + aliases
@@ -1010,7 +1032,7 @@ with tab1:
     folder_path_step1 = st.text_input("Путь к папке с LAS-файлами:", key='folder_step1')
 
     if folder_path_step1 and Path(folder_path_step1).is_dir():
-        las_files = list(Path(folder_path_step1).glob("*.las"))
+        las_files = find_las_files(folder_path_step1)
         if las_files:
             st.success(f"✅ Найдено файлов: {len(las_files)}")
 
@@ -1536,7 +1558,7 @@ with tab2:
     st.subheader("1. Выбор папки с данными")
     folder_path_step2 = st.text_input("Путь к папке с обработанными LAS-файлами:", key='folder_step2')
     if folder_path_step2 and Path(folder_path_step2).is_dir():
-        las_files = list(Path(folder_path_step2).glob("*.las"))
+        las_files = find_las_files(folder_path_step2)
         if las_files:
             st.success(f"✅ Найдено файлов: {len(las_files)}")
             # 2. Кодировка - УЛУЧШЕННЫЙ ПРЕДПРОСМОТР (ИСПРАВЛЕНО)
@@ -1639,8 +1661,6 @@ with tab2:
                         st.code(traceback.format_exc())
                 else:
                     st.warning("⚠️ Сначала выберите кодировку!")
-from datetime import datetime
-from collections import defaultdict
 
 with tab3:
     st.header("🔗 Объединение LAS-файлов по скважинам")
@@ -1649,7 +1669,7 @@ with tab3:
     folder_path_merge = st.text_input("📂 Путь к папке с исходными LAS:", key='folder_merge')
 
     if folder_path_merge and Path(folder_path_merge).is_dir():
-        las_files = list(Path(folder_path_merge).glob("*.las"))
+        las_files = find_las_files(folder_path_merge)
         if las_files:
             st.success(f"✅ Найдено файлов: {len(las_files)}")
 
@@ -1731,7 +1751,7 @@ with tab3:
                                 try:
                                     las_tmp = read_las_robust(src_path, encoding=enc)
                                     # Безопасное извлечение STEP
-                                    step_hdr = las_tmp.well.get('STEP') or las_tmp.well.get('STEP', lasio.HeaderItem('STEP', value='0.1'))
+                                    step_hdr = las_tmp.well.get('STEP', lasio.HeaderItem('STEP', value='0.1'))
                                     step_val = abs(float(str(step_hdr.value).replace(',', '.')))
                                     step_key = round(step_val, 4)
                                     step_groups[step_key].append((fd, las_tmp))
