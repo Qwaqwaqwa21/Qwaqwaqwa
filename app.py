@@ -44,6 +44,26 @@ if 'preview_data_step2' not in st.session_state:
 st.set_page_config(page_title="LAS Визуализатор", layout="wide")
 st.title("📊 LAS Визуализатор")
 
+with st.expander("ℹ️ Как пользоваться приложением"):
+    st.markdown(
+        "**Шаг 1 (Работа с мнемониками)** — привести названия кривых из разных "
+        "LAS-файлов к единому (каноническому) виду по словарю мнемоник и "
+        "сохранить обработанные файлы.\n\n"
+        "**Шаг 2 (Визуализация планшета)** — построить каротажный планшет по "
+        "уже обработанным файлам: статичный PNG для печати или интерактивный "
+        "с зумом и подсказками при наведении.\n\n"
+        "**🔗 Объединить LAS в 1** — склеить несколько LAS-файлов одной "
+        "скважины (например, разные интервалы или повторные рейсы) в один "
+        "файл с непрерывной сеткой глубин.\n\n"
+        "**📈 Кроссплоты и гистограммы** — статистический анализ: сравнить "
+        "две кривые между собой или посмотреть распределение одной кривой.\n\n"
+        "Во всех вкладках сначала указывается папка с LAS-файлами, затем "
+        "подбирается кодировка (кириллица в заголовках русских LAS-файлов "
+        "часто в cp1251/ibm866, а не в utf-8) — правильную кодировку видно "
+        "по тому, читаются ли поля заголовка и названия кривых как обычный "
+        "текст, а не набор случайных символов."
+    )
+
 # Создание вкладок
 tab1, tab2, tab3, tab4 = st.tabs([
     "Шаг 1: Работа с мнемониками",
@@ -54,9 +74,16 @@ tab1, tab2, tab3, tab4 = st.tabs([
 
 with tab1:
     st.header("Шаг 1: Работа с мнемониками")
+    st.caption(
+        "Разные подрядчики называют одну и ту же физическую величину "
+        "по-разному (например, GK, ГК, GR — гамма-каротаж). Этот шаг находит "
+        "такие расхождения по словарю мнемоник, даёт привести их к единому "
+        "имени и сохраняет результат в новые LAS-файлы."
+    )
 
     # 1. Импорт
     st.subheader("1. Импорт данных")
+    st.caption("Укажите папку — приложение найдёт в ней все LAS-файлы (регистр расширения .las/.LAS не важен).")
     folder_path_step1 = st.text_input("Путь к папке с LAS-файлами:", key='folder_step1')
 
     if folder_path_step1 and Path(folder_path_step1).is_dir():
@@ -66,6 +93,11 @@ with tab1:
 
             # 2. Кодировка
             st.subheader("2. Выбор кодировки")
+            st.caption(
+                "Показывает заголовок первого файла в нескольких кодировках сразу — "
+                "выберите ту, где поля и названия кривых читаются нормальным текстом, "
+                "а не искажёнными символами."
+            )
             render_encoding_preview(las_files, 'preview_data_step1', 'preview_step1')
 
             if 'preview_data_step1' in st.session_state and st.session_state.preview_data_step1:
@@ -78,7 +110,12 @@ with tab1:
                 st.session_state.selected_encoding_step1 = chosen_enc
 
             # 3. Загрузка данных
-            if st.session_state.selected_encoding_step1 and st.button("📥 Загрузить данные", key="load_step1"):
+            st.subheader("3. Загрузка данных")
+            st.caption("Читает все найденные файлы в выбранной кодировке и сохраняет их в памяти для дальнейшей обработки.")
+            if st.session_state.selected_encoding_step1 and st.button(
+                "📥 Загрузить данные", key="load_step1",
+                help="Прочитать все файлы в выбранной кодировке"
+            ):
                 try:
                     wells_data = load_all_las_with_metadata(
                         las_files,
@@ -123,6 +160,12 @@ with tab1:
             # 4. Корректировка номера скважины (опционально)
             if 'wells_data' in st.session_state.step1_data:
                 st.subheader("4. Корректировка номера скважины")
+                st.caption(
+                    "Опционально: если название скважины в заголовках LAS-файлов "
+                    "различается или указано неверно (например, разные написания "
+                    "одной и той же скважины), здесь можно принудительно задать "
+                    "один номер для всех загруженных файлов."
+                )
                 well_names = list(st.session_state.step1_data['wells_data'].keys())
                 st.write(f"Текущие скважины: {', '.join(well_names)}")
 
@@ -157,9 +200,19 @@ with tab1:
             # 5. Проверка и корректировка мнемоник
             if 'wells_data' in st.session_state.step1_data:
                 st.subheader("5. Проверка и корректировка мнемоник")
+                st.caption(
+                    "Сверяет названия загруженных кривых со словарём канонических "
+                    "мнемоник (mnemo.xlsx). Кривые, для которых найдено соответствие, "
+                    "будут автоматически переименованы в единый вид; для остальных "
+                    "нужно решение — привязать к существующему имени, задать новое "
+                    "или оставить как есть."
+                )
 
                 # === Анализ кривых ===
-                if st.button("🔍 Анализировать кривые", key="analyze_step1"):
+                if st.button(
+                    "🔍 Анализировать кривые", key="analyze_step1",
+                    help="Сравнить названия кривых во всех файлах со словарём мнемоник"
+                ):
                     try:
                         canonical_to_aliases, alias_to_canonical = load_mnemo_dict(MNEMO_PATH)
 
@@ -439,6 +492,11 @@ with tab1:
 
             # 6. Выгрузка обработанных файлов
             st.subheader("6. Сохранение обработанных файлов")
+            st.caption(
+                "Сохраняет новые LAS-файлы с переименованными по словарю мнемоник "
+                "кривыми (в кодировке utf-8-sig). Исходные файлы не изменяются — "
+                "результат пишется в отдельную папку."
+            )
             if 'alias_to_canonical' in st.session_state.step1_data:
                 default_output = str(Path(folder_path_step1) / "output")
                 output_folder = st.text_input(
@@ -527,7 +585,12 @@ with tab1:
 
 with tab2:
     st.header("Шаг 2: Визуализация планшета")
+    st.caption(
+        "Строит стандартный каротажный планшет (треки заданы в tracks_config.yaml) "
+        "по каждой скважине из указанной папки — по одному планшету на скважину."
+    )
     st.subheader("1. Выбор папки с данными")
+    st.caption("Обычно это папка с файлами, уже обработанными на Шаге 1 (с приведёнными к единому виду названиями кривых).")
     folder_path_step2 = st.text_input("Путь к папке с обработанными LAS-файлами:", key='folder_step2')
     if folder_path_step2 and Path(folder_path_step2).is_dir():
         las_files = find_las_files(folder_path_step2)
@@ -546,14 +609,24 @@ with tab2:
                 st.session_state.selected_encoding_step2 = chosen_enc
 
             # 3. Визуализация
+            st.subheader("3. Построение планшета")
             display_mode = st.radio(
                 "Тип отображения:",
                 ["Статичный (PNG, для печати)", "Интерактивный (для анализа на экране)"],
                 key="display_mode_step2",
-                horizontal=True
+                horizontal=True,
+                help=(
+                    "Статичный — обычное изображение с несколькими линейками на трек, "
+                    "удобно для печати/отчётов. Интерактивный — зум, панорамирование и "
+                    "подсказка (название кривой, глубина, значение) при наведении мыши, "
+                    "но все кривые трека делят одну общую ось."
+                )
             )
 
-            if st.button("🎨 Построить планшеты", key="visualize_step2"):
+            if st.button(
+                "🎨 Построить планшеты", key="visualize_step2",
+                help="Построить планшет для каждой скважины, найденной в указанной папке"
+            ):
                 if st.session_state.selected_encoding_step2:
                     try:
                         wells_data = load_all_las_with_metadata(
@@ -656,7 +729,15 @@ with tab3:
                 st.session_state.selected_encoding_merge = enc_choice
 
             # 2. Загрузка
-            if st.session_state.get('selected_encoding_merge') and st.button("📥 Загрузить и сгруппировать", key="load_merge"):
+            st.subheader("2. Загрузка и группировка")
+            st.caption(
+                "Читает все файлы и группирует их по шагу глубины (STEP) — "
+                "объединять по непрерывной сетке можно только файлы с одинаковым шагом."
+            )
+            if st.session_state.get('selected_encoding_merge') and st.button(
+                "📥 Загрузить и сгруппировать", key="load_merge",
+                help="Прочитать файлы скважины и разбить их на группы по шагу глубины"
+            ):
                 try:
                     wells_data = load_all_las_with_metadata(las_files, encoding=st.session_state.selected_encoding_merge)
                     st.session_state.merge_data = {'wells_data': wells_data, 'folder': folder_path_merge}
@@ -693,12 +774,21 @@ with tab3:
 
             # 3. Объединение с логикой по STEP
             if 'merge_data' in st.session_state:
-                st.subheader("2. Сохранение и запуск")
+                st.subheader("3. Сохранение и запуск")
+                st.caption(
+                    "Для каждой группы (скважина + шаг глубины) строится единая сетка "
+                    "глубин от минимума до максимума; значения всех кривых "
+                    "интерполируются на неё. Одноимённые кривые из разных файлов "
+                    "сохраняются отдельно, источник указывается в описании кривой."
+                )
 
                 default_out = str(Path(st.session_state.merge_data['folder']) / "merged_output")
                 out_folder_str = st.text_input("📁 Папка для сохранения объединённых файлов:", value=default_out, key="out_folder_merge")
 
-                if st.button("🔗 Объединить по STEP + непрерывная глубина", key="do_merge_v4"):
+                if st.button(
+                    "🔗 Объединить по STEP + непрерывная глубина", key="do_merge_v4",
+                    help="Построить непрерывную сетку глубин для каждой группы и сохранить объединённые LAS-файлы"
+                ):
                     if not out_folder_str.strip():
                         st.error("❌ Укажите путь для сохранения!")
                     else:

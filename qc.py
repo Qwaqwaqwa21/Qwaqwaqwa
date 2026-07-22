@@ -115,6 +115,7 @@ def build_qc_report(wells_data):
 
 
 def _score_label(score):
+    """Переводит числовую оценку 0-100 в текстовую метку надёжности."""
     if score >= 90:
         return 'высокая'
     elif score >= 70:

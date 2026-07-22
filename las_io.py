@@ -34,6 +34,7 @@ def find_las_files(folder):
 
 
 def _detect_bom_encoding(raw):
+    """Возвращает имя кодировки, если raw начинается с известного BOM, иначе None."""
     for bom, enc in _BOM_ENCODINGS:
         if raw.startswith(bom):
             return enc

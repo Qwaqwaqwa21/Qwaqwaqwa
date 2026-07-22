@@ -15,6 +15,7 @@ DEFAULT_MNEMO_PATH = str(Path(__file__).parent / "mnemo.xlsx")
 
 
 def get_mnemo_path():
+    """Путь к файлу словаря мнемоник: из переменной окружения MNEMO_PATH, иначе mnemo.xlsx рядом со скриптом."""
     return os.environ.get("MNEMO_PATH", DEFAULT_MNEMO_PATH)
 
 
