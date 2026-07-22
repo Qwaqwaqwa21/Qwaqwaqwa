@@ -14,7 +14,7 @@ from io import BytesIO
 
 from las_io import find_las_files, read_las_robust, load_all_las_with_metadata, merge_curves_by_mnemonic
 from mnemonics import get_mnemo_path, load_mnemo_dict, save_mnemo_dict
-from plotting import TRACKS_CONFIG, plot_well_panel
+from plotting import load_tracks_config, plot_well_panel
 from ui_helpers import render_encoding_preview
 from qc import build_qc_report
 
@@ -542,6 +542,9 @@ with tab2:
                             las_files,
                             encoding=st.session_state.selected_encoding_step2
                         )
+                        # Читаем заново на каждый клик, чтобы правки tracks_config.yaml
+                        # подхватывались без перезапуска приложения.
+                        tracks_config = load_tracks_config()
 
                         for well_name, well_files in wells_data.items():
                             st.subheader(f"Скважина: {well_name}")
@@ -553,7 +556,7 @@ with tab2:
                             fig, interval_table = plot_well_panel(
                                 well_name,
                                 merged_curves,
-                                TRACKS_CONFIG,
+                                tracks_config,
                                 depth_min,
                                 depth_max,
                                 figsize_width_cm=50

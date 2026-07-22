@@ -1,14 +1,17 @@
 # coding: utf-8
 """Конфигурация треков и построение каротажных планшетов."""
+import os
 import textwrap
 from pathlib import Path
 
 import numpy as np
+import yaml
 import matplotlib.pyplot as plt
 import streamlit as st
 
-# === Конфигурация треков ===
-TRACKS_CONFIG = {
+# === Конфигурация треков по умолчанию (используется, если внешний YAML
+# отсутствует или не может быть прочитан) ===
+DEFAULT_TRACKS_CONFIG = {
     0: {'name': 'Глубина', 'width': 2.0, 'curves': [], 'grid': 'none', 'limits': 'none', 'ylabel': 'Глубина, м'},
     1: {
         'name': 'Стандартный каротаж',
@@ -227,6 +230,48 @@ TRACKS_CONFIG = {
         'ylabel': 'Кпр'
     }
 }
+
+# Обратная совместимость: код/тесты, импортирующие TRACKS_CONFIG напрямую,
+# по-прежнему получают дефолтную конфигурацию. Приложение должно вызывать
+# load_tracks_config(), чтобы подхватывать правки внешнего YAML без рестарта.
+TRACKS_CONFIG = DEFAULT_TRACKS_CONFIG
+
+
+def get_tracks_config_path():
+    """Путь к редактируемому YAML с конфигурацией треков (переопределяется TRACKS_CONFIG_PATH)."""
+    return os.environ.get("TRACKS_CONFIG_PATH", str(Path(__file__).parent / "tracks_config.yaml"))
+
+
+def _normalize_limits(config):
+    """YAML не различает tuple/list — числовые пары для 'limits' приводим к tuple."""
+    limits = config.get('limits')
+    if isinstance(limits, list) and len(limits) == 2 and all(isinstance(v, (int, float)) for v in limits):
+        config['limits'] = tuple(limits)
+    return config
+
+
+def load_tracks_config(path=None):
+    """
+    Загружает конфигурацию треков из редактируемого YAML-файла, чтобы петрофизик
+    мог добавлять новые кривые/треки без правки исходного кода приложения.
+    При отсутствии файла или ошибке чтения возвращает встроенную конфигурацию по умолчанию.
+    """
+    path = Path(path or get_tracks_config_path())
+    if not path.exists():
+        return DEFAULT_TRACKS_CONFIG
+
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            raw_config = yaml.safe_load(f)
+        if not raw_config:
+            raise ValueError("Файл конфигурации треков пуст")
+        return {
+            int(track_id): _normalize_limits(dict(config))
+            for track_id, config in raw_config.items()
+        }
+    except Exception as e:
+        st.warning(f"⚠️ Не удалось прочитать {path.name} ({e}), используется конфигурация по умолчанию")
+        return DEFAULT_TRACKS_CONFIG
 
 
 def wrap_text(text, width=20):

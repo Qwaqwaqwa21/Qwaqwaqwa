@@ -1,0 +1,368 @@
+# Конфигурация треков каротажного планшета.
+# Это редактируемая копия настроек по умолчанию (plotting.DEFAULT_TRACKS_CONFIG).
+# Чтобы использовать другой файл, задайте переменную окружения TRACKS_CONFIG_PATH.
+#
+# Схема каждого трека:
+#   name:   заголовок трека
+#   width:  относительная ширина (см)
+#   curves: список кривых [{mnemonic, color, linestyle, linewidth}, ...]
+#   grid:   'linear' | 'log' | 'none'
+#   limits: 'auto_per_curve' | 'auto' | 'shared' | 'auto_kp' | 'auto_k' | 'none' | [min, max]
+#   ylabel: подпись оси снизу трека
+#
+# Чтобы добавить новую кривую/трек — допишите новый числовой ключ ниже
+# по этому же образцу, перезапускать приложение не нужно.
+
+0:
+  name: Глубина
+  width: 2.0
+  curves: []
+  grid: none
+  limits: none
+  ylabel: Глубина, м
+1:
+  name: Стандартный каротаж
+  width: 5.0
+  curves:
+  - mnemonic: RS
+    color: blue
+    linestyle: --
+    linewidth: 1.2
+  - mnemonic: KS
+    color: black
+    linestyle: '-'
+    linewidth: 1.0
+  - mnemonic: PS
+    color: red
+    linestyle: '-'
+    linewidth: 1.0
+  - mnemonic: DS
+    color: green
+    linestyle: '-'
+    linewidth: 1.0
+  grid: linear
+  limits: auto_per_curve
+  ylabel: Ед. изм.
+2:
+  name: Стандартный каротаж_500
+  width: 5.0
+  curves:
+  - mnemonic: KS_500
+    color: black
+    linestyle: '-'
+    linewidth: 1.0
+  - mnemonic: PS_500
+    color: red
+    linestyle: '-'
+    linewidth: 1.0
+  - mnemonic: DS_500
+    color: green
+    linestyle: '-'
+    linewidth: 1.0
+  grid: linear
+  limits: auto_per_curve
+  ylabel: Ед. изм.
+3:
+  name: Радиоактивные методы
+  width: 5.0
+  curves:
+  - mnemonic: GK
+    color: red
+    linestyle: '-'
+    linewidth: 1.2
+  - mnemonic: NGK
+    color: black
+    linestyle: '-'
+    linewidth: 1.0
+  - mnemonic: NKTD
+    color: black
+    linestyle: '-'
+    linewidth: 1.0
+  - mnemonic: NKTS
+    color: black
+    linestyle: ':'
+    linewidth: 0.7
+  grid: linear
+  limits: auto_per_curve
+  ylabel: Ед. изм.
+4:
+  name: Радиоактивные методы_500
+  width: 5.0
+  curves:
+  - mnemonic: GK_500
+    color: red
+    linestyle: '-'
+    linewidth: 1.2
+  - mnemonic: NGK_500
+    color: black
+    linestyle: '-'
+    linewidth: 1.0
+  grid: linear
+  limits: auto_per_curve
+  ylabel: Ед. изм.
+5:
+  name: Сопротивление
+  width: 5.0
+  curves:
+  - mnemonic: RP
+    color: black
+    linestyle: '-'
+    linewidth: 1.2
+  - mnemonic: IK
+    color: green
+    linestyle: '-'
+    linewidth: 1.0
+  - mnemonic: BK
+    color: blue
+    linestyle: '-'
+    linewidth: 1.0
+  - mnemonic: MBK
+    color: red
+    linestyle: '-'
+    linewidth: 1.0
+  grid: log
+  limits: &id001
+  - 0.1
+  - 1000
+  ylabel: Ом·м
+6:
+  name: БКЗ
+  width: 5.0
+  curves:
+  - mnemonic: GZ1
+    color: red
+    linestyle: '-'
+    linewidth: 1.0
+  - mnemonic: GZ2
+    color: black
+    linestyle: '-'
+    linewidth: 1.0
+  - mnemonic: GZ3
+    color: green
+    linestyle: '-'
+    linewidth: 1.0
+  - mnemonic: GZ4
+    color: blue
+    linestyle: '-'
+    linewidth: 1.0
+  - mnemonic: GZ5
+    color: purple
+    linestyle: '-'
+    linewidth: 1.0
+  - mnemonic: GZK
+    color: gold
+    linestyle: '-'
+    linewidth: 1.0
+  grid: log
+  limits: *id001
+  ylabel: Ом·м
+7:
+  name: Потенциал
+  width: 5.0
+  curves:
+  - mnemonic: SP
+    color: brown
+    linestyle: '-'
+    linewidth: 1.2
+  - mnemonic: SP_N
+    color: brown
+    linestyle: --
+    linewidth: 1.0
+  grid: linear
+  limits: auto
+  ylabel: мВ
+8:
+  name: VIKIZ
+  width: 5.0
+  curves:
+  - mnemonic: VIKIZ1
+    color: red
+    linestyle: '-'
+    linewidth: 1.0
+  - mnemonic: VIKIZ2
+    color: black
+    linestyle: '-'
+    linewidth: 1.0
+  - mnemonic: VIKIZ3
+    color: green
+    linestyle: '-'
+    linewidth: 1.0
+  - mnemonic: VIKIZ4
+    color: blue
+    linestyle: '-'
+    linewidth: 1.0
+  - mnemonic: VIKIZ5
+    color: purple
+    linestyle: '-'
+    linewidth: 1.0
+  grid: log
+  limits: *id001
+  ylabel: Ом·м
+9:
+  name: 5IK
+  width: 5.0
+  curves:
+  - mnemonic: IK1
+    color: red
+    linestyle: '-'
+    linewidth: 1.0
+  - mnemonic: IK2
+    color: black
+    linestyle: '-'
+    linewidth: 1.0
+  - mnemonic: IK3
+    color: green
+    linestyle: '-'
+    linewidth: 1.0
+  - mnemonic: IK4
+    color: blue
+    linestyle: '-'
+    linewidth: 1.0
+  - mnemonic: IK5
+    color: purple
+    linestyle: '-'
+    linewidth: 1.0
+  grid: log
+  limits: *id001
+  ylabel: Ом·м
+10:
+  name: 5BK
+  width: 5.0
+  curves:
+  - mnemonic: BK1
+    color: red
+    linestyle: '-'
+    linewidth: 1.0
+  - mnemonic: BK2
+    color: black
+    linestyle: '-'
+    linewidth: 1.0
+  - mnemonic: BK3
+    color: green
+    linestyle: '-'
+    linewidth: 1.0
+  - mnemonic: BK4
+    color: blue
+    linestyle: '-'
+    linewidth: 1.0
+  - mnemonic: BK5
+    color: purple
+    linestyle: '-'
+    linewidth: 1.0
+  grid: log
+  limits: *id001
+  ylabel: Ом·м
+11:
+  name: МКЗ
+  width: 5.0
+  curves:
+  - mnemonic: MGZ
+    color: red
+    linestyle: '-'
+    linewidth: 1.2
+  - mnemonic: MPZ
+    color: blue
+    linestyle: '-'
+    linewidth: 1.2
+  grid: linear
+  limits: shared
+  ylabel: Ом·м
+12:
+  name: Расширенный комплекс
+  width: 5.0
+  curves:
+  - mnemonic: DTP
+    color: black
+    linestyle: '-'
+    linewidth: 1.2
+  - mnemonic: GGK-P
+    color: green
+    linestyle: '-'
+    linewidth: 1.0
+  grid: linear
+  limits: auto_per_curve
+  ylabel: Ед. изм.
+13:
+  name: ЯМК
+  width: 5.0
+  curves:
+  - mnemonic: U1
+    color: black
+    linestyle: '-'
+    linewidth: 1.2
+  - mnemonic: U2
+    color: green
+    linestyle: '-'
+    linewidth: 1.0
+  - mnemonic: U3
+    color: red
+    linestyle: '-'
+    linewidth: 1.0
+  grid: linear
+  limits: shared
+  ylabel: Ед. изм.
+14:
+  name: Газовый
+  width: 5.0
+  curves:
+  - mnemonic: GAZ
+    color: orange
+    linestyle: '-'
+    linewidth: 1.2
+  - mnemonic: GAZ_500
+    color: darkorange
+    linestyle: --
+    linewidth: 1.0
+  grid: linear
+  limits: auto_per_curve
+  ylabel: '%'
+15:
+  name: Кп
+  width: 2.0
+  curves:
+  - mnemonic: Kp
+    color: green
+    linestyle: '-'
+    linewidth: 1.2
+  - mnemonic: W
+    color: red
+    linestyle: '-'
+    linewidth: 1.0
+  grid: linear
+  limits: auto_kp
+  ylabel: Кп
+16:
+  name: Кгл
+  width: 2.0
+  curves:
+  - mnemonic: Kgl
+    color: red
+    linestyle: '-'
+    linewidth: 1.2
+  grid: linear
+  limits: auto_k
+  ylabel: Кгл
+17:
+  name: Кнг
+  width: 2.0
+  curves:
+  - mnemonic: Kn
+    color: red
+    linestyle: '-'
+    linewidth: 1.2
+  grid: linear
+  limits: auto_k
+  ylabel: Кнг
+18:
+  name: Кпр
+  width: 2.0
+  curves:
+  - mnemonic: Kpr
+    color: red
+    linestyle: '-'
+    linewidth: 1.2
+  grid: log
+  limits:
+  - 0.01
+  - 1000
+  ylabel: Кпр
