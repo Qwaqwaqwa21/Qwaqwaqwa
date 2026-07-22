@@ -16,6 +16,7 @@ from las_io import find_las_files, read_las_robust, load_all_las_with_metadata, 
 from mnemonics import get_mnemo_path, load_mnemo_dict, save_mnemo_dict
 from plotting import TRACKS_CONFIG, plot_well_panel
 from ui_helpers import render_encoding_preview
+from qc import build_qc_report
 
 # Настройки для кириллицы
 matplotlib.rcParams['font.family'] = 'DejaVu Sans'
@@ -82,6 +83,21 @@ with tab1:
                     st.write("**Загружено скважин:**")
                     for well, files in wells_data.items():
                         st.write(f"  • {well}: {len(files)} файл(ов)")
+
+                    with st.expander("📋 QC-отчёт по данным", expanded=False):
+                        qc_df = build_qc_report(wells_data)
+                        if not qc_df.empty:
+                            st.dataframe(qc_df, use_container_width=True)
+                            qc_csv = qc_df.to_csv(index=False, encoding='utf-8-sig')
+                            st.download_button(
+                                "💾 Скачать QC-отчёт (CSV)",
+                                data=qc_csv,
+                                file_name="qc_report.csv",
+                                mime="text/csv",
+                                key="qc_download_step1"
+                            )
+                        else:
+                            st.info("Нет данных для отчёта")
                 except Exception as e:
                     st.error(f"❌ Ошибка загрузки: {e}")
                     st.code(traceback.format_exc())
@@ -615,6 +631,21 @@ with tab3:
                     st.success(f"✅ Загружено: {len(wells_data)} скважин")
                     for well, files in wells_data.items():
                         st.write(f"• **{well}**: {len(files)} файлов")
+
+                    with st.expander("📋 QC-отчёт по данным", expanded=False):
+                        qc_df = build_qc_report(wells_data)
+                        if not qc_df.empty:
+                            st.dataframe(qc_df, use_container_width=True)
+                            qc_csv = qc_df.to_csv(index=False, encoding='utf-8-sig')
+                            st.download_button(
+                                "💾 Скачать QC-отчёт (CSV)",
+                                data=qc_csv,
+                                file_name="qc_report_merge.csv",
+                                mime="text/csv",
+                                key="qc_download_merge"
+                            )
+                        else:
+                            st.info("Нет данных для отчёта")
                 except Exception as e:
                     st.error(f"❌ Ошибка: {e}")
 
