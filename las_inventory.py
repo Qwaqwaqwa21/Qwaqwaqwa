@@ -68,16 +68,19 @@ def iter_las_files(directory: Path):
 def extract_field_name(las_path: Path, root: Path) -> tuple[str, str]:
     """Возвращает (папка_месторождения, название_месторождения_без_N_).
 
-    Ищет ближайшего к файлу родителя с именем вида "N_Название" и убирает
-    ведущий "N_". Если такого родителя нет, возвращает исходное имя папки
-    прямо над файлом как есть.
+    Ищет САМОГО ВЕРХНЕГО (ближайшего к root) родителя с именем вида
+    "N_Название" и убирает ведущий "N_". Это папка месторождения, например
+    "1_Ромашкинское" в BDOS/1_Ромашкинское/1_ГИС/<горизонт>/... — берём
+    именно её, а не "1_ГИС" (тоже подходит под паттерн, но это не
+    месторождение, а вложенная папка ниже). Если подходящих папок нет,
+    возвращает исходное имя папки прямо над файлом как есть.
     """
     try:
         parts = las_path.relative_to(root).parts[:-1]  # без имени файла
     except ValueError:
         parts = las_path.parts[:-1]
 
-    for folder in reversed(parts):
+    for folder in parts:  # от корня к файлу — берём первое совпадение
         match = FIELD_DIR_RE.match(folder)
         if match:
             return folder, match.group(1)
@@ -121,7 +124,7 @@ def scan_root(root: Path, workers: int) -> list[dict]:
                 log.error("Ошибка сканирования %s: %s", unit, exc)
                 continue
 
-            gis_batch = unit.name
+            top_folder = unit.name
             for las_path in las_files:
                 well_number = las_path.stem.strip()
                 field_folder, field_name = extract_field_name(las_path, root)
@@ -132,7 +135,7 @@ def scan_root(root: Path, workers: int) -> list[dict]:
                         "well_field": well_field,
                         "well_number": well_number,
                         "field_name": field_name,
-                        "gis_batch": gis_batch,
+                        "top_folder": top_folder,
                         "field_folder": field_folder,
                         "category": category,
                         "relative_path": str(las_path.relative_to(root)),
@@ -147,7 +150,7 @@ def scan_root(root: Path, workers: int) -> list[dict]:
 
 def build_dataframe(rows: list[dict]) -> tuple[pd.DataFrame, int]:
     df = pd.DataFrame(rows, columns=[
-        "well_field", "well_number", "field_name", "gis_batch",
+        "well_field", "well_number", "field_name", "top_folder",
         "field_folder", "category", "relative_path",
     ])
     before = len(df)
