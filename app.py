@@ -19,6 +19,7 @@ from plotting_plotly import plot_well_panel_plotly
 from ui_helpers import render_encoding_preview
 from qc import build_qc_report, build_well_score_summary
 from crossplots import build_crossplot, build_histogram
+from coverage import build_coverage_chart
 
 # Настройки для кириллицы
 matplotlib.rcParams['font.family'] = 'DejaVu Sans'
@@ -608,8 +609,68 @@ with tab2:
                 )
                 st.session_state.selected_encoding_step2 = chosen_enc
 
-            # 3. Визуализация
-            st.subheader("3. Построение планшета")
+            # 3. Загрузка данных
+            st.subheader("3. Загрузка данных")
+            st.caption(
+                "Читает файлы и группирует их по скважине (по полю WELL в заголовке "
+                "LAS). Если скважина записана в нескольких файлах — с разными "
+                "интервалами глубин и/или разным набором кривых, — все они лягут "
+                "на один общий планшет."
+            )
+            if st.session_state.selected_encoding_step2 and st.button(
+                "📥 Загрузить данные", key="load_step2",
+                help="Прочитать все файлы в выбранной кодировке и сгруппировать по скважинам"
+            ):
+                try:
+                    st.session_state.step2_data['wells_data'] = load_all_las_with_metadata(
+                        las_files, encoding=st.session_state.selected_encoding_step2
+                    )
+                    st.success(f"✅ Загружено скважин: {len(st.session_state.step2_data['wells_data'])}")
+                except Exception as e:
+                    st.error(f"❌ Ошибка загрузки: {e}")
+                    st.code(traceback.format_exc())
+
+            # 4. Объединение скважин (если LAS одной физической скважины
+            # попали в разные "скважины" из-за разного написания в заголовке)
+            wells_data = st.session_state.step2_data.get('wells_data')
+            if wells_data:
+                well_names = sorted(wells_data.keys())
+                st.write(f"**Обнаружены скважины:** {', '.join(well_names)}")
+
+                if len(well_names) > 1:
+                    st.subheader("4. Объединение скважин")
+                    st.caption(
+                        "Если несколько файлов на самом деле относятся к одной "
+                        "физической скважине, но записаны в заголовке по-разному "
+                        "(опечатка, другое написание) — выберите их здесь и "
+                        "объедините под одним именем, чтобы все исследования легли "
+                        "на один планшет."
+                    )
+                    wells_to_merge = st.multiselect(
+                        "Скважины, которые на самом деле одна и та же:",
+                        well_names, key='wells_to_merge_step2'
+                    )
+                    merged_name = st.text_input(
+                        "Итоговое имя скважины:",
+                        value=wells_to_merge[0] if wells_to_merge else "",
+                        key='merged_well_name_step2'
+                    )
+                    if st.button("🔗 Объединить выбранные скважины", key='merge_wells_step2_btn'):
+                        merged_name_clean = merged_name.strip()
+                        if len(wells_to_merge) < 2:
+                            st.warning("⚠️ Выберите минимум две скважины для объединения")
+                        elif not merged_name_clean:
+                            st.warning("⚠️ Укажите итоговое имя скважины")
+                        else:
+                            combined_files = []
+                            for name in wells_to_merge:
+                                combined_files.extend(wells_data.pop(name))
+                            wells_data[merged_name_clean] = wells_data.get(merged_name_clean, []) + combined_files
+                            st.session_state.step2_data['wells_data'] = wells_data
+                            st.success(f"✅ Объединено {len(wells_to_merge)} скважин в «{merged_name_clean}»")
+
+            # 5. Визуализация
+            st.subheader("5. Построение планшета")
             display_mode = st.radio(
                 "Тип отображения:",
                 ["Статичный (PNG, для печати)", "Интерактивный (для анализа на экране)"],
@@ -621,6 +682,10 @@ with tab2:
                     "подсказка (название кривой, глубина, значение) при наведении мыши, "
                     "но все кривые трека делят одну общую ось."
                 )
+            )
+            show_coverage = st.checkbox(
+                "Показать карту охвата данными", value=False, key='show_coverage_step2',
+                help="Упрощённая схема: один столбец на метод, закрашенный там, где для него есть данные"
             )
 
             if 'curve_limit_overrides' not in st.session_state:
@@ -666,14 +731,12 @@ with tab2:
 
             if st.button(
                 "🎨 Построить планшеты", key="visualize_step2",
-                help="Построить планшет для каждой скважины, найденной в указанной папке"
+                help="Построить планшет для каждой скважины из загруженных данных"
             ):
-                if st.session_state.selected_encoding_step2:
+                if not wells_data:
+                    st.warning("⚠️ Сначала загрузите данные (шаг 3)")
+                else:
                     try:
-                        wells_data = load_all_las_with_metadata(
-                            las_files,
-                            encoding=st.session_state.selected_encoding_step2
-                        )
                         # Читаем заново на каждый клик, чтобы правки tracks_config.yaml
                         # подхватывались без перезапуска приложения.
                         tracks_config = load_tracks_config()
@@ -684,6 +747,9 @@ with tab2:
 
                         for well_name, well_files in wells_data.items():
                             st.subheader(f"Скважина: {well_name}")
+                            if len(well_files) > 1:
+                                st.caption(f"Собрано из {len(well_files)} файлов: " +
+                                           ", ".join(Path(f['file_name']).stem for f in well_files))
 
                             merged_curves, depth_min, depth_max = merge_curves_by_mnemonic(
                                 well_files, overlap_m=100
@@ -738,6 +804,12 @@ with tab2:
                                         mime="text/csv",
                                         key=f"download_table_{well_name}"
                                     )
+
+                                    if show_coverage:
+                                        coverage_fig = build_coverage_chart(interval_table, depth_min, depth_max)
+                                        if coverage_fig:
+                                            st.plotly_chart(coverage_fig, use_container_width=True,
+                                                           key=f"coverage_{well_name}")
                                 else:
                                     st.warning(f"⚠️ Таблица интервалов пуста для скважины {well_name}. Возможные причины:\n"
                                                "- Нет данных в кривых (только -999.25)\n"
@@ -749,8 +821,6 @@ with tab2:
                     except Exception as e:
                         st.error(f"❌ Ошибка визуализации: {e}")
                         st.code(traceback.format_exc())
-                else:
-                    st.warning("⚠️ Сначала выберите кодировку!")
 
 with tab3:
     st.header("🔗 Объединение LAS-файлов по скважинам")
