@@ -46,3 +46,18 @@ class TestPlotWellPanelPlotly:
         trace_names = [t.name for t in fig.data if t.name]
         assert any('run1' in n for n in trace_names)
         assert any('run2' in n for n in trace_names)
+
+    def test_explicit_curve_limits_used_for_track_range(self):
+        # IK/BK в "Сопротивление" имеют явную границу (0.1, 100) — трек-ось
+        # (общая для всех кривых трека в Plotly-версии) должна её учитывать
+        # вместо автоподбора по данным (значения тут намеренно за пределами
+        # 0.1-100, чтобы отличить от автоподобранного диапазона).
+        from plotting_plotly import _track_x_range
+        config = DEFAULT_TRACKS_CONFIG[5]
+        merged_curves = {
+            'IK': [{'depth': None, 'values': np.full(10, 5000.0), 'file_name': 'a.las'}],
+        }
+        pairs = [(c['mnemonic'], merged_curves.get(c['mnemonic'], [])) for c in config['curves']]
+        x_range = _track_x_range(config, pairs)
+        assert x_range[0] <= 0.1
+        assert x_range[1] >= 100

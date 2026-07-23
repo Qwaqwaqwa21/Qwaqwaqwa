@@ -67,8 +67,8 @@ DEFAULT_TRACKS_CONFIG = {
         'width': 5.0,
         'curves': [
             {'mnemonic': 'RP', 'color': 'black', 'linestyle': '-', 'linewidth': 1.2},
-            {'mnemonic': 'IK', 'color': 'green', 'linestyle': '-', 'linewidth': 1.0},
-            {'mnemonic': 'BK', 'color': 'blue', 'linestyle': '-', 'linewidth': 1.0},
+            {'mnemonic': 'IK', 'color': 'green', 'linestyle': '-', 'linewidth': 1.0, 'limits': (0.1, 100)},
+            {'mnemonic': 'BK', 'color': 'blue', 'linestyle': '-', 'linewidth': 1.0, 'limits': (0.1, 100)},
             {'mnemonic': 'MBK', 'color': 'red', 'linestyle': '-', 'linewidth': 1.0}
         ],
         'grid': 'log',
@@ -150,7 +150,7 @@ DEFAULT_TRACKS_CONFIG = {
             {'mnemonic': 'MGZ', 'color': 'red', 'linestyle': '-', 'linewidth': 1.2},
             {'mnemonic': 'MPZ', 'color': 'blue', 'linestyle': '-', 'linewidth': 1.2}
         ],
-        'grid': 'linear',
+        'grid': 'log',
         'limits': 'shared',
         'ylabel': 'Ом·м'
     },
@@ -242,11 +242,23 @@ def get_tracks_config_path():
     return os.environ.get("TRACKS_CONFIG_PATH", str(Path(__file__).parent / "tracks_config.yaml"))
 
 
-def _normalize_limits(config):
-    """YAML не различает tuple/list — числовые пары для 'limits' приводим к tuple."""
-    limits = config.get('limits')
+def _as_limits_tuple(limits):
+    """Если limits — список из двух чисел (как приходит из YAML), приводит к tuple."""
     if isinstance(limits, list) and len(limits) == 2 and all(isinstance(v, (int, float)) for v in limits):
-        config['limits'] = tuple(limits)
+        return tuple(limits)
+    return limits
+
+
+def _normalize_limits(config):
+    """
+    YAML не различает tuple/list — числовые пары для 'limits' приводим к tuple.
+    Проверяются как лимиты трека, так и опциональные лимиты отдельных кривых
+    (curve_spec['limits']), заданные явно в конфигурации.
+    """
+    config['limits'] = _as_limits_tuple(config.get('limits'))
+    for curve_spec in config.get('curves', []):
+        if 'limits' in curve_spec:
+            curve_spec['limits'] = _as_limits_tuple(curve_spec['limits'])
     return config
 
 
@@ -272,6 +284,32 @@ def load_tracks_config(path=None):
     except Exception as e:
         st.warning(f"⚠️ Не удалось прочитать {path.name} ({e}), используется конфигурация по умолчанию")
         return DEFAULT_TRACKS_CONFIG
+
+
+def apply_curve_limit_overrides(tracks_config, overrides):
+    """
+    Возвращает копию tracks_config с ручными границами шкалы, заданными
+    пользователем в интерфейсе (per-mnemonic), поверх настроек из
+    tracks_config.yaml — сам файл при этом не изменяется.
+
+    overrides: словарь {мнемоника: (min, max)}. Мнемоника, которой нет в
+    overrides, использует границы как обычно (явные из конфигурации или
+    автоподбор по данным).
+    """
+    if not overrides:
+        return tracks_config
+
+    new_config = {}
+    for track_id, config in tracks_config.items():
+        new_curves = []
+        for curve_spec in config['curves']:
+            curve_spec = dict(curve_spec)
+            override = overrides.get(curve_spec['mnemonic'])
+            if override is not None:
+                curve_spec['limits'] = tuple(override)
+            new_curves.append(curve_spec)
+        new_config[track_id] = {**config, 'curves': new_curves}
+    return new_config
 
 
 def wrap_text(text, width=20):
@@ -466,6 +504,11 @@ def plot_well_panel(well_name, merged_curves, tracks_config, depth_min, depth_ma
         st.warning(f"⚠️ Для скважины {well_name} нет данных для построения треков кривых")
         return None, None
 
+    # Для каждой кривой резервируем свой "ряд" линейки по её позиции в
+    # tracks_config, а не по порядку появления в данных этой конкретной
+    # скважины — иначе одна и та же кривая оказывалась бы в разных рядах
+    # (и с виду "плавала") в зависимости от того, какие ещё кривые есть в
+    # файлах именно этой скважины.
     max_instances_in_any_track = 0
     track_curve_instances = {}
 
@@ -474,15 +517,18 @@ def plot_well_panel(well_name, merged_curves, tracks_config, depth_min, depth_ma
             continue
 
         instances_list = []
-        for curve_spec in config['curves']:
+        max_row_used = -1
+        for curve_idx, curve_spec in enumerate(config['curves']):
             mnemonic = curve_spec['mnemonic']
             if mnemonic in merged_curves:
                 instances = merged_curves[mnemonic]
                 if instances:
                     instances_list.append((mnemonic, instances))
-                    max_instances_in_any_track = max(max_instances_in_any_track, len(instances))
+                    max_row_used = max(max_row_used, curve_idx)
 
         track_curve_instances[track_id] = instances_list
+        if max_row_used >= 0:
+            max_instances_in_any_track = max(max_instances_in_any_track, max_row_used + 1)
 
     total_width_cm = sum([config['width'] for _, config, _ in active_tracks])
     total_width_cm += (len(active_tracks) - 1) * 1.0
@@ -542,6 +588,7 @@ def plot_well_panel(well_name, merged_curves, tracks_config, depth_min, depth_ma
         curve_axes = []
         curve_values_all = []
         instances_in_track = track_curve_instances.get(track_id, [])
+        row_index_by_mnemonic = {c['mnemonic']: i for i, c in enumerate(config['curves'])}
 
         instance_colors = [
             (0.0, 0.0, 1.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (1.0, 0.5, 0.0),
@@ -557,6 +604,8 @@ def plot_well_panel(well_name, merged_curves, tracks_config, depth_min, depth_ma
             base_linestyle = curve_spec['linestyle']
             base_linewidth = curve_spec['linewidth']
 
+            combined_values = []
+            file_names = []
             for inst_idx, instance in enumerate(instances):
                 depth = instance['depth']
                 values = instance['values']
@@ -580,46 +629,48 @@ def plot_well_panel(well_name, merged_curves, tracks_config, depth_min, depth_ma
                             alpha=0.9)
 
                 curve_values_all.append(values[valid_mask])
+                combined_values.append(values[valid_mask])
+                file_names.append(file_name)
 
-                ax_curve = ax_main.twiny()
-                curve_axes.append({
-                    'ax': ax_curve,
-                    'color': color,
-                    'mnemonic': mnemonic,
-                    'file_name': file_name,
-                    'values': values[valid_mask],
-                    'inst_idx': inst_idx,
-                    'total_inst': len(instances),
-                    'curve_spec': curve_spec
-                })
+            if not combined_values:
+                continue
+
+            # Одна линейка на мнемонику (даже если у неё несколько файлов-
+            # источников) в ряду, закреплённом за позицией кривой в
+            # tracks_config, — ряд не зависит от того, какие ещё кривые
+            # присутствуют именно в этой скважине.
+            ax_curve = ax_main.twiny()
+            curve_axes.append({
+                'ax': ax_curve,
+                'color': base_color,
+                'mnemonic': mnemonic,
+                'row': row_index_by_mnemonic[mnemonic],
+                'values': np.concatenate(combined_values),
+                'file_names': file_names,
+                'curve_spec': curve_spec,
+            })
 
         if config['limits'] == 'auto_per_curve':
             pass
-        elif config['limits'] == 'auto' and curve_values_all:
+        elif config['limits'] in ('auto', 'shared') and curve_values_all:
             all_vals = np.concatenate(curve_values_all)
-            vmin, vmax = np.nanpercentile(all_vals, [5, 95])
-            padding = max((vmax - vmin) * 0.1, 0.5)
-            ax_main.set_xlim(vmin - padding, vmax + padding)
-        elif config['limits'] == 'shared' and curve_values_all:
-            all_vals = np.concatenate(curve_values_all)
-            vmin, vmax = np.nanpercentile(all_vals, [5, 95])
-            padding = max((vmax - vmin) * 0.1, 0.5)
-            ax_main.set_xlim(vmin - padding, vmax + padding)
-        elif config['limits'] == 'auto_kp' and curve_values_all:
-            all_vals = np.concatenate(curve_values_all)
-            max_val = np.nanmax(all_vals)
-            ax_main.set_xlim(0, 40 if max_val > 1.0 else 0.4)
-        elif config['limits'] == 'auto_k' and curve_values_all:
+            vmin, vmax = calculate_curve_limits(
+                all_vals, grid_type='log' if config['grid'] == 'log' else 'linear', mnemonic=''
+            )
+            if vmin is not None and vmax is not None:
+                ax_main.set_xlim(vmin, vmax)
+        elif config['limits'] in ('auto_kp', 'auto_k') and curve_values_all:
             all_vals = np.concatenate(curve_values_all)
             max_val = np.nanmax(all_vals)
             ax_main.set_xlim(0, 40 if max_val > 1.0 else 0.4)
         elif isinstance(config['limits'], tuple):
             ax_main.set_xlim(*config['limits'])
 
-        num_instances = len(curve_axes)
-        if num_instances > 0:
-            for i, ca in enumerate(curve_axes):
-                offset = base_offset + i * offset_step
+        if curve_axes:
+            for ca in curve_axes:
+                # Ряд закреплён за позицией кривой в конфигурации трека, а не
+                # за порядковым номером в списке присутствующих кривых.
+                offset = base_offset + ca['row'] * offset_step
 
                 ax_curve = ca['ax']
                 ax_curve.spines["top"].set_position(("axes", offset))
@@ -630,8 +681,15 @@ def plot_well_panel(well_name, merged_curves, tracks_config, depth_min, depth_ma
                 ax_curve.tick_params(axis='x', colors=ca['color'], labelsize=7,
                                    labeltop=True, labelbottom=False)
 
+                # Явно заданная в конфигурации кривой граница (например, IK/BK
+                # 0.1-100) имеет приоритет над автоподбором по данным.
+                explicit_limits = ca['curve_spec'].get('limits')
+                has_explicit = isinstance(explicit_limits, tuple) and len(explicit_limits) == 2
+
                 if config['grid'] == 'log':
-                    vmin, vmax = calculate_curve_limits(ca['values'], grid_type='log', mnemonic=ca['mnemonic'])
+                    vmin, vmax = explicit_limits if has_explicit else calculate_curve_limits(
+                        ca['values'], grid_type='log', mnemonic=ca['mnemonic']
+                    )
                     if vmin is not None and vmax is not None:
                         ax_curve.set_xlim(vmin, vmax)
                         log_range = np.log10(vmax / vmin)
@@ -642,8 +700,9 @@ def plot_well_panel(well_name, merged_curves, tracks_config, depth_min, depth_ma
                         ax_curve.set_xticks(ticks)
                         ax_curve.set_xscale('log')
                 else:
-                    vmin, vmax = calculate_curve_limits(ca['values'], grid_type='linear',
-                                                      mnemonic=ca['mnemonic'])
+                    vmin, vmax = explicit_limits if has_explicit else calculate_curve_limits(
+                        ca['values'], grid_type='linear', mnemonic=ca['mnemonic']
+                    )
                     if vmin is not None and vmax is not None:
                         ax_curve.set_xlim(vmin, vmax)
                         range_val = vmax - vmin
@@ -656,8 +715,9 @@ def plot_well_panel(well_name, merged_curves, tracks_config, depth_min, depth_ma
                         ticks = np.linspace(vmin, vmax, num_ticks)
                         ax_curve.set_xticks(ticks)
 
-                if ca['total_inst'] > 1:
-                    label = f"{ca['mnemonic']}\n({Path(ca['file_name']).stem})"
+                unique_files = list(dict.fromkeys(ca['file_names']))
+                if len(unique_files) > 1:
+                    label = f"{ca['mnemonic']} ({len(unique_files)} файла(ов))"
                 else:
                     label = ca['mnemonic']
 

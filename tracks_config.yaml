@@ -5,7 +5,9 @@
 # Схема каждого трека:
 #   name:   заголовок трека
 #   width:  относительная ширина (см)
-#   curves: список кривых [{mnemonic, color, linestyle, linewidth}, ...]
+#   curves: список кривых [{mnemonic, color, linestyle, linewidth, limits?}, ...]
+#           limits у отдельной кривой (необязательно) — явная фиксированная
+#           граница шкалы для этой кривой, приоритетнее автоподбора.
 #   grid:   'linear' | 'log' | 'none'
 #   limits: 'auto_per_curve' | 'auto' | 'shared' | 'auto_kp' | 'auto_k' | 'none' | [min, max]
 #   ylabel: подпись оси снизу трека
@@ -112,16 +114,20 @@
     color: green
     linestyle: '-'
     linewidth: 1.0
+    limits: &id001
+    - 0.1
+    - 100
   - mnemonic: BK
     color: blue
     linestyle: '-'
     linewidth: 1.0
+    limits: *id001
   - mnemonic: MBK
     color: red
     linestyle: '-'
     linewidth: 1.0
   grid: log
-  limits: &id001
+  limits: &id002
   - 0.1
   - 1000
   ylabel: Ом·м
@@ -154,7 +160,7 @@
     linestyle: '-'
     linewidth: 1.0
   grid: log
-  limits: *id001
+  limits: *id002
   ylabel: Ом·м
 7:
   name: Потенциал
@@ -196,7 +202,7 @@
     linestyle: '-'
     linewidth: 1.0
   grid: log
-  limits: *id001
+  limits: *id002
   ylabel: Ом·м
 9:
   name: 5IK
@@ -223,7 +229,7 @@
     linestyle: '-'
     linewidth: 1.0
   grid: log
-  limits: *id001
+  limits: *id002
   ylabel: Ом·м
 10:
   name: 5BK
@@ -250,7 +256,7 @@
     linestyle: '-'
     linewidth: 1.0
   grid: log
-  limits: *id001
+  limits: *id002
   ylabel: Ом·м
 11:
   name: МКЗ
@@ -264,7 +270,7 @@
     color: blue
     linestyle: '-'
     linewidth: 1.2
-  grid: linear
+  grid: log
   limits: shared
   ylabel: Ом·м
 12:

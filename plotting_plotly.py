@@ -22,13 +22,29 @@ _LINESTYLE_TO_DASH = {'-': 'solid', '--': 'dash', ':': 'dot'}
 
 
 def _track_x_range(config, curve_instance_pairs):
-    """Объединённый диапазон оси X для трека (аналог auto/shared из matplotlib-версии)."""
+    """
+    Объединённый диапазон оси X для трека (аналог auto/shared из matplotlib-версии).
+
+    Все кривые трека делят одну ось, поэтому явная граница отдельной кривой
+    (curve_spec['limits'], например IK/BK 0.1-100) учитывается как есть при
+    объединении диапазона, а не переопределяется автоподбором.
+    """
     if isinstance(config['limits'], tuple):
         return config['limits']
 
     grid_type = 'log' if config['grid'] == 'log' else 'linear'
+    curve_specs_by_mnemonic = {c['mnemonic']: c for c in config['curves']}
     all_vmins, all_vmaxs = [], []
     for mnemonic, instances in curve_instance_pairs:
+        if not instances:
+            continue
+
+        explicit_limits = curve_specs_by_mnemonic.get(mnemonic, {}).get('limits')
+        if isinstance(explicit_limits, tuple):
+            all_vmins.append(explicit_limits[0])
+            all_vmaxs.append(explicit_limits[1])
+            continue
+
         for instance in instances:
             values = np.asarray(instance['values'])
             valid = values[np.isfinite(values)]

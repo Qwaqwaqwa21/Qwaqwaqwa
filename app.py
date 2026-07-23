@@ -14,7 +14,7 @@ from io import BytesIO
 
 from las_io import find_las_files, read_las_robust, load_all_las_with_metadata, merge_curves_by_mnemonic, write_las_file
 from mnemonics import get_mnemo_path, load_mnemo_dict, save_mnemo_dict
-from plotting import load_tracks_config, plot_well_panel, build_interval_table
+from plotting import load_tracks_config, plot_well_panel, build_interval_table, apply_curve_limit_overrides
 from plotting_plotly import plot_well_panel_plotly
 from ui_helpers import render_encoding_preview
 from qc import build_qc_report, build_well_score_summary
@@ -623,6 +623,47 @@ with tab2:
                 )
             )
 
+            if 'curve_limit_overrides' not in st.session_state:
+                st.session_state.curve_limit_overrides = {}
+
+            with st.expander("🎛 Настроить масштабы кривых вручную"):
+                st.caption(
+                    "Границы шкалы по умолчанию берутся из tracks_config.yaml: для "
+                    "части кривых заданы жёстко (например, IK/BK — 0.1–100), для "
+                    "остальных подбираются автоматически по данным. Здесь можно на "
+                    "время текущей сессии переопределить границы для конкретной "
+                    "кривой — например, если автоподбор скрывает нужные детали. "
+                    "Правки не сохраняются в файл конфигурации."
+                )
+                col_mn, col_min, col_max = st.columns([2, 1, 1])
+                with col_mn:
+                    override_mnemonic = st.text_input(
+                        "Мнемоника кривой:", key='override_mnemonic_input', placeholder="например, GK"
+                    )
+                with col_min:
+                    override_min = st.number_input("Минимум:", key='override_min_input', value=0.0, format="%.4f")
+                with col_max:
+                    override_max = st.number_input("Максимум:", key='override_max_input', value=100.0, format="%.4f")
+
+                col_apply, col_reset = st.columns(2)
+                with col_apply:
+                    if st.button("✅ Применить границу", key='apply_override_btn'):
+                        mnemonic_clean = override_mnemonic.strip()
+                        if mnemonic_clean and override_max > override_min:
+                            st.session_state.curve_limit_overrides[mnemonic_clean] = (override_min, override_max)
+                            st.success(f"Граница для {mnemonic_clean} установлена: {override_min:g} – {override_max:g}")
+                        else:
+                            st.warning("⚠️ Укажите мнемонику и корректный диапазон (максимум больше минимума)")
+                with col_reset:
+                    if st.button("🗑 Сбросить все ручные границы", key='reset_overrides_btn'):
+                        st.session_state.curve_limit_overrides = {}
+                        st.info("Ручные границы сброшены — снова используется конфигурация по умолчанию")
+
+                if st.session_state.curve_limit_overrides:
+                    st.write("**Текущие ручные границы (на эту сессию):**")
+                    for mnem, (mn, mx) in st.session_state.curve_limit_overrides.items():
+                        st.write(f"• {mnem}: {mn:g} – {mx:g}")
+
             if st.button(
                 "🎨 Построить планшеты", key="visualize_step2",
                 help="Построить планшет для каждой скважины, найденной в указанной папке"
@@ -636,6 +677,9 @@ with tab2:
                         # Читаем заново на каждый клик, чтобы правки tracks_config.yaml
                         # подхватывались без перезапуска приложения.
                         tracks_config = load_tracks_config()
+                        tracks_config = apply_curve_limit_overrides(
+                            tracks_config, st.session_state.curve_limit_overrides
+                        )
                         interactive = display_mode.startswith("Интерактивный")
 
                         for well_name, well_files in wells_data.items():
