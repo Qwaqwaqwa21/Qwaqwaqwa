@@ -1,8 +1,11 @@
 # coding: utf-8
 """Общие Streamlit-виджеты, используемые во всех вкладках приложения."""
+import base64
 import re
+from io import BytesIO
 
 import streamlit as st
+from PIL import Image
 
 from las_io import read_las_robust
 
@@ -126,3 +129,55 @@ def render_encoding_preview(las_files, state_key, button_key):
 
         st.session_state[state_key] = previews
         st.markdown("---")
+
+
+def stitch_figures_horizontally(figs, dpi=150):
+    """
+    Объединяет несколько matplotlib-фигур в одно изображение бок о бок —
+    для сопоставления нескольких скважин планшет должен листаться по
+    горизонтали, а не вертикально одна фигура под другой. Возвращает
+    PNG-байты объединённого изображения. Вызывающий код отвечает за
+    закрытие исходных фигур после вызова.
+    """
+    images = []
+    for fig in figs:
+        buf = BytesIO()
+        fig.savefig(buf, format='png', dpi=dpi, bbox_inches='tight')
+        buf.seek(0)
+        images.append(Image.open(buf).convert('RGB'))
+
+    total_width = sum(img.width for img in images)
+    max_height = max(img.height for img in images)
+
+    combined = Image.new('RGB', (total_width, max_height), color='white')
+    x_offset = 0
+    for img in images:
+        combined.paste(img, (x_offset, 0))
+        x_offset += img.width
+
+    out = BytesIO()
+    combined.save(out, format='PNG')
+    return out.getvalue()
+
+
+def scrollable_image_html(png_bytes):
+    """
+    HTML-блок с горизонтальной прокруткой (overflow-x: auto) для общего
+    планшета нескольких скважин, который шире экрана и должен листаться
+    вбок, как в геологическом ПО для корреляции.
+
+    Предназначен для показа через st.components.v1.html (iframe), а НЕ
+    st.markdown(unsafe_allow_html=True) — санитайзер Streamlit-маркдауна
+    вырезает свойства width/height/max-width из style, и картинка просто
+    сжимается по ширине контейнера без появления прокрутки.
+    """
+    img = Image.open(BytesIO(png_bytes))
+    width, height = img.size
+    b64 = base64.b64encode(png_bytes).decode('ascii')
+    html = (
+        '<div style="overflow-x:auto; overflow-y:hidden;">'
+        f'<img src="data:image/png;base64,{b64}" width="{width}" height="{height}" '
+        'style="display:block;">'
+        '</div>'
+    )
+    return html, height

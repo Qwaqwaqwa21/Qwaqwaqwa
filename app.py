@@ -11,12 +11,13 @@ from collections import defaultdict
 from datetime import datetime
 import traceback
 from io import BytesIO
+import streamlit.components.v1 as components
 
 from las_io import find_las_files, read_las_robust, load_all_las_with_metadata, merge_curves_by_mnemonic, write_las_file
 from mnemonics import get_mnemo_path, load_mnemo_dict, save_mnemo_dict
 from plotting import load_tracks_config, plot_well_panel, build_interval_table, apply_curve_limit_overrides
-from plotting_plotly import plot_well_panel_plotly
-from ui_helpers import render_encoding_preview
+from plotting_plotly import plot_well_panel_plotly, plot_multi_well_panel_plotly
+from ui_helpers import render_encoding_preview, stitch_figures_horizontally, scrollable_image_html
 from qc import build_qc_report, build_well_score_summary
 from crossplots import build_crossplot, build_histogram
 from coverage import build_coverage_chart
@@ -673,8 +674,28 @@ with tab2:
                             st.session_state.step2_data['wells_data'] = wells_data
                             st.success(f"✅ Объединено {len(wells_to_merge)} скважин в «{merged_name_clean}»")
 
-            # 5. Пласты/зоны: загрузка, ручная корректировка отбивок, экспорт
-            st.subheader("5. Пласты/зоны (кровля/подошва)")
+                well_names = sorted(wells_data.keys())  # могло измениться после объединения
+
+                # 5. Выбор скважин для отображения (чекбоксы) — можно временно
+                # отключать скважины на планшете, не удаляя их из загруженных данных.
+                st.subheader("5. Выбор скважин для отображения")
+                well_selection = st.session_state.step2_data.setdefault('well_selection', {})
+                if len(well_names) > 1:
+                    st.caption("Отключите скважины чекбоксами, если не хотите видеть их на планшете.")
+                    checkbox_cols = st.columns(min(4, len(well_names)))
+                    for i, name in enumerate(well_names):
+                        with checkbox_cols[i % len(checkbox_cols)]:
+                            well_selection[name] = st.checkbox(
+                                name, value=well_selection.get(name, True), key=f'well_checkbox_step2_{name}'
+                            )
+                else:
+                    well_selection[well_names[0]] = True
+                selected_well_names = [name for name in well_names if well_selection.get(name, True)]
+                if not selected_well_names:
+                    st.warning("⚠️ Не выбрано ни одной скважины для отображения")
+
+            # 6. Пласты/зоны: загрузка, ручная корректировка отбивок, экспорт
+            st.subheader("6. Пласты/зоны (кровля/подошва)")
             st.caption(
                 "Загрузите таблицу пластов/зон (CSV или Excel) с колонками «Зона», "
                 "«Кровля», «Подошва» (названия колонок могут отличаться — ищем по "
@@ -726,8 +747,8 @@ with tab2:
             else:
                 st.caption("Зоны не загружены — планшеты будут построены без границ пластов.")
 
-            # 6. Визуализация
-            st.subheader("6. Построение планшета")
+            # 7. Визуализация
+            st.subheader("7. Построение планшета")
             display_mode = st.radio(
                 "Тип отображения:",
                 ["Статичный (PNG, для печати)", "Интерактивный (для анализа на экране)"],
@@ -788,10 +809,12 @@ with tab2:
 
             if st.button(
                 "🎨 Построить планшеты", key="visualize_step2",
-                help="Построить планшет для каждой скважины из загруженных данных"
+                help="Построить планшет для каждой выбранной скважины"
             ):
                 if not wells_data:
                     st.warning("⚠️ Сначала загрузите данные (шаг 3)")
+                elif not selected_well_names:
+                    st.warning("⚠️ Выберите хотя бы одну скважину для отображения (шаг 5)")
                 else:
                     try:
                         # Читаем заново на каждый клик, чтобы правки tracks_config.yaml
@@ -803,12 +826,12 @@ with tab2:
                         interactive = display_mode.startswith("Интерактивный")
                         zones_df_all, _ = clean_zones_df(st.session_state.step2_data.get('zones_df'))
 
-                        for well_name, well_files in wells_data.items():
-                            st.subheader(f"Скважина: {well_name}")
-                            if len(well_files) > 1:
-                                st.caption(f"Собрано из {len(well_files)} файлов: " +
-                                           ", ".join(Path(f['file_name']).stem for f in well_files))
-
+                        # Общий первый проход — считаем данные по каждой выбранной
+                        # скважине один раз, они нужны и одиночному, и горизонтальному
+                        # сопоставительному режиму.
+                        well_entries = []
+                        for well_name in selected_well_names:
+                            well_files = wells_data[well_name]
                             merged_curves, depth_min, depth_max = merge_curves_by_mnemonic(
                                 well_files, overlap_m=100
                             )
@@ -821,86 +844,210 @@ with tab2:
                                     zones_for_well = zones_df_all[well_match]
                                     if zones_for_well.empty:
                                         zones_for_well = None
-                                        st.caption(
-                                            f"ℹ️ В файле зон нет строк со скважиной «{well_name}» — "
-                                            "планшет построен без границ пластов."
-                                        )
                                 else:
                                     zones_for_well = zones_df_all
 
+                            well_entries.append({
+                                'well_name': well_name, 'well_files': well_files,
+                                'merged_curves': merged_curves,
+                                'depth_min': depth_min, 'depth_max': depth_max,
+                                'zones_df': zones_for_well,
+                            })
+
+                        if len(well_entries) >= 2:
+                            # Несколько скважин — планшет строится рядом друг с другом
+                            # (горизонтальная прокрутка), как в ПО для геологической
+                            # корреляции, а не одна фигура под другой.
+                            st.caption(
+                                "Несколько скважин сопоставляются рядом друг с другом "
+                                "(прокрутка по горизонтали) — общая шкала глубины и общий "
+                                "масштаб каждого трека для всех скважин, чтобы было видно "
+                                "геологическую неоднородность между ними."
+                            )
+                            any_panel = False
+
                             if interactive:
-                                fig_plotly = plot_well_panel_plotly(
-                                    well_name, merged_curves, tracks_config, depth_min, depth_max,
-                                    zones_df=zones_for_well
-                                )
-                                interval_table = build_interval_table(merged_curves, tracks_config)
-                                if fig_plotly:
-                                    st.plotly_chart(fig_plotly, use_container_width=True, key=f"plotly_{well_name}")
-                                fig = fig_plotly
+                                fig_multi = plot_multi_well_panel_plotly(well_entries, tracks_config)
+                                if fig_multi:
+                                    any_panel = True
+                                    # include_plotlyjs=True встраивает библиотеку целиком в HTML —
+                                    # рабочий компьютер может быть без доступа в интернет (CDN
+                                    # недоступен), а plotly.js всё равно должен подгрузиться.
+                                    html_str = fig_multi.to_html(include_plotlyjs=True, full_html=False)
+                                    wrapped = (
+                                        '<div style="overflow-x:auto; overflow-y:hidden;">'
+                                        f'{html_str}</div>'
+                                    )
+                                    components.html(wrapped, height=980, scrolling=True)
                             else:
-                                fig, interval_table = plot_well_panel(
-                                    well_name,
-                                    merged_curves,
-                                    tracks_config,
-                                    depth_min,
-                                    depth_max,
-                                    figsize_width_cm=50,
-                                    zones_df=zones_for_well
-                                )
+                                global_depth_min = min(e['depth_min'] for e in well_entries)
+                                global_depth_max = max(e['depth_max'] for e in well_entries)
+                                figs = []
+                                for e in well_entries:
+                                    fig, interval_table = plot_well_panel(
+                                        e['well_name'], e['merged_curves'], tracks_config,
+                                        global_depth_min, global_depth_max,
+                                        figsize_width_cm=50, zones_df=e['zones_df']
+                                    )
+                                    e['interval_table'] = interval_table
+                                    if fig:
+                                        figs.append(fig)
+
+                                if figs:
+                                    any_panel = True
+                                    combined_png = stitch_figures_horizontally(figs)
+                                    for fig in figs:
+                                        plt.close(fig)
+                                    scroll_html, img_height = scrollable_image_html(combined_png)
+                                    components.html(scroll_html, height=img_height + 20, scrolling=True)
+                                    st.download_button(
+                                        label="💾 Скачать общий планшет (PNG)",
+                                        data=combined_png,
+                                        file_name="planshet_sopostavlenie.png",
+                                        mime="image/png",
+                                        key="download_multi_panel"
+                                    )
+
+                            if not any_panel:
+                                st.warning("⚠️ Нет данных ни по одной из выбранных скважин для построения треков")
+
+                            # Таблицы по каждой скважине — под общим планшетом, свёрнуты
+                            # в раскрывающиеся блоки, чтобы не мешать сопоставлению панелей.
+                            for e in well_entries:
+                                well_name = e['well_name']
+                                interval_table = e.get('interval_table')
+                                if interval_table is None:
+                                    interval_table = build_interval_table(e['merged_curves'], tracks_config)
+                                with st.expander(f"📊 Таблицы — скважина {well_name}"):
+                                    if len(e['well_files']) > 1:
+                                        st.caption(f"Собрано из {len(e['well_files'])} файлов: " +
+                                                   ", ".join(Path(f['file_name']).stem for f in e['well_files']))
+                                    zones_for_well = e['zones_df']
+                                    if zones_df_all is not None and not zones_df_all.empty \
+                                            and 'Скважина' in zones_df_all.columns and zones_for_well is None:
+                                        st.caption(f"ℹ️ В файле зон нет строк со скважиной «{well_name}».")
+
+                                    if interval_table and len(interval_table) > 0:
+                                        df_table = pd.DataFrame(interval_table)
+                                        st.dataframe(df_table, use_container_width=True)
+                                        csv = df_table.to_csv(index=False, encoding='utf-8-sig')
+                                        st.download_button(
+                                            label="💾 Скачать таблицу интервалов (CSV)",
+                                            data=csv,
+                                            file_name=f"intervals_{well_name}.csv",
+                                            mime="text/csv",
+                                            key=f"download_table_multi_{well_name}"
+                                        )
+                                        if show_coverage:
+                                            coverage_fig = build_coverage_chart(
+                                                interval_table, e['depth_min'], e['depth_max']
+                                            )
+                                            if coverage_fig:
+                                                st.plotly_chart(coverage_fig, use_container_width=True,
+                                                               key=f"coverage_multi_{well_name}")
+                                        if zones_for_well is not None and not zones_for_well.empty:
+                                            st.write("**🧭 Наличие кривых по зонам:**")
+                                            zone_coverage_df = build_zone_curve_coverage(
+                                                zones_for_well, interval_table
+                                            )
+                                            if not zone_coverage_df.empty:
+                                                st.dataframe(zone_coverage_df, use_container_width=True)
+                                    else:
+                                        st.warning("⚠️ Таблица интервалов пуста для этой скважины")
+
+                        else:
+                            # Ровно одна выбранная скважина — прежнее поведение без изменений.
+                            for e in well_entries:
+                                well_name = e['well_name']
+                                well_files = e['well_files']
+                                merged_curves = e['merged_curves']
+                                depth_min, depth_max = e['depth_min'], e['depth_max']
+                                zones_for_well = e['zones_df']
+
+                                st.subheader(f"Скважина: {well_name}")
+                                if len(well_files) > 1:
+                                    st.caption(f"Собрано из {len(well_files)} файлов: " +
+                                               ", ".join(Path(f['file_name']).stem for f in well_files))
+                                if zones_df_all is not None and not zones_df_all.empty \
+                                        and 'Скважина' in zones_df_all.columns and zones_for_well is None:
+                                    st.caption(
+                                        f"ℹ️ В файле зон нет строк со скважиной «{well_name}» — "
+                                        "планшет построен без границ пластов."
+                                    )
+
+                                if interactive:
+                                    fig_plotly = plot_well_panel_plotly(
+                                        well_name, merged_curves, tracks_config, depth_min, depth_max,
+                                        zones_df=zones_for_well
+                                    )
+                                    interval_table = build_interval_table(merged_curves, tracks_config)
+                                    if fig_plotly:
+                                        st.plotly_chart(fig_plotly, use_container_width=True, key=f"plotly_{well_name}")
+                                    fig = fig_plotly
+                                else:
+                                    fig, interval_table = plot_well_panel(
+                                        well_name,
+                                        merged_curves,
+                                        tracks_config,
+                                        depth_min,
+                                        depth_max,
+                                        figsize_width_cm=50,
+                                        zones_df=zones_for_well
+                                    )
+
+                                    if fig:
+                                        st.pyplot(fig)
+
+                                        buf = BytesIO()
+                                        fig.savefig(buf, format='png', dpi=150, bbox_inches='tight')
+                                        buf.seek(0)
+                                        st.download_button(
+                                            label="💾 Скачать планшет (PNG)",
+                                            data=buf.getvalue(),
+                                            file_name=f"planhet_{well_name}.png",
+                                            mime="image/png",
+                                            key=f"download_planhet_{well_name}"
+                                        )
+                                        # Фигуры matplotlib не закрываются автоматически —
+                                        # без этого память растёт с числом скважин за сессию.
+                                        plt.close(fig)
 
                                 if fig:
-                                    st.pyplot(fig)
+                                    if interval_table and len(interval_table) > 0:
+                                        st.subheader("📊 Таблица интервалов (кровля / подошва)")
+                                        df_table = pd.DataFrame(interval_table)
+                                        st.dataframe(df_table, use_container_width=True)
 
-                                    buf = BytesIO()
-                                    fig.savefig(buf, format='png', dpi=150, bbox_inches='tight')
-                                    buf.seek(0)
-                                    st.download_button(
-                                        label="💾 Скачать планшет (PNG)",
-                                        data=buf.getvalue(),
-                                        file_name=f"planhet_{well_name}.png",
-                                        mime="image/png",
-                                        key=f"download_planhet_{well_name}"
-                                    )
-                                    # Фигуры matplotlib не закрываются автоматически —
-                                    # без этого память растёт с числом скважин за сессию.
-                                    plt.close(fig)
-
-                            if fig:
-                                if interval_table and len(interval_table) > 0:
-                                    st.subheader("📊 Таблица интервалов (кровля / подошва)")
-                                    df_table = pd.DataFrame(interval_table)
-                                    st.dataframe(df_table, use_container_width=True)
-
-                                    csv = df_table.to_csv(index=False, encoding='utf-8-sig')
-                                    st.download_button(
-                                        label="💾 Скачать таблицу интервалов (CSV)",
-                                        data=csv,
-                                        file_name=f"intervals_{well_name}.csv",
-                                        mime="text/csv",
-                                        key=f"download_table_{well_name}"
-                                    )
-
-                                    if show_coverage:
-                                        coverage_fig = build_coverage_chart(interval_table, depth_min, depth_max)
-                                        if coverage_fig:
-                                            st.plotly_chart(coverage_fig, use_container_width=True,
-                                                           key=f"coverage_{well_name}")
-
-                                    if zones_for_well is not None and not zones_for_well.empty:
-                                        st.subheader("🧭 Наличие кривых по зонам")
-                                        st.caption(
-                                            "«полностью» — данные кривой покрывают всю зону, "
-                                            "«частично» — покрыта только часть, «нет» — данных "
-                                            "по кривой в этой зоне не найдено."
+                                        csv = df_table.to_csv(index=False, encoding='utf-8-sig')
+                                        st.download_button(
+                                            label="💾 Скачать таблицу интервалов (CSV)",
+                                            data=csv,
+                                            file_name=f"intervals_{well_name}.csv",
+                                            mime="text/csv",
+                                            key=f"download_table_{well_name}"
                                         )
-                                        zone_coverage_df = build_zone_curve_coverage(zones_for_well, interval_table)
-                                        if not zone_coverage_df.empty:
-                                            st.dataframe(zone_coverage_df, use_container_width=True)
-                                else:
-                                    st.warning(f"⚠️ Таблица интервалов пуста для скважины {well_name}. Возможные причины:\n"
-                                               "- Нет данных в кривых (только -999.25)\n"
-                                               "- Все значения кривых являются пропусками (NaN)\n"
-                                               "- Некорректные данные глубины")
+
+                                        if show_coverage:
+                                            coverage_fig = build_coverage_chart(interval_table, depth_min, depth_max)
+                                            if coverage_fig:
+                                                st.plotly_chart(coverage_fig, use_container_width=True,
+                                                               key=f"coverage_{well_name}")
+
+                                        if zones_for_well is not None and not zones_for_well.empty:
+                                            st.subheader("🧭 Наличие кривых по зонам")
+                                            st.caption(
+                                                "«полностью» — данные кривой покрывают всю зону, "
+                                                "«частично» — покрыта только часть, «нет» — данных "
+                                                "по кривой в этой зоне не найдено."
+                                            )
+                                            zone_coverage_df = build_zone_curve_coverage(zones_for_well, interval_table)
+                                            if not zone_coverage_df.empty:
+                                                st.dataframe(zone_coverage_df, use_container_width=True)
+                                    else:
+                                        st.warning(f"⚠️ Таблица интервалов пуста для скважины {well_name}. Возможные причины:\n"
+                                                   "- Нет данных в кривых (только -999.25)\n"
+                                                   "- Все значения кривых являются пропусками (NaN)\n"
+                                                   "- Некорректные данные глубины")
 
                         st.success("✅ Визуализация завершена!")
 
