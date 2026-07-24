@@ -2483,11 +2483,17 @@ class GeoLogApp {
         input.accept = conf.ext;
         input.style.display = 'none';
         document.body.appendChild(input);
-        // Clean up if the user dismisses the dialog without choosing a file.
-        input.addEventListener('cancel', () => input.remove());
+        const cleanupInput = () => { if (input.parentNode) input.remove(); };
+        // Remove the input whether the user picks a file or dismisses the dialog.
+        // 'cancel' covers modern browsers; the window-focus fallback covers older
+        // Firefox/Safari that don't fire it (so cancels don't leak detached nodes).
+        input.addEventListener('cancel', cleanupInput);
+        window.addEventListener('focus', () => {
+            setTimeout(() => { if (!input.files || !input.files.length) cleanupInput(); }, 400);
+        }, { once: true });
         input.onchange = async () => {
             const file = input.files[0];
-            input.remove();
+            cleanupInput();
             if (!file) return;
 
             // Resolve the destination well now (dialog is already closed).
@@ -9536,7 +9542,8 @@ class GeoLogApp {
         };
     }
 }
-// Visible fatal-error banner so initialization failures are never silent.
+// Visible banner shown ONLY when the app failed to initialize (buttons dead).
+// Dismissable, so it never gets in the way once the point is made.
 function _geologShowFatal(err) {
     try {
         var msg = (err && (err.stack || err.message)) ? String(err.stack || err.message) : String(err);
@@ -9545,18 +9552,32 @@ function _geologShowFatal(err) {
             bar = document.createElement('div');
             bar.id = 'geologFatalBanner';
             bar.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:#7d1a1a;'
-                + 'color:#fff;font:13px/1.4 monospace;padding:10px 14px;white-space:pre-wrap;'
+                + 'color:#fff;font:13px/1.4 monospace;padding:10px 34px 10px 14px;white-space:pre-wrap;'
                 + 'box-shadow:0 2px 8px rgba(0,0,0,.5);max-height:40vh;overflow:auto';
+            var close = document.createElement('button');
+            close.textContent = '✕';
+            close.setAttribute('aria-label', 'Dismiss');
+            close.style.cssText = 'position:absolute;top:6px;right:8px;background:transparent;border:0;'
+                + 'color:#fff;font-size:16px;cursor:pointer';
+            close.onclick = function () { bar.remove(); };
+            bar.appendChild(close);
             (document.body || document.documentElement).appendChild(bar);
         }
-        bar.textContent = '⚠ GeoLog: JavaScript error — interface actions are disabled.\n'
+        var text = document.createElement('span');
+        text.textContent = '⚠ GeoLog: the application did not initialize, so buttons are inactive.\n'
             + 'Try a hard refresh (Ctrl+F5). Details:\n' + msg;
+        bar.insertBefore(text, bar.firstChild);
     } catch (_) { /* nothing more we can do */ }
 }
 
-// Surface uncaught errors and promise rejections (ignore blocked CDN resources).
+// Surface uncaught errors. Only raise the fatal banner when the app itself
+// never initialized (window.app missing) — a later runtime error from one
+// feature must not claim the whole interface is disabled. Everything else is
+// logged to the console. Blocked-CDN resource errors carry no `.error`.
 window.addEventListener('error', function (e) {
-    if (e && e.error instanceof Error) _geologShowFatal(e.error);
+    if (!(e && e.error instanceof Error)) return;
+    if (typeof window.app === 'undefined' || !window.app) _geologShowFatal(e.error);
+    else console.error('GeoLog runtime error:', e.error);
 });
 window.addEventListener('unhandledrejection', function (e) {
     var r = e && e.reason;
