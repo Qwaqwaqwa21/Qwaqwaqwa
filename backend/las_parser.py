@@ -360,19 +360,29 @@ class LASParser:
                         LASParser._parse_well_field(result.well, mnemonic, value)
 
                     elif current_section == 'curves' and in_curve_section:
-                        # Only accept valid curve mnemonics:
-                        # must start with a letter (not numeric-only)
-                        mnem_upper = mnemonic.upper()
-                        if mnem_upper and mnem_upper[0].isalpha():
-                            # Deduplicate: skip if canonical name already exists
-                            existing = [c.mnemonic for c in result.curves]
-                            if mnem_upper not in existing:
-                                result.curves.append(LASCurve(
-                                    mnemonic=mnem_upper,
-                                    unit=unit,
-                                    value=value,
-                                    description=description,
-                                ))
+                        # Only accept valid curve mnemonics (must start with a
+                        # letter, not numeric-only).
+                        raw_mnem = (match.group('mnemonic') or '').strip().upper()
+                        canonical = mnemonic.upper()
+                        if raw_mnem and raw_mnem[0].isalpha():
+                            existing = {c.mnemonic for c in result.curves}
+                            # Canonicalise the first member of a family for
+                            # display; on collision KEEP the curve under its raw
+                            # name so members of a family (e.g. KS/BK/GZ1..GZ5 all
+                            # → RT) are never dropped — dropping would also
+                            # misalign the positional data columns.
+                            name = canonical if canonical not in existing else raw_mnem
+                            if name in existing:
+                                i = 2
+                                while f"{name}_{i}" in existing:
+                                    i += 1
+                                name = f"{name}_{i}"
+                            result.curves.append(LASCurve(
+                                mnemonic=name,
+                                unit=unit,
+                                value=value,
+                                description=description,
+                            ))
 
                     elif current_section == 'parameters':
                         result.parameters.append(LASParameter(

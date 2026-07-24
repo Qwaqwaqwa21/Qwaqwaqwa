@@ -923,14 +923,18 @@ class GeoLogApp {
     // log-scaled curves (resistivity/perm) are left to their configured scale.
     _autoFitCurveScales(curveData) {
         const defaults = this._defaultCurveConfig || {};
+        const resetToDefault = (mn) => {
+            const d = defaults[mn] && Array.isArray(defaults[mn].scale) ? defaults[mn].scale : null;
+            if (d && this.curveConfig[mn]) this.curveConfig[mn].scale = d.slice();
+        };
         for (const [mn, values] of Object.entries(curveData || {})) {
             const U = (mn || '').toUpperCase();
             if (U === 'DEPTH' || U === 'DEPT' || U === 'MD' || U === 'TVD') continue;
             if (this.curveConfig[mn] && this.curveConfig[mn].log) continue; // keep log scaling
-            if (!values || values.length < 20) continue;
+            if (!values || values.length < 20) { resetToDefault(mn); continue; }
             const valid = [];
             for (const v of values) if (v != null && isFinite(v)) valid.push(v);
-            if (valid.length < 20) continue;
+            if (valid.length < 20) { resetToDefault(mn); continue; }  // no stale bleed
             valid.sort((a, b) => a - b);
             const p2 = valid[Math.floor(valid.length * 0.02)];
             const p98 = valid[Math.floor(valid.length * 0.98)];

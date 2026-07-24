@@ -356,11 +356,18 @@ def suggest_mnemonic(raw: str) -> MnemonicSuggestion:
             meth.name if meth else None, 0.9,
             f"variant-of {core}", False)
 
-    # 3) keyword / substring heuristic — pick the longest keyword that matches
+    # 3) keyword heuristic — pick the longest keyword that matches. Short
+    # keywords (≤2 chars) match by prefix only; substring matching is reserved
+    # for longer keywords so tokens like TOPS/ROCKS don't map via PS/KS.
     best: Optional[Tuple[int, LogMethod]] = None
     for meth in METHODS:
         for kw in meth.keywords:
-            if kw and (up.startswith(kw) or core.startswith(kw) or kw in up):
+            if not kw:
+                continue
+            hit = up.startswith(kw) or core.startswith(kw)
+            if not hit and len(kw) >= 3:
+                hit = kw in up
+            if hit:
                 score = len(kw) + (2 if up.startswith(kw) else 0)
                 if best is None or score > best[0]:
                     best = (score, meth)
