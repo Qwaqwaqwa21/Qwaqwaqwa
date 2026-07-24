@@ -76,6 +76,7 @@
                     <button class="nav-btn" data-view="advancedqc" title="Advanced QC — missing intervals, spikes, environmental flags"><i data-lucide="shield-check"></i><span>Adv QC</span></button>
                     <button class="nav-btn" data-view="zonation" title="Zonation & net pay report — auto-zone from cutoffs"><i data-lucide="layers"></i><span>Zonation</span></button>
                     <button class="nav-btn" data-view="units" title="Unit normalization & alias resolution"><i data-lucide="ruler"></i><span>Units</span></button>
+                    <button class="nav-btn" data-view="maps" title="Карты: устья, толщины, пористость"><i data-lucide="map"></i><span>Карты</span></button>
                     <button class="nav-btn" data-view="inklqc" title="Инклинометрия: DLS, проекции, дубли, заметки"><i data-lucide="compass"></i><span>Инклинометрия</span></button>
                     <button class="nav-btn" data-view="coverage" title="Research coverage map — logging-method coverage across wells"><i data-lucide="grid-2x2-check"></i><span>Coverage</span></button>
                     <button class="nav-btn" data-view="mnemonics" title="Auto-normalize vendor curve mnemonics to canonical families"><i data-lucide="wand-sparkles"></i><span>Mnemonics</span></button>
@@ -1297,6 +1298,30 @@
             <div id="templatesDashboard"></div>
         </div>
 
+        <!-- Картопостроение -->
+        <div id="mapsPanel" class="panel" style="display:none">
+            <div class="panel-toolbar">
+                <div class="toolbar-group"><label>Карты</label><span class="toolbar-hint">Устья, толщины коллектора, пористость, нефтенасыщенные толщины</span></div>
+                <div class="toolbar-group"><label>Карта</label>
+                    <select id="mapParam" class="depth-select" onchange="MapsView.load()">
+                        <option value="wellheads">Карта устьев</option>
+                        <option value="altitude">Альтитуды устьев</option>
+                        <option value="thickness" selected>Толщина коллектора</option>
+                        <option value="porosity">Пористость (ср. гармон.)</option>
+                        <option value="oil_thick">Нефтенасыщенная толщина</option>
+                    </select>
+                </div>
+                <div class="toolbar-group"><label>Горизонт</label><select id="mapHorizon" class="depth-select" onchange="MapsView.load()"></select></div>
+                <div class="toolbar-group"><label>Изолиний</label><input id="mapLevels" class="depth-input" type="number" value="8" min="2" max="25" onchange="MapsView.render()"></div>
+                <div class="toolbar-group"><label>Степень IDW</label><input id="mapPower" class="depth-input" type="number" value="2" min="0.5" max="6" step="0.5" onchange="MapsView.load()"></div>
+                <label style="display:flex;align-items:center;gap:6px"><input id="mapReverse" type="checkbox" onchange="MapsView.render()"> physics reverse</label>
+                <button class="btn-sm" onclick="MapsView.load()"><i data-lucide="refresh-cw"></i> Построить</button>
+                <button class="btn-sm" onclick="MapsView.importDemoCoords()"><i data-lucide="map-pin"></i> Вымышленные координаты</button>
+                <span id="mapInfo" class="toolbar-hint"></span>
+            </div>
+            <div id="mapsContent" class="stats-container"></div>
+        </div>
+
         <!-- Инклинометрия: QC + проекции -->
         <div id="inklqcPanel" class="panel" style="display:none">
             <div class="panel-toolbar">
@@ -1509,6 +1534,7 @@
     <script src="/static/js/collaboration.js"></script>
     <script src="/static/js/rigis-tracks.js"></script>
     <script src="/static/js/inclinometry.js"></script>
+    <script src="/static/js/maps.js"></script>
     <script src="/static/js/research-coverage.js"></script>
     <script src="/static/js/mnemonics.js"></script>
     <script src="/static/js/app.js"></script>

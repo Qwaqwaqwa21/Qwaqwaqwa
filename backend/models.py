@@ -39,6 +39,8 @@ class Well(Base):
     operator = Column(String(200), default="")
     field_name = Column(String(200), default="")
     spud_date = Column(String(50), default="")
+    x_coord = Column(Float, nullable=True)   # X в проектной СК (СК-63), м
+    y_coord = Column(Float, nullable=True)   # Y в проектной СК (СК-63), м
     notes = Column(Text, default="[]")   # заметки по качеству (JSON-массив)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)

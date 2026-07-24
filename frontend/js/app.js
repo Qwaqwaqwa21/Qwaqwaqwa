@@ -566,6 +566,7 @@ class GeoLogApp {
         document.getElementById('templatesPanel').style.display = view === 'templates' ? 'block' : 'none';
         document.getElementById('coveragePanel').style.display = view === 'coverage' ? 'block' : 'none';
         document.getElementById('inklqcPanel').style.display = view === 'inklqc' ? 'block' : 'none';
+        document.getElementById('mapsPanel').style.display = view === 'maps' ? 'block' : 'none';
         document.getElementById('mnemonicsPanel').style.display = view === 'mnemonics' ? 'block' : 'none';
 
         // Sprint 26: Update status bar + trigger panel-specific loads
@@ -609,6 +610,7 @@ class GeoLogApp {
         if (view === 'templates' && this.currentWell) this._initTemplates();
         if (view === 'coverage') { if (typeof ResearchCoverageView !== 'undefined') ResearchCoverageView.load(); }
         if (view === 'inklqc') { if (typeof InclinometryView !== 'undefined') InclinometryView.load(); }
+        if (view === 'maps') { if (typeof MapsView !== 'undefined') MapsView.load(); }
         if (view === 'mnemonics') { if (typeof MnemonicsView !== 'undefined') MnemonicsView.load(); }
         if (view === 'multiwell') { if (typeof MultiWellView !== 'undefined') MultiWellView.load(); }
         if (view === 'formationtester') { if (typeof FormationTesterView !== 'undefined') FormationTesterView.run(); }

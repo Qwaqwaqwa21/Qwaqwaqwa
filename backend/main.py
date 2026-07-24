@@ -26,6 +26,7 @@ try:
     from routers.reports import router as reports_router
     from routers.research import router as research_router
     from routers.inclinometry import router as inkl_router
+    from routers.maps import router as maps_router
 except ImportError:
     from backend.routers.qc import router as qc_router
     from backend.routers.correlation import router as corr_router
@@ -35,6 +36,7 @@ except ImportError:
     from backend.routers.reports import router as reports_router
     from backend.routers.research import router as research_router
     from backend.routers.inclinometry import router as inkl_router
+    from backend.routers.maps import router as maps_router
 
 
 class SafeJSONResponse(JSONResponse):
@@ -135,6 +137,11 @@ def _ensure_well_coordinate_columns():
             conn.execute(text("ALTER TABLE wells ADD COLUMN notes TEXT DEFAULT '[]';"))
         except Exception:
             pass
+        for _col in ("x_coord", "y_coord"):
+            try:
+                conn.execute(text(f"ALTER TABLE wells ADD COLUMN {_col} FLOAT;"))
+            except Exception:
+                pass
 
 
 _ensure_well_coordinate_columns()
@@ -401,6 +408,7 @@ app.include_router(templates_router)
 app.include_router(reports_router)
 app.include_router(research_router)
 app.include_router(inkl_router)
+app.include_router(maps_router)
 
 JOB_EXECUTOR = ThreadPoolExecutor(max_workers=2)
 JOBS = {}
