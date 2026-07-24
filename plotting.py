@@ -482,7 +482,63 @@ def calculate_curve_limits(curve_data, grid_type='linear', mnemonic=''):
             return vmin - padding, vmax + padding
 
 
-def plot_well_panel(well_name, merged_curves, tracks_config, depth_min, depth_max, figsize_width_cm=50, zones_df=None):
+def active_track_ids(merged_curves, tracks_config):
+    """Track id-ы (кроме 0 — глубина), для которых в данных есть хоть одна кривая."""
+    ids = []
+    for track_id in sorted(tracks_config.keys()):
+        if track_id == 0:
+            continue
+        config = tracks_config[track_id]
+        if any(c['mnemonic'] in merged_curves and merged_curves[c['mnemonic']] for c in config['curves']):
+            ids.append(track_id)
+    return ids
+
+
+def track_x_range(config, curve_instance_pairs):
+    """
+    Объединённый диапазон оси X для трека — общая шкала для всех кривых
+    трека сразу (аналог auto/shared). Используется и для Plotly-версии (там
+    все кривые трека и так делят одну ось), и для сопоставления нескольких
+    скважин в matplotlib-версии (см. forced_track_limits в plot_well_panel) —
+    во втором случае curve_instance_pairs собирают данные сразу всех скважин.
+
+    Явная граница отдельной кривой (curve_spec['limits'], например IK/BK
+    0.1-100) учитывается как есть при объединении диапазона, а не
+    переопределяется автоподбором.
+    """
+    if isinstance(config['limits'], tuple):
+        return config['limits']
+
+    grid_type = 'log' if config['grid'] == 'log' else 'linear'
+    curve_specs_by_mnemonic = {c['mnemonic']: c for c in config['curves']}
+    all_vmins, all_vmaxs = [], []
+    for mnemonic, instances in curve_instance_pairs:
+        if not instances:
+            continue
+
+        explicit_limits = curve_specs_by_mnemonic.get(mnemonic, {}).get('limits')
+        if isinstance(explicit_limits, tuple):
+            all_vmins.append(explicit_limits[0])
+            all_vmaxs.append(explicit_limits[1])
+            continue
+
+        for instance in instances:
+            values = np.asarray(instance['values'])
+            valid = values[np.isfinite(values)]
+            if len(valid) == 0:
+                continue
+            vmin, vmax = calculate_curve_limits(valid, grid_type=grid_type, mnemonic=mnemonic)
+            if vmin is not None:
+                all_vmins.append(vmin)
+                all_vmaxs.append(vmax)
+
+    if not all_vmins:
+        return None
+    return min(all_vmins), max(all_vmaxs)
+
+
+def plot_well_panel(well_name, merged_curves, tracks_config, depth_min, depth_max, figsize_width_cm=50,
+                     zones_df=None, forced_track_ids=None, forced_track_limits=None, forced_curve_limits=None):
     """
     Строит планшет для одной скважины с корректными лимитами для кривых с малым разбросом
     и таблицей интервалов с мин/макс значениями.
@@ -491,18 +547,39 @@ def plot_well_panel(well_name, merged_curves, tracks_config, depth_min, depth_ma
     'Подошва, м' — см. zones.py) — если передана, поверх всех треков рисуются
     границы зон, а название зоны подписывается в треке "Глубина".
 
+    forced_track_ids: необязательный список id треков (без учёта наличия
+    данных именно у этой скважины) — нужен для сопоставления нескольких
+    скважин рядом друг с другом, чтобы один и тот же трек всегда оказывался
+    в одной и той же колонке, даже если у части скважин он пуст.
+    forced_track_limits: {track_id: (min, max)} — переопределяет автоподбор
+    границы оси для треков с limits 'auto'/'shared'/'auto_kp'/'auto_k'
+    (нужно, чтобы масштаб трека совпадал у всех сопоставляемых скважин).
+    forced_curve_limits: {mnemonic: (min, max)} — то же самое, но для
+    отдельных линеек в треках с limits 'auto_per_curve'; ниже приоритетом,
+    чем явная граница в конфигурации кривой (например, IK/BK 0.1-100).
+
     Вызывающий код отвечает за plt.close(fig) после использования фигуры.
     """
-    active_tracks = [(0, tracks_config[0], [])]
-    for track_id in sorted(tracks_config.keys()):
-        if track_id == 0:
-            continue
+    forced_track_limits = forced_track_limits or {}
+    forced_curve_limits = forced_curve_limits or {}
 
-        config = tracks_config[track_id]
-        curves_present = [c['mnemonic'] for c in config['curves']
-                         if c['mnemonic'] in merged_curves and len(merged_curves[c['mnemonic']]) > 0]
-        if curves_present:
+    active_tracks = [(0, tracks_config[0], [])]
+    if forced_track_ids is not None:
+        for track_id in forced_track_ids:
+            config = tracks_config[track_id]
+            curves_present = [c['mnemonic'] for c in config['curves']
+                             if c['mnemonic'] in merged_curves and len(merged_curves[c['mnemonic']]) > 0]
             active_tracks.append((track_id, config, curves_present))
+    else:
+        for track_id in sorted(tracks_config.keys()):
+            if track_id == 0:
+                continue
+
+            config = tracks_config[track_id]
+            curves_present = [c['mnemonic'] for c in config['curves']
+                             if c['mnemonic'] in merged_curves and len(merged_curves[c['mnemonic']]) > 0]
+            if curves_present:
+                active_tracks.append((track_id, config, curves_present))
 
     if len(active_tracks) <= 1:
         st.warning(f"⚠️ Для скважины {well_name} нет данных для построения треков кривых")
@@ -684,8 +761,11 @@ def plot_well_panel(well_name, merged_curves, tracks_config, depth_min, depth_ma
                 'curve_spec': curve_spec,
             })
 
+        forced_range = forced_track_limits.get(track_id)
         if config['limits'] == 'auto_per_curve':
             pass
+        elif config['limits'] in ('auto', 'shared') and forced_range is not None:
+            ax_main.set_xlim(*forced_range)
         elif config['limits'] in ('auto', 'shared') and curve_values_all:
             all_vals = np.concatenate(curve_values_all)
             vmin, vmax = calculate_curve_limits(
@@ -716,14 +796,20 @@ def plot_well_panel(well_name, merged_curves, tracks_config, depth_min, depth_ma
                                    labeltop=True, labelbottom=False)
 
                 # Явно заданная в конфигурации кривой граница (например, IK/BK
-                # 0.1-100) имеет приоритет над автоподбором по данным.
+                # 0.1-100) имеет приоритет над автоподбором по данным, а общая
+                # для нескольких сопоставляемых скважин граница (если задана)
+                # приоритетнее автоподбора по данным только этой скважины.
                 explicit_limits = ca['curve_spec'].get('limits')
                 has_explicit = isinstance(explicit_limits, tuple) and len(explicit_limits) == 2
+                forced_curve_range = forced_curve_limits.get(ca['mnemonic'])
 
                 if config['grid'] == 'log':
-                    vmin, vmax = explicit_limits if has_explicit else calculate_curve_limits(
-                        ca['values'], grid_type='log', mnemonic=ca['mnemonic']
-                    )
+                    if has_explicit:
+                        vmin, vmax = explicit_limits
+                    elif forced_curve_range is not None:
+                        vmin, vmax = forced_curve_range
+                    else:
+                        vmin, vmax = calculate_curve_limits(ca['values'], grid_type='log', mnemonic=ca['mnemonic'])
                     if vmin is not None and vmax is not None:
                         ax_curve.set_xlim(vmin, vmax)
                         log_range = np.log10(vmax / vmin)
@@ -734,9 +820,12 @@ def plot_well_panel(well_name, merged_curves, tracks_config, depth_min, depth_ma
                         ax_curve.set_xticks(ticks)
                         ax_curve.set_xscale('log')
                 else:
-                    vmin, vmax = explicit_limits if has_explicit else calculate_curve_limits(
-                        ca['values'], grid_type='linear', mnemonic=ca['mnemonic']
-                    )
+                    if has_explicit:
+                        vmin, vmax = explicit_limits
+                    elif forced_curve_range is not None:
+                        vmin, vmax = forced_curve_range
+                    else:
+                        vmin, vmax = calculate_curve_limits(ca['values'], grid_type='linear', mnemonic=ca['mnemonic'])
                     if vmin is not None and vmax is not None:
                         ax_curve.set_xlim(vmin, vmax)
                         range_val = vmax - vmin

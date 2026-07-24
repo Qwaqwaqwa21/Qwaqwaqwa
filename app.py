@@ -15,7 +15,10 @@ import streamlit.components.v1 as components
 
 from las_io import find_las_files, read_las_robust, load_all_las_with_metadata, merge_curves_by_mnemonic, write_las_file
 from mnemonics import get_mnemo_path, load_mnemo_dict, save_mnemo_dict
-from plotting import load_tracks_config, plot_well_panel, build_interval_table, apply_curve_limit_overrides
+from plotting import (
+    load_tracks_config, plot_well_panel, build_interval_table, apply_curve_limit_overrides,
+    active_track_ids, track_x_range, calculate_curve_limits
+)
 from plotting_plotly import plot_well_panel_plotly, plot_multi_well_panel_plotly
 from ui_helpers import render_encoding_preview, stitch_figures_horizontally, scrollable_image_html
 from qc import build_qc_report, build_well_score_summary
@@ -882,12 +885,63 @@ with tab2:
                             else:
                                 global_depth_min = min(e['depth_min'] for e in well_entries)
                                 global_depth_max = max(e['depth_max'] for e in well_entries)
+
+                                # Общий для всех скважин набор треков (иначе один и тот же
+                                # трек мог бы оказаться в разных колонках у разных скважин,
+                                # если их наборы кривых отличаются) и общая шкала X по
+                                # каждому треку/кривой — иначе амплитуды кривых у разных
+                                # скважин были бы несопоставимы просто из-за разного
+                                # автоподбора масштаба у каждой в отдельности.
+                                multi_track_ids = []
+                                seen_tracks = set()
+                                for e in well_entries:
+                                    for tid in active_track_ids(e['merged_curves'], tracks_config):
+                                        if tid not in seen_tracks:
+                                            seen_tracks.add(tid)
+                                            multi_track_ids.append(tid)
+                                multi_track_ids.sort()
+
+                                combined_curves = {}
+                                for e in well_entries:
+                                    for mnemonic, instances in e['merged_curves'].items():
+                                        combined_curves.setdefault(mnemonic, []).extend(instances)
+
+                                multi_track_limits = {}
+                                multi_curve_limits = {}
+                                for tid in multi_track_ids:
+                                    config = tracks_config[tid]
+                                    if config['limits'] in ('auto', 'shared'):
+                                        pairs = [(c['mnemonic'], combined_curves.get(c['mnemonic'], []))
+                                                 for c in config['curves']]
+                                        rng = track_x_range(config, pairs)
+                                        if rng is not None:
+                                            multi_track_limits[tid] = rng
+                                    elif config['limits'] == 'auto_per_curve':
+                                        grid_type = 'log' if config['grid'] == 'log' else 'linear'
+                                        for c in config['curves']:
+                                            if isinstance(c.get('limits'), tuple):
+                                                continue  # явная граница в конфиге и так приоритетнее
+                                            mnemonic = c['mnemonic']
+                                            vals = [np.asarray(inst['values']) for inst in combined_curves.get(mnemonic, [])]
+                                            vals = [v[np.isfinite(v)] for v in vals]
+                                            vals = [v for v in vals if len(v)]
+                                            if not vals:
+                                                continue
+                                            vmin, vmax = calculate_curve_limits(
+                                                np.concatenate(vals), grid_type=grid_type, mnemonic=mnemonic
+                                            )
+                                            if vmin is not None:
+                                                multi_curve_limits[mnemonic] = (vmin, vmax)
+
                                 figs = []
                                 for e in well_entries:
                                     fig, interval_table = plot_well_panel(
                                         e['well_name'], e['merged_curves'], tracks_config,
                                         global_depth_min, global_depth_max,
-                                        figsize_width_cm=50, zones_df=e['zones_df']
+                                        figsize_width_cm=50, zones_df=e['zones_df'],
+                                        forced_track_ids=multi_track_ids,
+                                        forced_track_limits=multi_track_limits,
+                                        forced_curve_limits=multi_curve_limits,
                                     )
                                     e['interval_table'] = interval_table
                                     if fig:

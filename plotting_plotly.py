@@ -16,60 +16,13 @@ import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-from plotting import calculate_curve_limits, wrap_text
+from plotting import (
+    calculate_curve_limits, wrap_text,
+    active_track_ids as _active_track_ids,
+    track_x_range as _track_x_range,
+)
 
 _LINESTYLE_TO_DASH = {'-': 'solid', '--': 'dash', ':': 'dot'}
-
-
-def _track_x_range(config, curve_instance_pairs):
-    """
-    Объединённый диапазон оси X для трека (аналог auto/shared из matplotlib-версии).
-
-    Все кривые трека делят одну ось, поэтому явная граница отдельной кривой
-    (curve_spec['limits'], например IK/BK 0.1-100) учитывается как есть при
-    объединении диапазона, а не переопределяется автоподбором.
-    """
-    if isinstance(config['limits'], tuple):
-        return config['limits']
-
-    grid_type = 'log' if config['grid'] == 'log' else 'linear'
-    curve_specs_by_mnemonic = {c['mnemonic']: c for c in config['curves']}
-    all_vmins, all_vmaxs = [], []
-    for mnemonic, instances in curve_instance_pairs:
-        if not instances:
-            continue
-
-        explicit_limits = curve_specs_by_mnemonic.get(mnemonic, {}).get('limits')
-        if isinstance(explicit_limits, tuple):
-            all_vmins.append(explicit_limits[0])
-            all_vmaxs.append(explicit_limits[1])
-            continue
-
-        for instance in instances:
-            values = np.asarray(instance['values'])
-            valid = values[np.isfinite(values)]
-            if len(valid) == 0:
-                continue
-            vmin, vmax = calculate_curve_limits(valid, grid_type=grid_type, mnemonic=mnemonic)
-            if vmin is not None:
-                all_vmins.append(vmin)
-                all_vmaxs.append(vmax)
-
-    if not all_vmins:
-        return None
-    return min(all_vmins), max(all_vmaxs)
-
-
-def _active_track_ids(merged_curves, tracks_config):
-    """Track id-ы (кроме 0 — глубина), для которых в данных есть хоть одна кривая."""
-    ids = []
-    for track_id in sorted(tracks_config.keys()):
-        if track_id == 0:
-            continue
-        config = tracks_config[track_id]
-        if any(c['mnemonic'] in merged_curves and merged_curves[c['mnemonic']] for c in config['curves']):
-            ids.append(track_id)
-    return ids
 
 
 def _add_track_traces(fig, col_idx, config, merged_curves, x_range=None, name_suffix=''):
@@ -308,8 +261,10 @@ def plot_multi_well_panel_plotly(wells, tracks_config):
     for w_idx, w in enumerate(wells):
         first_col = 2 + w_idx * n_tracks
         last_col = first_col + n_tracks - 1
-        first_axis = fig.layout[f'xaxis{first_col}' if first_col > 1 else 'xaxis']
-        last_axis = fig.layout[f'xaxis{last_col}' if last_col > 1 else 'xaxis']
+        # first_col/last_col всегда >= 2 (колонка 1 — общий трек глубины),
+        # поэтому суффикс оси есть всегда — веток без него не бывает.
+        first_axis = fig.layout[f'xaxis{first_col}']
+        last_axis = fig.layout[f'xaxis{last_col}']
         mid_x = (first_axis.domain[0] + last_axis.domain[1]) / 2
         fig.add_annotation(
             x=mid_x, xref='paper', y=1.10, yref='paper',
