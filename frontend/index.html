@@ -1504,6 +1504,27 @@ document.addEventListener('click', () => {
     const cm = document.getElementById('contextMenu');
     if (cm) cm.style.display = 'none';
 });
+
+// Safety net: if the main script failed to load/initialize, the toolbar
+// buttons (onclick="app.…") would silently do nothing. Detect that and show
+// an actionable banner instead of leaving the user with dead buttons.
+window.addEventListener('load', function () {
+    setTimeout(function () {
+        if (typeof window.app === 'undefined' || !window.app) {
+            var bar = document.getElementById('geologFatalBanner');
+            if (!bar) {
+                bar = document.createElement('div');
+                bar.id = 'geologFatalBanner';
+                bar.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:#7d1a1a;'
+                    + 'color:#fff;font:13px/1.4 monospace;padding:10px 14px;white-space:pre-wrap';
+                document.body.appendChild(bar);
+            }
+            bar.textContent = '⚠ GeoLog: the application script did not initialize, so buttons are inactive.\n'
+                + 'Do a hard refresh (Ctrl+F5 / Cmd+Shift+R). If it persists, open the browser console (F12) '
+                + 'and report the first red error.';
+        }
+    }, 1500);
+});
 </script>
 </body>
 </html>

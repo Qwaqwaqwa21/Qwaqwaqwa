@@ -121,7 +121,8 @@ class GeoLogApp {
         this._searchDebounceTimer = null;
         this._jobMonitorTimer = null;
         this.currentRole = (localStorage.getItem('geolog_active_role') || 'admin').toLowerCase();
-        this.jobIds = JSON.parse(localStorage.getItem('geolog_job_ids') || '[]');
+        try { this.jobIds = JSON.parse(localStorage.getItem('geolog_job_ids') || '[]'); }
+        catch (e) { this.jobIds = []; }
         this.dstData = [];
         this.rftData = [];
         this.rftGradientAnalysis = null;
@@ -2464,7 +2465,12 @@ class GeoLogApp {
         } catch (e) { GeoToast.error('Failed to update well: ' + e.message); }
     }
 
-    async _uploadLogFormatForWell(wellId, format = 'las') {
+    // Opens a file picker and uploads the chosen log file. wellId may be null:
+    // the target well is resolved AFTER a file is chosen (so no network call
+    // happens before input.click(), preserving the user-gesture the browser
+    // requires to open a file dialog). The <input> is attached to the DOM,
+    // which Firefox/Safari require for .click() to open the picker.
+    _uploadLogFormatForWell(wellId, format = 'las') {
         const fm = String(format || 'las').toLowerCase();
         const conf = {
             las: { ext: '.las,.LAS', endpoint: 'upload-las', label: 'LAS' },
@@ -2475,14 +2481,26 @@ class GeoLogApp {
         const input = document.createElement('input');
         input.type = 'file';
         input.accept = conf.ext;
+        input.style.display = 'none';
+        document.body.appendChild(input);
         input.onchange = async () => {
             const file = input.files[0];
+            input.remove();
             if (!file) return;
+
+            // Resolve the destination well now (dialog is already closed).
+            let targetWellId = wellId;
+            if (!targetWellId) {
+                await this._ensureCurrentWell();
+                targetWellId = this.currentWell && this.currentWell.id;
+            }
+            if (!targetWellId) { GeoToast.error('No well available to upload into.'); return; }
+
             const formData = new FormData();
             formData.append('file', file);
             GeoLoading.show(`Uploading ${file.name}...`);
             try {
-                const resp = await fetch(`/api/wells/${wellId}/${conf.endpoint}`, {
+                const resp = await fetch(`/api/wells/${targetWellId}/${conf.endpoint}`, {
                     method: 'POST',
                     headers: { 'X-User-Role': this.currentRole || 'viewer' },
                     body: formData,
@@ -2545,19 +2563,18 @@ class GeoLogApp {
         return this.currentWell || null;
     }
 
-    async uploadLAS() {
-        if (!this.currentWell) { await this._ensureCurrentWell(); if (!this.currentWell) return; }
-        return this._uploadLogFormatForWell(this.currentWell.id, 'las');
+    // Open the file dialog synchronously (no await first) so the browser keeps
+    // the user-gesture; the well is resolved/created after the file is picked.
+    uploadLAS() {
+        return this._uploadLogFormatForWell(this.currentWell && this.currentWell.id, 'las');
     }
 
-    async uploadDLIS() {
-        if (!this.currentWell) { await this._ensureCurrentWell(); if (!this.currentWell) return; }
-        return this._uploadLogFormatForWell(this.currentWell.id, 'dlis');
+    uploadDLIS() {
+        return this._uploadLogFormatForWell(this.currentWell && this.currentWell.id, 'dlis');
     }
 
-    async uploadLIS() {
-        if (!this.currentWell) { await this._ensureCurrentWell(); if (!this.currentWell) return; }
-        return this._uploadLogFormatForWell(this.currentWell.id, 'lis');
+    uploadLIS() {
+        return this._uploadLogFormatForWell(this.currentWell && this.currentWell.id, 'lis');
     }
 
     async uploadLASForWell(wellId) {
@@ -9517,8 +9534,44 @@ class GeoLogApp {
         };
     }
 }
-// Initialize
-const app = new GeoLogApp();
+// Visible fatal-error banner so initialization failures are never silent.
+function _geologShowFatal(err) {
+    try {
+        var msg = (err && (err.stack || err.message)) ? String(err.stack || err.message) : String(err);
+        var bar = document.getElementById('geologFatalBanner');
+        if (!bar) {
+            bar = document.createElement('div');
+            bar.id = 'geologFatalBanner';
+            bar.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:#7d1a1a;'
+                + 'color:#fff;font:13px/1.4 monospace;padding:10px 14px;white-space:pre-wrap;'
+                + 'box-shadow:0 2px 8px rgba(0,0,0,.5);max-height:40vh;overflow:auto';
+            (document.body || document.documentElement).appendChild(bar);
+        }
+        bar.textContent = '⚠ GeoLog: JavaScript error — interface actions are disabled.\n'
+            + 'Try a hard refresh (Ctrl+F5). Details:\n' + msg;
+    } catch (_) { /* nothing more we can do */ }
+}
+
+// Surface uncaught errors and promise rejections (ignore blocked CDN resources).
+window.addEventListener('error', function (e) {
+    if (e && e.error instanceof Error) _geologShowFatal(e.error);
+});
+window.addEventListener('unhandledrejection', function (e) {
+    var r = e && e.reason;
+    if (r instanceof Error) console.error('GeoLog unhandled rejection:', r);
+});
+
+// Initialize. Expose on window so inline onclick="app.x()" handlers resolve in
+// every browser/mode — a top-level `const` is not reliably visible to inline
+// event handlers outside Chromium.
+let app;
+try {
+    app = new GeoLogApp();
+} catch (err) {
+    console.error('GeoLog failed to initialize:', err);
+    _geologShowFatal(err);
+}
+window.app = app;
 
 // ─── Keyboard Shortcuts ────────────────────────────────────────
 document.addEventListener('keydown', (e) => {
