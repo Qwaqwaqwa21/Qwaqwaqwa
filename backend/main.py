@@ -6777,13 +6777,38 @@ def core_calibration(wid: int, data: dict, db: Session = Depends(get_db)):
         raise HTTPException(400, "core_depth and core_phi required")
 
     lr_id = data.get("log_run_id")
-    lr = db.query(LogRun).filter(LogRun.id == lr_id).first() if lr_id else \
-         db.query(LogRun).filter(LogRun.well_id == wid).order_by(LogRun.num_points.desc()).first()
+    if lr_id:
+        lr = db.query(LogRun).filter(LogRun.id == lr_id).first()
+    else:
+        # Prefer a run that contains the requested curve AND whose depth range
+        # overlaps the core samples (a well may carry the same curve on several
+        # runs covering different intervals). Fall back to curve-only, then the
+        # largest run.
+        candidates = (db.query(LogRun).join(CurveData)
+                      .filter(LogRun.well_id == wid, CurveData.mnemonic == log_curve)
+                      .order_by(LogRun.num_points.desc()).all())
+        lr = None
+        if candidates and core_depth:
+            try:
+                c_lo, c_hi = min(core_depth), max(core_depth)
+            except (TypeError, ValueError):
+                c_lo = c_hi = None
+            if c_lo is not None:
+                def _overlap(r):
+                    a, b = (r.start_depth or 0), (r.stop_depth or 0)
+                    return max(0.0, min(b, c_hi) - max(a, c_lo))
+                best = max(candidates, key=_overlap)
+                if _overlap(best) > 0:
+                    lr = best
+        if lr is None:
+            lr = (candidates[0] if candidates else
+                  db.query(LogRun).filter(LogRun.well_id == wid)
+                  .order_by(LogRun.num_points.desc()).first())
     if not lr:
         raise HTTPException(404, "No log run")
 
     log_cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic == log_curve).first()
-    dept_cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic.in_(["DEPT", "DEPTH"])).first()
+    dept_cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic.in_(["DEPT", "DEPTH", "MD", "TVD"])).first()
     if not log_cd or not dept_cd:
         raise HTTPException(400, f"Curve {log_curve} or DEPTH not found")
 
@@ -6793,12 +6818,20 @@ def core_calibration(wid: int, data: dict, db: Session = Depends(get_db)):
     # Match core depths to nearest log values
     matched_log = []
     matched_core = []
+    def _f(v):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return float("nan")
     for d, phi in zip(core_depth, core_phi):
-        idx = np.argmin(np.abs(dept_arr - d))
-        if abs(dept_arr[idx] - d) < 2.0:  # within 2 ft tolerance
+        dv, pv = _f(d), _f(phi)
+        if math.isnan(dv) or math.isnan(pv):
+            continue
+        idx = int(np.argmin(np.abs(dept_arr - dv)))
+        if abs(dept_arr[idx] - dv) < 2.0:  # within 2 ft tolerance
             if not np.isnan(log_arr[idx]):
                 matched_log.append(float(log_arr[idx]))
-                matched_core.append(float(phi))
+                matched_core.append(pv)
 
     if len(matched_log) < 3:
         raise HTTPException(400, f"Only {len(matched_log)} core points matched to log (need ≥3)")
@@ -6831,8 +6864,8 @@ def core_calibration(wid: int, data: dict, db: Session = Depends(get_db)):
     perm_stats = None
     if core_k and len(core_k) == len(core_phi):
         # Timur-type: k = a * phi^b / Sw^c (simplified: k = a * phi^b)
-        k_arr = np.array([float(k) for k in core_k])
-        phi_arr = np.array([float(p) for p in core_phi])
+        k_arr = np.array([_f(k) for k in core_k])
+        phi_arr = np.array([_f(p) for p in core_phi])
         # Log-log regression: log(k) = log(a) + b * log(phi)
         valid = (k_arr > 0) & (phi_arr > 0)
         if valid.sum() >= 3:
