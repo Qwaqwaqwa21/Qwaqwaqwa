@@ -2483,6 +2483,8 @@ class GeoLogApp {
         input.accept = conf.ext;
         input.style.display = 'none';
         document.body.appendChild(input);
+        // Clean up if the user dismisses the dialog without choosing a file.
+        input.addEventListener('cancel', () => input.remove());
         input.onchange = async () => {
             const file = input.files[0];
             input.remove();
