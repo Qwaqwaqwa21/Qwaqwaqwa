@@ -5,8 +5,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>GeoLog — Well Log Viewer</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🛢️</text></svg>">
-    <link href="https://fonts.googleapis.com/css2?family=Geologica:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
-    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+    <!-- External fonts/icons are loaded NON-BLOCKING so the app still runs when
+         these CDNs are slow or unreachable (offline / restricted networks).
+         A blocking <link>/<script> in <head> would otherwise stall app.js and
+         leave every button dead. -->
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geologica:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Fira+Code:wght@400;500&display=swap" media="print" onload="this.media='all'">
+    <script defer src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js" onload="try{window.lucide&&lucide.createIcons()}catch(e){}"></script>
     <link rel="stylesheet" href="/static/css/style.css">
     <link rel="stylesheet" href="/static/css/sprint26.css">
 </head>
