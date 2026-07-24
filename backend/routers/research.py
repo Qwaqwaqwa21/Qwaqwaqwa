@@ -25,6 +25,7 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, UploadFile
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -32,6 +33,7 @@ try:
     from database import get_db
     from models import Well, LogRun, CurveData
     import methods as _methods
+    import rigis_codes as _codes
     from methods import (
         METHODS,
         methods_catalog,
@@ -42,6 +44,7 @@ except ImportError:  # pragma: no cover - package-relative import
     from backend.database import get_db
     from backend.models import Well, LogRun, CurveData
     from backend import methods as _methods
+    from backend import rigis_codes as _codes
     from backend.methods import (
         METHODS,
         methods_catalog,
@@ -457,20 +460,20 @@ def research_coverage(
 @router.get("/api/projects/{pid}/coverage-log")
 def coverage_log(
     pid: int,
-    bins: int = Query(160, ge=20, le=1000),
+    bins: int = Query(240, ge=20, le=2000),
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
-    """Depth-resolved method coverage for a project's wells.
+    """Depth-resolved method coverage (планшет охвата) for a project.
 
-    Returns a shared depth grid plus, for every well and method, a per-bin
-    presence array (1 = valid data somewhere in that depth bin). This drives a
-    correlation-style planshet of filled columns instead of drawn curves.
+    Returns a shared depth grid plus, per well and per method, a bin array:
+        0 = нет данных, 1 = одна кривая метода, 2 = несколько кривых
+    so overlapping repeat surveys of the same method render in another colour.
+    Formation tops (горизонты) are included for the planshet overlay.
     """
     wells = db.query(Well).filter(Well.project_id == pid).all()
     if not wells:
         raise HTTPException(404, "Project has no wells")
 
-    # Global depth extent across all runs.
     g_top, g_bot = None, None
     for w in wells:
         for run in w.log_runs:
@@ -483,19 +486,97 @@ def coverage_log(
 
     span = g_bot - g_top
     bin_size = span / bins
-
-    def to_bin(d: float) -> int:
-        idx = int((d - g_top) / bin_size)
-        return 0 if idx < 0 else (bins - 1 if idx >= bins else idx)
-
     present_union = set()
     well_rows: List[dict] = []
 
     for w in wells:
-        methods_bins: Dict[str, np.ndarray] = {}
+        counts: Dict[str, np.ndarray] = {}     # method -> per-bin curve count
+        mnems: Dict[str, set] = {}
         w_top, w_bot = None, None
         for run in w.log_runs:
             null_value = run.null_value
+            depth_arr = None
+            for cd in run.curve_data:
+                if (cd.mnemonic or "").strip().upper() in _DEPTH_MNEMONICS:
+                    depth_arr = _decode(cd)
+                    break
+            if depth_arr is None:
+                continue
+            # Счёт ведётся ПО РЕЙСАМ: несколько каналов одного метода в одном
+            # рейсе (например зенит+азимут инклинометрии) — это один замер;
+            # повтором считается тот же метод, записанный в другом рейсе.
+            run_hits: Dict[str, np.ndarray] = {}
+            for cd in run.curve_data:
+                mnem = (cd.mnemonic or "").strip()
+                if not mnem or mnem.upper() in _DEPTH_MNEMONICS:
+                    continue
+                meth = method_for_mnemonic(mnem)
+                if meth is None:
+                    continue
+                arr = _decode(cd)
+                if arr is None or arr.size != depth_arr.size:
+                    continue
+                mask = _valid_mask(arr, null_value) & np.isfinite(depth_arr)
+                if not mask.any():
+                    continue
+                dvals = depth_arr[mask]
+                w_top = float(dvals.min()) if w_top is None else min(w_top, float(dvals.min()))
+                w_bot = float(dvals.max()) if w_bot is None else max(w_bot, float(dvals.max()))
+                idx = np.clip(((dvals - g_top) / bin_size).astype(int), 0, bins - 1)
+                hit = run_hits.setdefault(meth.key, np.zeros(bins, dtype=bool))
+                hit[idx] = True
+                mnems.setdefault(meth.key, set()).add(mnem.upper())
+                present_union.add(meth.key)
+            for key, hit in run_hits.items():
+                col = counts.setdefault(key, np.zeros(bins, dtype=np.int16))
+                col += hit.astype(np.int16)      # +1 за рейс
+
+        tops = sorted(
+            [{"name": t.formation_name, "top": t.depth,
+              "base": t.base_depth, "color": t.color}
+             for t in w.formation_tops if t.depth is not None],
+            key=lambda x: x["top"])
+
+        well_rows.append({
+            "well_id": w.id, "well_name": w.name,
+            "depth_top": w_top, "depth_bottom": w_bot,
+            "present": {k: v.tolist() for k, v in counts.items()},
+            "mnemonics": {k: sorted(v) for k, v in mnems.items()},
+            "tops": tops,
+        })
+
+    columns = [
+        {"key": m.key, "abbr": m.canonical, "name": m.name,
+         "category": m.category, "color": m.color, "derived": m.derived}
+        for m in METHODS if m.key in present_union
+    ]
+    return {
+        "project_id": pid,
+        "depth_top": round(g_top, 2), "depth_bottom": round(g_bot, 2),
+        "bins": bins, "bin_size": round(bin_size, 4),
+        "columns": columns, "wells": well_rows,
+    }
+
+
+# ── Охват по горизонтам (таблица + экспорт) ──────────────────────────────────
+def _coverage_by_horizon(pid: int, db: Session) -> Dict[str, Any]:
+    """Which methods cover which formation (горизонт) in each well."""
+    wells = db.query(Well).filter(Well.project_id == pid).all()
+    if not wells:
+        raise HTTPException(404, "Project has no wells")
+
+    method_keys = [m.key for m in METHODS]
+    rows: List[dict] = []
+    horizons: List[str] = []
+
+    for w in wells:
+        tops = sorted([t for t in w.formation_tops if t.depth is not None],
+                      key=lambda t: t.depth)
+        if not tops:
+            continue
+        # collect (method -> list of (depth_min, depth_max, mnemonic))
+        seg: Dict[str, List[tuple]] = {}
+        for run in w.log_runs:
             depth_arr = None
             for cd in run.curve_data:
                 if (cd.mnemonic or "").strip().upper() in _DEPTH_MNEMONICS:
@@ -513,39 +594,121 @@ def coverage_log(
                 arr = _decode(cd)
                 if arr is None or arr.size != depth_arr.size:
                     continue
-                mask = _valid_mask(arr, null_value) & np.isfinite(depth_arr)
+                mask = _valid_mask(arr, run.null_value) & np.isfinite(depth_arr)
                 if not mask.any():
                     continue
-                dvals = depth_arr[mask]
-                w_top = float(dvals.min()) if w_top is None else min(w_top, float(dvals.min()))
-                w_bot = float(dvals.max()) if w_bot is None else max(w_bot, float(dvals.max()))
-                col = methods_bins.setdefault(meth.key, np.zeros(bins, dtype=bool))
-                idx = ((dvals - g_top) / bin_size).astype(int)
-                idx = np.clip(idx, 0, bins - 1)
-                col[idx] = True
-                present_union.add(meth.key)
+                seg.setdefault(meth.key, {}).setdefault(run.id, []).append(
+                    (depth_arr[mask], mnem.upper()))
 
-        well_rows.append({
-            "well_id": w.id,
-            "well_name": w.name,
-            "depth_top": w_top,
-            "depth_bottom": w_bot,
-            "present": {k: v.astype(int).tolist() for k, v in methods_bins.items()},
-        })
+        for i, t in enumerate(tops):
+            h_top = t.depth
+            h_bot = t.base_depth if t.base_depth is not None else (
+                tops[i + 1].depth if i + 1 < len(tops) else None)
+            if h_bot is None or h_bot <= h_top:
+                continue
+            if t.formation_name not in horizons:
+                horizons.append(t.formation_name)
+            cells = {}
+            for k in method_keys:
+                hits, names = 0, set()
+                covered = 0.0
+                for rid, items in (seg.get(k) or {}).items():
+                    run_hit = False
+                    for dvals, nm in items:
+                        inside = dvals[(dvals >= h_top) & (dvals <= h_bot)]
+                        if inside.size:
+                            run_hit = True
+                            names.add(nm)
+                            covered = max(covered, (inside.max() - inside.min()) / (h_bot - h_top))
+                    if run_hit:
+                        hits += 1
+                if hits:
+                    cells[k] = {"present": True, "curves": hits,
+                                "coverage": round(min(1.0, covered), 3),
+                                "mnemonics": sorted(names)}
+            rows.append({
+                "well_id": w.id, "well_name": w.name,
+                "horizon": t.formation_name,
+                "top": round(h_top, 2), "base": round(h_bot, 2),
+                "thickness": round(h_bot - h_top, 2),
+                "methods": cells,
+                "methods_count": len(cells),
+            })
 
-    # Column layout = union of methods present anywhere, in catalogue order.
-    columns = [
-        {"key": m.key, "name": m.name, "category": m.category, "color": m.color,
-         "derived": m.derived}
-        for m in METHODS if m.key in present_union
-    ]
+    used = []
+    for m in METHODS:
+        if any(m.key in r["methods"] for r in rows):
+            used.append({"key": m.key, "abbr": m.canonical, "name": m.name})
+    return {"project_id": pid, "horizons": horizons, "methods": used, "rows": rows}
 
-    return {
-        "project_id": pid,
-        "depth_top": round(g_top, 2),
-        "depth_bottom": round(g_bot, 2),
-        "bins": bins,
-        "bin_size": round(bin_size, 4),
-        "columns": columns,
-        "wells": well_rows,
-    }
+
+@router.get("/api/projects/{pid}/coverage-by-horizon")
+def coverage_by_horizon(pid: int, db: Session = Depends(get_db)) -> Dict[str, Any]:
+    return _coverage_by_horizon(pid, db)
+
+
+@router.get("/api/projects/{pid}/coverage-by-horizon/export")
+def coverage_by_horizon_export(
+    pid: int,
+    fmt: str = Query("csv", pattern="^(csv|xlsx)$"),
+    db: Session = Depends(get_db),
+):
+    """Export the horizon x method coverage table as CSV or XLSX."""
+    data = _coverage_by_horizon(pid, db)
+    methods_used = data["methods"]
+    header = ["Скважина", "Горизонт", "Кровля, м", "Подошва, м", "Мощность, м",
+              "Методов"] + [m["abbr"] for m in methods_used]
+
+    def cell(r, key):
+        c = r["methods"].get(key)
+        if not c:
+            return ""
+        mark = "+" if c["curves"] == 1 else f"+{c['curves']}"
+        return f"{mark} ({int(c['coverage'] * 100)}%)"
+
+    body = [[r["well_name"], r["horizon"], r["top"], r["base"], r["thickness"],
+             r["methods_count"]] + [cell(r, m["key"]) for m in methods_used]
+            for r in data["rows"]]
+
+    if fmt == "xlsx":
+        try:
+            import openpyxl
+            from openpyxl.styles import Font, Alignment, PatternFill
+        except ImportError:
+            raise HTTPException(400, "openpyxl not installed on the server")
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Охват по горизонтам"
+        ws.append(header)
+        for c in ws[1]:
+            c.font = Font(bold=True, color="FFFFFF")
+            c.fill = PatternFill("solid", fgColor="2F5496")
+            c.alignment = Alignment(horizontal="center", wrap_text=True)
+        for row in body:
+            ws.append(row)
+        widths = [16, 18, 12, 12, 13, 9] + [11] * len(methods_used)
+        for i, wdt in enumerate(widths, start=1):
+            ws.column_dimensions[openpyxl.utils.get_column_letter(i)].width = wdt
+        ws.freeze_panes = "A2"
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        return StreamingResponse(
+            buf,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="coverage_by_horizon_{pid}.xlsx"'})
+
+    out = io.StringIO()
+    wr = csv.writer(out, delimiter=";")
+    wr.writerow(header)
+    wr.writerows(body)
+    return StreamingResponse(
+        io.BytesIO(out.getvalue().encode("utf-8-sig")), media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="coverage_by_horizon_{pid}.csv"'})
+
+
+# ── Справочники кодов РИГИС ──────────────────────────────────────────────────
+@router.get("/api/rigis-codes")
+def rigis_codes() -> Dict[str, Any]:
+    """Code books for lithology / collector / saturation columns."""
+    return _codes.all_codebooks()

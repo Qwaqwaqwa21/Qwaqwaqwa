@@ -39,6 +39,7 @@ class Well(Base):
     operator = Column(String(200), default="")
     field_name = Column(String(200), default="")
     spud_date = Column(String(50), default="")
+    notes = Column(Text, default="[]")   # заметки по качеству (JSON-массив)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
 

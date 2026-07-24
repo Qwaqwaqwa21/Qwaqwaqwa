@@ -37,128 +37,117 @@ class LogMethod:
 # ── Method catalogue ────────────────────────────────────────────────────────
 # Ordered roughly the way an interpreter reads a log header.
 METHODS: List[LogMethod] = [
-    # --- Potential / spontaneous ---
-    LogMethod("SP", "Spontaneous Potential", "potential", "SP",
-              ("SP", "SPC", "SPCG", "SPRL", "ПС", "СП", "PS"), unit="MV",
-              color="#9b59b6", track=0, keywords=("SP", "SPONT", "SELFP", "ПС", "PS")),
-
-    # --- Natural radioactivity ---
-    LogMethod("GR", "Gamma Ray", "nuclear", "GR",
-              ("GR", "CGR", "SGR", "GRGC", "GRD", "GRR", "ГК", "GK"), unit="GAPI",
-              color="#2ecc71", track=0, keywords=("GR", "GAMMA", "GAPI", "ГК", "GK")),
-    LogMethod("KTH", "Spectral Gamma (K/Th/U)", "nuclear", "POTA",
-              ("POTA", "THOR", "URAN"), unit="",
-              color="#27ae60", track=0, derived=False,
-              keywords=("POTA", "THOR", "URAN", "SPECTR")),
-
-    # --- Mechanical ---
-    LogMethod("CAL", "Caliper", "mechanical", "CAL",
-              ("CAL", "CALI", "HCAL", "DCAL", "CLDC", "BS", "LCAL",
-               "ДС", "КВ", "КАВ", "DS", "KV", "KAV", "DM"), unit="IN",
-              color="#95a5a6", track=0,
-              keywords=("CAL", "CALIP", "BIT", "BS", "ДС", "КАВ", "DS", "KAV")),
-
-    # --- Electrical / resistivity ---
-    # Russian log suite (Latin-transliterated): KS = apparent resistivity,
-    # BK/BKZ = lateral log, IK = induction, GZ1..GZ5 = gradient sondes,
-    # PZ = potential sonde.
-    LogMethod("RES", "Deep Resistivity", "electrical", "RT",
-              ("RT", "RESD", "RES", "ILD", "RILD", "LLD", "RLA5", "RD", "AT90",
-               "CILD", "БК", "БКЗ", "ИК", "КС", "ПЗ", "ГЗ",
-               "KS", "BK", "BKZ", "IK", "PZ", "GZ",
-               "GZ1", "GZ2", "GZ3", "GZ4", "GZ5", "GZ4K"),
-              unit="OHMM", color="#e74c3c", track=1, log_scale=True,
-              keywords=("RDEEP", "RDEP", "RLLD", "RT", "RES", "ILD", "LLD",
-                        "DEEP", "AT90", "RLA", "БК", "ИК", "KS", "BK", "IK", "GZ", "PZ")),
-    LogMethod("RESM", "Medium Resistivity", "electrical", "RILM",
-              ("RILM", "ILM", "LLM", "RLA3", "RM", "AT60", "CILM"), unit="OHMM",
-              color="#e67e22", track=1, log_scale=True,
-              keywords=("RMEDIUM", "RMED", "RLLM", "ILM", "MEDIUM", "AT60",
-                        "RLA3", "RILM")),
-    LogMethod("RESS", "Shallow / Flushed Resistivity", "electrical", "RXO",
-              ("RXO", "MSFL", "RLL3", "LL3", "SFL", "RXORT", "AT10", "RS", "БМК"),
-              unit="OHMM", color="#f39c12", track=1, log_scale=True,
-              keywords=("RSHALLOW", "RSHAL", "RSHL", "RLLS", "RXO", "MSFL",
-                        "SFL", "SHALLOW", "FLUSH", "AT10", "БМК")),
-    # MPZ = micro potential sonde, MGZ = micro gradient sonde, BMK = lateral micro-log
-    LogMethod("MICRO", "Microresistivity", "electrical", "MINV",
-              ("MINV", "MNOR", "MI", "MN", "MLL", "RMLL", "МК",
-               "MPZ", "MGZ", "BMK", "MKZ", "MK"), unit="OHMM",
+    # ═══ Российский стандарт ГИС — канонические мнемоники русские ═══
+    # --- Электрические / Electrical ---
+    LogMethod("PS", "ПС — потенциал собственной поляризации", "electrical", "PS",
+              ("PS", "ПС", "СП", "SP", "SPC", "SPCG", "SPRL"), unit="мВ",
+              color="#9b59b6", track=0, keywords=("PS", "ПС", "SP", "SPONT")),
+    LogMethod("KS", "КС — каротаж сопротивления", "electrical", "KS",
+              ("KS", "КС", "RT", "RESD", "RES", "R"), unit="Ом·м",
+              color="#e74c3c", track=1, log_scale=True,
+              keywords=("KS", "КС", "RT", "RESD")),
+    LogMethod("IK", "ИК — индукционный каротаж", "electrical", "IK",
+              ("IK", "ИК", "RIK", "РИК", "ILD", "RILD", "ILM", "RILM",
+               "CILD", "CILM", "AT90", "AT60"),
+              unit="мСм/м", color="#e67e22", track=1, log_scale=True,
+              keywords=("IK", "ИК", "ILD", "INDUC")),
+    LogMethod("BK", "БК — боковой каротаж", "electrical", "BK",
+              ("BK", "БК", "LLD", "LLS", "RLA5", "RLA3"), unit="Ом·м",
+              color="#c0392b", track=1, log_scale=True,
+              keywords=("BK", "БК", "LLD", "LATER")),
+    LogMethod("BKZ", "БКЗ — боковое каротажное зондирование (градиент-зонды)",
+              "electrical", "BKZ",
+              ("BKZ", "БКЗ", "GZ", "ГЗ", "GZ1", "GZ2", "GZ3", "GZ4", "GZ5",
+               "GZ6", "GZ7", "GZ4K", "PZ", "ПЗ"), unit="Ом·м",
+              color="#f39c12", track=1, log_scale=True,
+              keywords=("BKZ", "БКЗ", "GZ", "ПЗ")),
+    LogMethod("MKZ", "МКЗ — микрозонды", "electrical", "MKZ",
+              ("MKZ", "МКЗ", "MPZ", "MGZ", "МПЗ", "МГЗ", "BMK", "БМК",
+               "MINV", "MNOR", "MLL", "MSFL", "RXO"), unit="Ом·м",
               color="#d35400", track=1, log_scale=True,
-              keywords=("MICRO", "RMLL", "MLL", "MINV", "MNOR", "МК",
-                        "MPZ", "MGZ", "BMK")),
+              keywords=("MKZ", "МКЗ", "MPZ", "MGZ", "BMK", "MICRO")),
+    LogMethod("RS", "РС — резистивиметрия", "electrical", "RS",
+              ("RS", "РС", "REZ", "RESIST"), unit="Ом·м",
+              color="#16a085", track=1, keywords=("REZIST", "RESIST")),
 
-    # --- Density (gamma-gamma) ---
-    LogMethod("DEN", "Bulk Density", "nuclear", "RHOB",
-              ("RHOB", "RHOZ", "DEN", "RHOC", "ZDEN", "DGA", "ГГК", "ГГКП",
-               "GGK", "GGKP", "GGKM"),
-              unit="G/CC", color="#c0392b", track=2,
-              keywords=("RHOB", "RHOZ", "DENS", "ZDEN", "ГГК", "GGK")),
-    LogMethod("DRHO", "Density Correction", "nuclear", "DRHO",
-              ("DRHO", "DCOR", "HDRA"), unit="G/CC", color="#7f8c8d", track=2,
-              keywords=("DRHO", "DCOR", "HDRA", "CORR")),
-    LogMethod("PE", "Photoelectric Factor", "nuclear", "PE",
-              ("PE", "PEF", "PDPE", "FEFE", "PEFZ"), unit="B/E", color="#8e44ad",
-              track=2, keywords=("PE", "PEF", "PHOTO")),
+    # --- Радиоактивные / Nuclear ---
+    LogMethod("GK", "ГК — гамма-каротаж", "nuclear", "GK",
+              ("GK", "ГК", "GR", "CGR", "SGR", "GRGC", "GRD", "GRR"), unit="мкР/ч",
+              color="#2ecc71", track=0, keywords=("GK", "ГК", "GR", "GAMMA")),
+    LogMethod("NGK", "НГК — нейтронный гамма-каротаж", "nuclear", "NGK",
+              ("NGK", "НГК", "NNK", "ННК", "ННКТ", "NNKT", "NKT", "NNKB",
+               "NPHI", "TNPH", "CNLS", "NPRL", "NEUT", "APLC",
+               "NKTS", "NKTD", "WNK", "ВНК"), unit="усл.ед.",
+              color="#3498db", track=2, keywords=("NGK", "НГК", "NNK", "NPHI", "NEUT")),
+    LogMethod("GGKP", "ГГКп — гамма-гамма плотностной каротаж", "nuclear", "GGKP",
+              ("GGKP", "ГГКП", "GGK", "ГГК", "RHOB", "RHOZ", "DEN", "RHOC", "ZDEN"),
+              unit="г/см³", color="#c0392b", track=2,
+              keywords=("GGKP", "ГГК", "RHOB", "DENS")),
+    LogMethod("PE", "ФЭП — фотоэлектрический фактор", "nuclear", "PE",
+              ("PE", "PEF", "PDPE", "PEFZ", "ФЭП"), unit="б/э", color="#8e44ad",
+              track=2, keywords=("PEF", "PHOTO")),
+    LogMethod("DRHO", "Поправка плотности", "nuclear", "DRHO",
+              ("DRHO", "DCOR", "HDRA"), unit="г/см³", color="#7f8c8d", track=2,
+              keywords=("DRHO", "DCOR", "HDRA")),
+    LogMethod("YMK", "ЯМК — ядерно-магнитный каротаж", "nuclear", "U1",
+              ("U1", "U2", "U3", "ЯМК", "YMK", "NMR",
+               "NML1", "NML2", "NML3", "NML"), unit="усл.ед.",
+              color="#af7ac5", track=2, keywords=("ЯМК", "YMK")),
 
-    # --- Neutron ---
-    LogMethod("NEU", "Neutron Porosity", "nuclear", "NPHI",
-              ("NPHI", "TNPH", "CNLS", "NPRL", "NEUT", "CNC", "APLC",
-               "НГК", "ННК", "ННКТ", "НКТ",
-               "NGK", "NNK", "NNKT", "NKT", "NNKB", "NGKS"), unit="V/V",
-              color="#3498db", track=2,
-              keywords=("NPHI", "NEUT", "TNPH", "CN", "НГК", "ННК", "NGK", "NNK")),
-
-    # --- Acoustic ---
-    LogMethod("SON", "Compressional Sonic", "acoustic", "DT",
-              ("DT", "DTC", "DTP", "DT35", "AC", "DTCO", "АК", "ДТ", "ИНК"),
-              unit="US/F", color="#1abc9c", track=2,
-              keywords=("DT", "SON", "ACOUS", "SLOW", "АК", "ДТ")),
-    LogMethod("SONS", "Shear Sonic", "acoustic", "DTS",
-              ("DTS", "DTSM", "DTSH"), unit="US/F", color="#16a085", track=2,
+    # --- Акустические / Acoustic ---
+    LogMethod("AK", "АК — акустический каротаж", "acoustic", "AK",
+              ("AK", "АК", "DT", "DTC", "DTP", "DTCO", "AC", "ДТ"), unit="мкс/м",
+              color="#1abc9c", track=2, keywords=("AK", "АК", "DT", "ACOUS")),
+    LogMethod("AKS", "АК — поперечная волна", "acoustic", "DTS",
+              ("DTS", "DTSM", "DTSH"), unit="мкс/м", color="#16a085", track=2,
               keywords=("DTS", "SHEAR")),
 
-    # --- Auxiliary measured ---
-    LogMethod("TEMP", "Borehole Temperature", "auxiliary", "TEMP",
-              ("TEMP", "DTEM", "TEMPC", "ТМ", "ТЕМ"), unit="DEGC",
-              color="#e84393", track=0, keywords=("TEMP", "DTEM", "ТМ")),
-    # Deviation / inclinometry survey (INCL = inclination, AZ = azimuth)
-    LogMethod("DEVI", "Deviation Survey", "auxiliary", "INCL",
-              ("INCL", "AZ", "DEVI", "AZIM", "ZENIT", "ZENITH", "INK", "INKL"),
-              unit="deg", color="#7f8c8d", track=0,
-              keywords=("INCL", "AZIM", "ZENIT", "DEVI")),
+    # --- Механические / Mechanical ---
+    LogMethod("DS", "ДС — кавернометрия", "mechanical", "DS",
+              ("DS", "ДС", "CAL", "CALI", "HCAL", "DCAL", "CLDC", "КВ", "KV",
+               "КАВ", "KAV", "DM"), unit="мм",
+              color="#95a5a6", track=0, keywords=("DS", "ДС", "CAL", "KAV")),
+    LogMethod("BS", "Диаметр долота", "mechanical", "BS",
+              ("BS", "BIT", "DN"), unit="мм", color="#7f8c8d", track=0,
+              keywords=("BIT",)),
 
-    # --- Derived / interpreted results ---
-    LogMethod("DPOR", "Density Porosity", "derived", "DPOR",
-              ("DPOR", "PHID"), unit="V/V", color="#d68910", track=2,
-              derived=True, keywords=("DPOR", "PHID")),
-    # PHIE incl. Russian interpreted porosity Кп (КП/КП_W)
-    LogMethod("PHIE", "Effective Porosity", "derived", "PHIE",
-              ("PHIE", "PHIT", "КП", "КПЭФ", "KP"), unit="V/V", color="#f1c40f",
-              track=2, derived=True, keywords=("PHIE", "PHIT", "PORO", "КП")),
-    # VSH incl. Russian глинистость Кгл (КГЛ)
-    LogMethod("VSH", "Shale Volume", "derived", "VSH",
-              ("VSH", "VCL", "VSHALE", "КГЛ", "KGL"), unit="V/V", color="#7f8c8d",
-              track=3, derived=True, keywords=("VSH", "VCL", "SHALE", "КГЛ")),
-    # SW incl. Russian нефтегазонасыщенность Кнг (КНГ) / водонасыщенность
-    LogMethod("SW", "Water / HC Saturation", "derived", "SW",
-              ("SW", "SWT", "SWE", "КНГ", "КВ_W", "КН", "KNG"), unit="V/V",
-              color="#2980b9", track=3, derived=True, keywords=("SW", "SATUR", "КНГ")),
-    LogMethod("BVW", "Bulk Volume Water", "derived", "BVW",
-              ("BVW",), unit="V/V", color="#3498db", track=3, derived=True,
-              keywords=("BVW",)),
-    # PERM incl. Russian проницаемость Кпр (КПР/ПРОН)
-    LogMethod("PERM", "Permeability", "derived", "PERM",
-              ("PERM", "KINT", "KLOGH", "КПР", "ПРОН", "KPR"), unit="MD",
+    # --- Газовый и вспомогательные ---
+    LogMethod("GAZ", "Газовый каротаж", "geochem", "GAZ",
+              ("GAZ", "ГАЗ", "GAS", "SUMGAS"), unit="усл.ед.",
+              color="#e84393", track=3, keywords=("GAZ", "ГАЗ", "GAS")),
+    LogMethod("TEMP", "Термометрия", "auxiliary", "TEMP",
+              ("TEMP", "DTEM", "TEMPC", "ТМ", "ТЕМ"), unit="°C",
+              color="#fd79a8", track=0, keywords=("TEMP", "DTEM", "ТМ")),
+    LogMethod("INKL", "Инклинометрия", "auxiliary", "INKL",
+              ("INKL", "INCL", "ИНКЛ", "AZ", "AZIM", "ZENIT", "ZENITH", "DEVI", "INK"),
+              unit="град", color="#636e72", track=0,
+              keywords=("INCL", "INKL", "AZIM", "ZENIT")),
+
+    # --- Результаты интерпретации (РИГИС) ---
+    LogMethod("KP", "Кп — пористость", "interpretation", "KP",
+              ("KP", "КП", "КП_W", "KP_W", "PHIE", "PHIT", "КПЭФ"), unit="д.ед.",
+              color="#f1c40f", track=2, derived=True, keywords=("КП", "PHIE", "PORO")),
+    LogMethod("KGL", "Кгл — глинистость", "interpretation", "KGL",
+              ("KGL", "КГЛ", "КГЛ_ГК", "KGL_GK", "VSH", "VCL", "VSHALE"),
+              unit="д.ед.", color="#7f8c8d", track=3, derived=True,
+              keywords=("КГЛ", "VSH", "VCL")),
+    LogMethod("KNG", "Кнг — нефтегазонасыщенность", "interpretation", "KNG",
+              ("KNG", "КНГ", "КНГ_W", "KNG_W", "КН", "SW", "SWT", "SWE", "КВ_W"),
+              unit="д.ед.", color="#2980b9", track=3, derived=True,
+              keywords=("КНГ", "SATUR")),
+    LogMethod("KPR", "Кпр — проницаемость", "interpretation", "KPR",
+              ("KPR", "КПР", "ПРОН", "PERM", "KINT", "KLOGH"), unit="мД",
               color="#af7ac5", track=3, log_scale=True, derived=True,
-              keywords=("PERM", "KINT", "KLOG", "КПР", "ПРОН")),
-    # Interpreted categorical logs (Russian РИГИС outputs)
-    LogMethod("LITH", "Lithology (interpreted)", "interpretation", "LITH",
-              ("LITH", "ЛИТОЛОГИЯ", "ЛИТ", "FACIES"), unit="", color="#a0522d",
-              track=3, derived=True, keywords=("LITH", "ЛИТОЛ", "FACIES")),
-    LogMethod("SAT", "Saturation flag (interpreted)", "interpretation", "SAT",
-              ("SAT", "НАСЫЩЕНИЕ", "НАСЫЩ", "КОЛЛЕКТОР", "COLL"), unit="",
-              color="#2ecc71", track=3, derived=True, keywords=("НАСЫЩ", "КОЛЛЕКТ")),
+              keywords=("КПР", "ПРОН", "PERM")),
+    LogMethod("LITH", "Литология", "interpretation", "LITH",
+              ("LITH", "ЛИТОЛОГИЯ", "ЛИТ", "LITOLOG", "FACIES"), unit="код",
+              color="#a0522d", track=4, derived=True, keywords=("ЛИТОЛ", "LITHOL")),
+    LogMethod("COLL", "Коллектор", "interpretation", "COLL",
+              ("COLL", "КОЛЛЕКТОР", "КОЛЛ", "KOLLEKTOR"), unit="код",
+              color="#3fb950", track=4, derived=True, keywords=("КОЛЛЕКТ",)),
+    LogMethod("SAT", "Насыщение", "interpretation", "SAT",
+              ("SAT", "НАСЫЩЕНИЕ", "НАСЫЩ", "NASYSH"), unit="код",
+              color="#8b5a2b", track=4, derived=True, keywords=("НАСЫЩ",)),
 ]
 
 # Fast lookups -----------------------------------------------------------------
@@ -189,6 +178,16 @@ def method_for_mnemonic(mnemonic: str) -> Optional[LogMethod]:
     canon = CUSTOM_ALIASES.get(up)
     if canon:
         return _MNEMONIC_TO_METHOD.get(canon.upper())
+    # variant fallback: KS_500, GK_500_2, GZ4_500_3 … belong to their family,
+    # so coverage/analytics must see them as that method too.
+    core = _strip_variants(up)
+    if core != up:
+        meth = _MNEMONIC_TO_METHOD.get(core)
+        if meth is not None:
+            return meth
+        canon = CUSTOM_ALIASES.get(core)
+        if canon:
+            return _MNEMONIC_TO_METHOD.get(canon.upper())
     return None
 
 

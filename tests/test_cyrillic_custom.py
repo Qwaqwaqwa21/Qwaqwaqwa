@@ -11,8 +11,8 @@ from las_parser import LASParser  # noqa: E402
 
 # ── Cyrillic mnemonic mapping ────────────────────────────────────────────────
 def test_cyrillic_aliases_map_to_canonical():
-    cases = {"ГК": "GR", "ПС": "SP", "НГК": "NPHI", "БК": "RT",
-             "ГГКП": "RHOB", "АК": "DT", "ДС": "CAL", "МК": "MINV"}
+    cases = {"ГК": "GK", "ПС": "PS", "НГК": "NGK", "БК": "BK",
+             "ГГКП": "GGKP", "АК": "AK", "ДС": "DS", "МКЗ": "MKZ"}
     for raw, canon in cases.items():
         s = suggest_mnemonic(raw)
         assert s.canonical == canon, (raw, s.canonical)
@@ -28,9 +28,11 @@ def test_decode_cp1251_bytes():
 
 def test_latin_transliterated_russian_gis_codes():
     """Real Russian LAS use Latin-transliterated method codes."""
-    cases = {"GK": "GR", "PS": "SP", "KS": "RT", "NGK": "NPHI", "BK": "RT",
-             "IK": "RT", "DS": "CAL", "GZ1": "RT", "MPZ": "MINV", "MGZ": "MINV",
-             "INCL": "INCL", "AZ": "INCL"}
+    cases = {"GK": "GK", "PS": "PS", "KS": "KS", "NGK": "NGK", "BK": "BK",
+             "IK": "IK", "DS": "DS", "GZ1": "BKZ", "GZ5": "BKZ",
+             "MPZ": "MKZ", "MGZ": "MKZ", "RS": "RS", "AK": "AK",
+             "GGKP": "GGKP", "GAZ": "GAZ", "U1": "U1",
+             "INCL": "INKL", "AZ": "INKL"}
     for raw, canon in cases.items():
         s = suggest_mnemonic(raw)
         assert s.canonical == canon, (raw, s.canonical)
@@ -38,21 +40,22 @@ def test_latin_transliterated_russian_gis_codes():
 
 
 def test_scale_suffix_variants_strip_to_family():
-    for raw, canon in [("GK_500", "GR"), ("GK_500_2", "GR"), ("NGK_500", "NPHI"),
-                       ("GZ4_500_3", "RT"), ("PS_1", "SP")]:
+    for raw, canon in [("GK_500", "GK"), ("GK_500_2", "GK"), ("NGK_500", "NGK"),
+                       ("GZ4_500_3", "BKZ"), ("PS_1", "PS")]:
         s = suggest_mnemonic(raw)
         assert s.canonical == canon, (raw, s.canonical)
 
 
-def test_no_false_positive_uranium():
-    # U1/U2 must NOT map to spectral uranium (was a keyword false positive)
-    for raw in ("U1", "U2"):
-        assert suggest_mnemonic(raw).confidence == 0.0
+def test_ymk_u_curves_map_to_nmr():
+    # U1/U2/U3 are ЯМК (NMR in the earth field), not spectral uranium
+    for raw in ("U1", "U2", "U3"):
+        s = suggest_mnemonic(raw)
+        assert s.method_key == "YMK", (raw, s.method_key)
 
 
 def test_russian_interpreted_curves():
-    for raw, canon in [("КГЛ", "VSH"), ("КП", "PHIE"), ("ЛИТОЛОГИЯ", "LITH"),
-                       ("НАСЫЩЕНИЕ", "SAT")]:
+    for raw, canon in [("КГЛ", "KGL"), ("КП", "KP"), ("ЛИТОЛОГИЯ", "LITH"),
+                       ("КОЛЛЕКТОР", "COLL"), ("НАСЫЩЕНИЕ", "SAT")]:
         assert suggest_mnemonic(raw).canonical == canon, raw
 
 
@@ -67,7 +70,7 @@ def test_parse_cyrillic_las_cp1251():
     parsed = LASParser.parse_bytes(las_txt.encode("cp1251"))
     assert parsed.well.well_name == "Скважина-7"
     mnems = [c.mnemonic for c in parsed.curves]
-    assert "GR" in mnems and "SP" in mnems      # ГК/ПС normalized
+    assert "GK" in mnems and "PS" in mnems      # ГК/ПС normalized
     assert "НЕЧТО" in mnems                       # unknown Cyrillic preserved
     assert len(parsed.depth) == 3
 
@@ -80,16 +83,16 @@ def _isolate(tmp_path):
 
 def test_custom_alias_overrides_suggestion(tmp_path):
     _isolate(tmp_path)
-    methods.set_custom_alias("XZY", "GR")
+    methods.set_custom_alias("XZY", "GK")
     s = suggest_mnemonic("XZY")
-    assert s.canonical == "GR"
+    assert s.canonical == "GK"
     assert s.reason == "custom"
-    assert s.method_key == "GR"
+    assert s.method_key == "GK"
 
 
 def test_custom_alias_remove(tmp_path):
     _isolate(tmp_path)
-    methods.set_custom_alias("WEIRD", "RHOB")
+    methods.set_custom_alias("WEIRD", "GGKP")
     assert methods.remove_custom_alias("weird") is True
     assert suggest_mnemonic("WEIRD").confidence == 0.0
     assert methods.remove_custom_alias("WEIRD") is False
@@ -97,15 +100,15 @@ def test_custom_alias_remove(tmp_path):
 
 def test_custom_alias_import_pairs(tmp_path):
     _isolate(tmp_path)
-    res = methods.import_custom_aliases([("AA1", "GR"), ("BB2", "RT"), ("", "GR")])
+    res = methods.import_custom_aliases([("AA1", "GK"), ("BB2", "KS"), ("", "GK")])
     assert res["added"] == 2 and res["skipped"] == 1
-    assert suggest_mnemonic("AA1").canonical == "GR"
-    assert suggest_mnemonic("BB2").canonical == "RT"
+    assert suggest_mnemonic("AA1").canonical == "GK"
+    assert suggest_mnemonic("BB2").canonical == "KS"
 
 
 def test_custom_alias_persists_to_disk(tmp_path):
     _isolate(tmp_path)
-    methods.set_custom_alias("PERSIST1", "NPHI")
+    methods.set_custom_alias("PERSIST1", "NGK")
     methods.CUSTOM_ALIASES = {}
     methods.load_custom_aliases()
-    assert methods.CUSTOM_ALIASES.get("PERSIST1") == "NPHI"
+    assert methods.CUSTOM_ALIASES.get("PERSIST1") == "NGK"

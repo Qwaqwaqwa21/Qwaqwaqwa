@@ -76,6 +76,7 @@
                     <button class="nav-btn" data-view="advancedqc" title="Advanced QC — missing intervals, spikes, environmental flags"><i data-lucide="shield-check"></i><span>Adv QC</span></button>
                     <button class="nav-btn" data-view="zonation" title="Zonation & net pay report — auto-zone from cutoffs"><i data-lucide="layers"></i><span>Zonation</span></button>
                     <button class="nav-btn" data-view="units" title="Unit normalization & alias resolution"><i data-lucide="ruler"></i><span>Units</span></button>
+                    <button class="nav-btn" data-view="inklqc" title="Инклинометрия: DLS, проекции, дубли, заметки"><i data-lucide="compass"></i><span>Инклинометрия</span></button>
                     <button class="nav-btn" data-view="coverage" title="Research coverage map — logging-method coverage across wells"><i data-lucide="grid-2x2-check"></i><span>Coverage</span></button>
                     <button class="nav-btn" data-view="mnemonics" title="Auto-normalize vendor curve mnemonics to canonical families"><i data-lucide="wand-sparkles"></i><span>Mnemonics</span></button>
                     <button class="nav-btn" data-view="templates" title="Reservoir template workflow — one-click presets"><i data-lucide="file-check"></i><span>Templates</span></button>
@@ -1276,6 +1277,89 @@
                 <p style="color:var(--text-muted)">Loading jobs...</p>
             </div>
         </div>
+        <!-- Advanced QC Panel -->
+        <div id="advancedqcPanel" class="panel" style="display:none">
+            <div id="advancedQCDashboard"></div>
+        </div>
+
+        <!-- Zonation Panel -->
+        <div id="zonationPanel" class="panel" style="display:none">
+            <div id="zonationDashboard"></div>
+        </div>
+
+        <!-- Unit Normalization Panel -->
+        <div id="unitsPanel" class="panel" style="display:none">
+            <div id="unitsDashboard"></div>
+        </div>
+
+        <!-- Template Workflow Panel -->
+        <div id="templatesPanel" class="panel" style="display:none">
+            <div id="templatesDashboard"></div>
+        </div>
+
+        <!-- Инклинометрия: QC + проекции -->
+        <div id="inklqcPanel" class="panel" style="display:none">
+            <div class="panel-toolbar">
+                <div class="toolbar-group"><label>Инклинометрия — контроль качества</label><span class="toolbar-hint">DLS, проекции траектории, дубли замеров, заметки</span></div>
+                <div class="toolbar-group"><label>Порог DLS, °/10м</label>
+                    <input id="inklDlsLimit" class="depth-input" type="number" value="20" min="1" max="200" step="1" onchange="InclinometryView.load()">
+                </div>
+                <button class="btn-sm" onclick="InclinometryView.load()"><i data-lucide="refresh-cw"></i> Пересчитать</button>
+                <button class="btn-sm" data-role-required="interpreter,admin" onclick="InclinometryView.dedupe()"><i data-lucide="eraser"></i> Удалить дубли</button>
+            </div>
+            <div id="inklContent" class="stats-container"></div>
+        </div>
+
+        <!-- Research Coverage Map Panel -->
+        <div id="coveragePanel" class="panel" style="display:none">
+            <div class="panel-toolbar">
+                <div class="toolbar-group"><label>Карта охвата ГИС</label><span class="toolbar-hint">Охват методами по скважинам, глубине и горизонтам</span></div>
+                <div class="toolbar-group"><label>Вид</label>
+                    <select id="coverageViewMode" class="depth-select" onchange="ResearchCoverageView.switchMode()">
+                        <option value="matrix">Матрица (скв. × метод)</option>
+                        <option value="planshet">Планшет по глубине</option>
+                        <option value="horizon">Таблица по горизонтам</option>
+                    </select>
+                </div>
+                <span id="coverageMatrixControls" style="display:contents">
+                    <div class="toolbar-group"><label>Показ</label>
+                        <select id="coverageMode" class="depth-select" onchange="ResearchCoverageView.render()">
+                            <option value="coverage">Охват по глубине</option>
+                            <option value="fill">Заполненность</option>
+                            <option value="presence">Только наличие</option>
+                        </select>
+                    </div>
+                    <label style="display:flex;align-items:center;gap:6px"><input id="coverageMeasuredOnly" type="checkbox" onchange="ResearchCoverageView.render()"> только замеры</label>
+                </span>
+                <span id="coverageHorizonControls" style="display:none">
+                    <button class="btn-sm" onclick="ResearchCoverageView.exportHorizons('xlsx')"><i data-lucide="file-spreadsheet"></i> Экспорт XLSX</button>
+                    <button class="btn-sm" onclick="ResearchCoverageView.exportHorizons('csv')"><i data-lucide="download"></i> Экспорт CSV</button>
+                </span>
+                <button class="btn-sm" onclick="ResearchCoverageView.load()"><i data-lucide="refresh-cw"></i> Обновить</button>
+                <span id="coverageInfo" class="toolbar-hint"></span>
+            </div>
+            <div id="coverageContent" class="stats-container"></div>
+        </div>
+
+        <!-- Auto-Mnemonics Panel -->
+        <div id="mnemonicsPanel" class="panel" style="display:none">
+            <div class="panel-toolbar">
+                <div class="toolbar-group"><label>Auto Mnemonics</label><span class="toolbar-hint">Detect vendor curve names and normalize them to canonical mnemonics (авто применение мнемоник)</span></div>
+                <div class="toolbar-group"><label>Min confidence</label>
+                    <select id="mnemMinConf" class="depth-select">
+                        <option value="1.0">1.0 — exact only</option>
+                        <option value="0.9" selected>0.9 — exact + variants</option>
+                        <option value="0.6">0.6 — include fuzzy</option>
+                    </select>
+                </div>
+                <button class="btn-sm" onclick="MnemonicsView.load()"><i data-lucide="refresh-cw"></i> Scan</button>
+                <button class="btn-sm" data-role-required="interpreter,admin" onclick="MnemonicsView.applySelected()" title="Role required: Interpreter or Admin"><i data-lucide="wand-sparkles"></i> Apply selected</button>
+                <button class="btn-sm" data-role-required="interpreter,admin" onclick="MnemonicsView.applyAll()" title="Role required: Interpreter or Admin"><i data-lucide="check-check"></i> Auto-apply all</button>
+                <span id="mnemInfo" class="toolbar-hint"></span>
+            </div>
+            <div id="mnemonicsContent" class="stats-container"></div>
+        </div>
+
     </main>
 
     <!-- Modal Dialog -->
@@ -1394,78 +1478,6 @@
         </div>
     </div>
 
-        <!-- Advanced QC Panel -->
-        <div id="advancedqcPanel" class="panel" style="display:none">
-            <div id="advancedQCDashboard"></div>
-        </div>
-
-        <!-- Zonation Panel -->
-        <div id="zonationPanel" class="panel" style="display:none">
-            <div id="zonationDashboard"></div>
-        </div>
-
-        <!-- Unit Normalization Panel -->
-        <div id="unitsPanel" class="panel" style="display:none">
-            <div id="unitsDashboard"></div>
-        </div>
-
-        <!-- Template Workflow Panel -->
-        <div id="templatesPanel" class="panel" style="display:none">
-            <div id="templatesDashboard"></div>
-        </div>
-
-        <!-- Research Coverage Map Panel -->
-        <div id="coveragePanel" class="panel" style="display:none">
-            <div class="panel-toolbar">
-                <div class="toolbar-group"><label>Research Coverage</label><span class="toolbar-hint">Logging-method coverage across the project (карта охвата исследованиями)</span></div>
-                <div class="toolbar-group"><label>View</label>
-                    <select id="coverageViewMode" class="depth-select" onchange="ResearchCoverageView.switchMode()">
-                        <option value="matrix">Matrix (well × method)</option>
-                        <option value="planshet">Planshet (by depth)</option>
-                    </select>
-                </div>
-                <span id="coverageMatrixControls" style="display:contents">
-                    <div class="toolbar-group"><label>Show</label>
-                        <select id="coverageMode" class="depth-select" onchange="ResearchCoverageView.render()">
-                            <option value="coverage">Depth coverage</option>
-                            <option value="fill">Sample fill</option>
-                            <option value="presence">Presence only</option>
-                        </select>
-                    </div>
-                    <div class="toolbar-group"><label>Group</label>
-                        <select id="coverageGroup" class="depth-select" onchange="ResearchCoverageView.render()">
-                            <option value="category">By category</option>
-                            <option value="none">Flat</option>
-                        </select>
-                    </div>
-                    <label style="display:flex;align-items:center;gap:6px"><input id="coverageMeasuredOnly" type="checkbox" onchange="ResearchCoverageView.render()"> Measured only</label>
-                </span>
-                <button class="btn-sm" onclick="ResearchCoverageView.load()"><i data-lucide="refresh-cw"></i> Refresh</button>
-                <span id="coverageInfo" class="toolbar-hint"></span>
-            </div>
-            <div id="coverageContent" class="stats-container"></div>
-        </div>
-
-        <!-- Auto-Mnemonics Panel -->
-        <div id="mnemonicsPanel" class="panel" style="display:none">
-            <div class="panel-toolbar">
-                <div class="toolbar-group"><label>Auto Mnemonics</label><span class="toolbar-hint">Detect vendor curve names and normalize them to canonical mnemonics (авто применение мнемоник)</span></div>
-                <div class="toolbar-group"><label>Min confidence</label>
-                    <select id="mnemMinConf" class="depth-select">
-                        <option value="1.0">1.0 — exact only</option>
-                        <option value="0.9" selected>0.9 — exact + variants</option>
-                        <option value="0.6">0.6 — include fuzzy</option>
-                    </select>
-                </div>
-                <button class="btn-sm" onclick="MnemonicsView.load()"><i data-lucide="refresh-cw"></i> Scan</button>
-                <button class="btn-sm" data-role-required="interpreter,admin" onclick="MnemonicsView.applySelected()" title="Role required: Interpreter or Admin"><i data-lucide="wand-sparkles"></i> Apply selected</button>
-                <button class="btn-sm" data-role-required="interpreter,admin" onclick="MnemonicsView.applyAll()" title="Role required: Interpreter or Admin"><i data-lucide="check-check"></i> Auto-apply all</button>
-                <span id="mnemInfo" class="toolbar-hint"></span>
-            </div>
-            <div id="mnemonicsContent" class="stats-container"></div>
-        </div>
-
-    </div>
 
     <!-- Status Bar -->
     <div class="status-bar">
@@ -1495,6 +1507,8 @@
     <script src="/static/js/image-log.js"></script>
     <script src="/static/js/formation-tester.js"></script>
     <script src="/static/js/collaboration.js"></script>
+    <script src="/static/js/rigis-tracks.js"></script>
+    <script src="/static/js/inclinometry.js"></script>
     <script src="/static/js/research-coverage.js"></script>
     <script src="/static/js/mnemonics.js"></script>
     <script src="/static/js/app.js"></script>

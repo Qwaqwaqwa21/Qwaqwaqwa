@@ -14,7 +14,8 @@ class LogRenderer {
             { name: 'GR / SP / CAL', curves: ['GR', 'SGR', 'CGR', 'SP', 'CAL', 'CALI', 'HCAL', 'BS'], width: 180 },
             { name: 'Resistivity', curves: ['RT', 'RESD', 'RXO', 'RILD', 'RILM', 'RLL3', 'RLLS', 'ILD', 'ILM', 'MSFL'], width: 180, log: true },
             { name: 'Porosity', curves: ['NPHI', 'NPHI_LS', 'RHOB', 'RHOZ', 'DT', 'DTC', 'DTS', 'PEF', 'DRHO'], width: 180 },
-            { name: 'Saturation', curves: ['SW', 'VSH', 'PHIE', 'PHIT', 'BVW', 'PERM'], width: 180 },
+            { name: 'Saturation', curves: ['SW', 'VSH', 'PHIE', 'PHIT', 'BVW', 'PERM', 'KP', 'KGL', 'KNG', 'KPR'], width: 180 },
+            { name: 'РИГИС', curves: ['LITH', 'COLL', 'SAT'], width: 132, categorical: true },
         ];
 
         // Layout constants
@@ -635,6 +636,18 @@ class LogRenderer {
                     const color = cfg.color || '#8b949e';
                     const val = this.curveData[mnemonic][idx];
                     const unit = cfg.unit || '';
+                    // Литология/коллектор/насыщение — показываем расшифровку кода
+                    if (typeof RigisTracks !== 'undefined' && RigisTracks.isCategorical(mnemonic)) {
+                        const info = RigisTracks.valueAt(mnemonic, this.curveData[mnemonic], this.depthData, this.depthData[idx]);
+                        if (info) {
+                            const catName = { LITH: 'Литология', COLL: 'Коллектор', SAT: 'Насыщение' }[mnemonic] || mnemonic;
+                            html += `<div class="tt-row"><span class="tt-dot" style="background:${info.color}"></span>`
+                                 + `<span class="tt-mnem">${catName}</span>`
+                                 + `<span class="tt-val" style="font-weight:600">${info.label}</span>`
+                                 + `<span class="tt-unit">код ${info.code}</span></div>`;
+                        }
+                        continue;
+                    }
                     html += `<div class="tt-row"><span class="tt-dot" style="background:${color}"></span><span class="tt-mnem">${mnemonic}</span><span class="tt-val">${val.toFixed(4)}</span><span class="tt-unit">${unit}</span></div>`;
                 }
             }
@@ -1103,7 +1116,31 @@ class LogRenderer {
 
         // Draw curves
         const activeCurves = track.curves.filter(m => this.curveData[m] && this.curveData[m].length > 0);
+        // Категориальные колонки РИГИС рисуются заливкой по кодам, не линией
+        const catCurves = (typeof RigisTracks !== 'undefined')
+            ? activeCurves.filter(m => RigisTracks.isCategorical(m)) : [];
+        if (catCurves.length) {
+            const cw = Math.floor((width - 4) / catCurves.length);
+            catCurves.forEach((m, i) => {
+                const cx = x + 2 + i * cw;
+                RigisTracks.draw(ctx, m, this.curveData[m], this.depthData,
+                    cx, cw - 2, plotTop, plotBottom, this.viewStart, this.viewStop);
+                ctx.save();
+                const cfg = this.curveConfig[m] || {};
+                ctx.fillStyle = '#8b949e';
+                ctx.font = '9px system-ui,sans-serif';
+                ctx.textAlign = 'center';
+                ctx.translate(cx + (cw - 2) / 2, plotTop - 8);
+                const lbl = cfg.name || m;
+                if (ctx.measureText(lbl).width > cw - 4) {   // не помещается — вертикально
+                    ctx.rotate(-Math.PI / 2); ctx.textAlign = 'left';
+                    ctx.fillText(lbl, -46, 3);
+                } else ctx.fillText(lbl, 0, 0);
+                ctx.restore();
+            });
+        }
         for (const mnemonic of activeCurves) {
+            if (catCurves.indexOf(mnemonic) !== -1) continue;
             this._drawCurve(ctx, mnemonic, x, plotTop, plotBottom, width, useLog);
         }
 

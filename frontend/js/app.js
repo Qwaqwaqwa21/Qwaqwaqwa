@@ -565,6 +565,7 @@ class GeoLogApp {
         document.getElementById('unitsPanel').style.display = view === 'units' ? 'block' : 'none';
         document.getElementById('templatesPanel').style.display = view === 'templates' ? 'block' : 'none';
         document.getElementById('coveragePanel').style.display = view === 'coverage' ? 'block' : 'none';
+        document.getElementById('inklqcPanel').style.display = view === 'inklqc' ? 'block' : 'none';
         document.getElementById('mnemonicsPanel').style.display = view === 'mnemonics' ? 'block' : 'none';
 
         // Sprint 26: Update status bar + trigger panel-specific loads
@@ -607,6 +608,7 @@ class GeoLogApp {
         if (view === 'units' && this.currentWell) this._initUnits();
         if (view === 'templates' && this.currentWell) this._initTemplates();
         if (view === 'coverage') { if (typeof ResearchCoverageView !== 'undefined') ResearchCoverageView.load(); }
+        if (view === 'inklqc') { if (typeof InclinometryView !== 'undefined') InclinometryView.load(); }
         if (view === 'mnemonics') { if (typeof MnemonicsView !== 'undefined') MnemonicsView.load(); }
         if (view === 'multiwell') { if (typeof MultiWellView !== 'undefined') MultiWellView.load(); }
         if (view === 'formationtester') { if (typeof FormationTesterView !== 'undefined') FormationTesterView.run(); }
@@ -915,6 +917,8 @@ class GeoLogApp {
         // fall back to them (and not bleed a fitted scale across wells).
         try { this._defaultCurveConfig = JSON.parse(JSON.stringify(this.curveConfig)); }
         catch { this._defaultCurveConfig = {}; }
+        // справочники кодов РИГИС (литология/коллектор/насыщение)
+        if (typeof RigisTracks !== 'undefined') { try { await RigisTracks.ensureCodes(); } catch (e) {} }
     }
 
     // Fit each curve's display scale to its actual data when the default scale
@@ -930,6 +934,7 @@ class GeoLogApp {
         for (const [mn, values] of Object.entries(curveData || {})) {
             const U = (mn || '').toUpperCase();
             if (U === 'DEPTH' || U === 'DEPT' || U === 'MD' || U === 'TVD') continue;
+            if (typeof RigisTracks !== 'undefined' && RigisTracks.isCategorical(mn)) continue;
             if (this.curveConfig[mn] && this.curveConfig[mn].log) continue; // keep log scaling
             if (!values || values.length < 20) { resetToDefault(mn); continue; }
             const valid = [];

@@ -93,6 +93,7 @@ EXTRA_CURVE_TRACKS = {
     'MSFL': {'track': 2, 'color': '#f39c12', 'scale': (0.2, 2000), 'log': True, 'unit': 'OHMM', 'name': 'Micro-SFL'},
 }
 
+
 # ── Auto-extend the alias table from the logging-method registry ─────────────
 # The method registry (backend/methods.py) is the broader source of truth for
 # vendor mnemonic → canonical family. We fold in any alias it knows that the
@@ -245,17 +246,46 @@ class LASParser:
     def decode_bytes(data: bytes) -> str:
         """Decode LAS bytes, auto-detecting UTF-8 / Cyrillic code pages.
 
-        Picks the first candidate encoding that decodes without error; falls
-        back to latin-1 with replacement (which never fails) as a last resort.
+        UTF-8 wins when valid. Otherwise the single-byte candidates are scored:
+        CP1251 and CP866 both decode almost any byte, so picking the first that
+        "works" mis-decodes DOS-encoded (CP866) Russian files into mojibake.
+        We therefore score by how plausibly Cyrillic the result looks.
         """
         if isinstance(data, str):
             return data
-        for enc in LASParser.ENCODINGS:
+        for enc in ("utf-8-sig", "utf-8"):
             try:
                 return data.decode(enc)
             except (UnicodeDecodeError, LookupError):
+                pass
+
+        # Header region carries the mnemonics/descriptions we care about.
+        head = data[:20000]
+
+        def score(text: str) -> int:
+            s = 0
+            for ch in text:
+                o = ord(ch)
+                if 0x0410 <= o <= 0x044F or ch in "Ёё":       # Cyrillic letters
+                    s += 2
+                elif 0x0402 <= o <= 0x040F or 0x2010 <= o <= 0x2122:
+                    s -= 2                                     # rare/mojibake glyphs
+                elif 0x2500 <= o <= 0x25FF:
+                    s -= 1                                     # box-drawing (CP866 noise)
+            return s
+
+        best, best_score = None, None
+        for enc in ("cp1251", "cp866", "koi8-r", "iso-8859-5"):
+            try:
+                text = head.decode(enc)
+            except (UnicodeDecodeError, LookupError):
                 continue
-        return data.decode('latin-1', errors='replace')
+            sc = score(text)
+            if best_score is None or sc > best_score:
+                best, best_score = enc, sc
+        if best:
+            return data.decode(best, errors="replace")
+        return data.decode("latin-1", errors="replace")
 
     @staticmethod
     def parse_file(filepath: str) -> LASFile:
@@ -440,10 +470,14 @@ class LASParser:
             return
 
         def split_line(line: str) -> list:
-            """Split a data line using the detected delimiter or whitespace."""
-            if delimiter:
-                return line.split(delimiter)
-            return line.split()
+            """Split a data line using the detected delimiter or whitespace.
+
+            Russian РИГИС exports write categorical codes as quoted strings
+            (e.g. "94", "" for a blank), so quotes are stripped here — otherwise
+            lithology/collector/saturation columns parse as all-NaN.
+            """
+            parts = line.split(delimiter) if delimiter else line.split()
+            return [p.strip().strip('"').strip("'") for p in parts]
 
         if wrap:
             # Wrapped format: data continues on next line
@@ -533,3 +567,36 @@ TRACK_CONFIG = {
 
 # Merge extra tracks into CURVE_TRACKS at module load
 CURVE_TRACKS.update(EXTRA_CURVE_TRACKS)
+
+
+# ── Русский стандарт ГИС: треки/шкалы для канонических мнемоник ──────────────
+# track: 1=ГК/ПС/ДС, 2=сопротивление, 3=пористость, 4=интерпретация
+CURVE_TRACKS.update({
+    'GK':   {'track': 1, 'color': '#2ecc71', 'scale': (0, 20),   'unit': 'мкР/ч', 'name': 'ГК'},
+    'PS':   {'track': 1, 'color': '#9b59b6', 'scale': (-100, 100), 'unit': 'мВ', 'name': 'ПС'},
+    'DS':   {'track': 1, 'color': '#95a5a6', 'scale': (100, 400), 'unit': 'мм',  'name': 'ДС'},
+    'BS':   {'track': 1, 'color': '#7f8c8d', 'scale': (100, 400), 'unit': 'мм',  'name': 'Долото'},
+    'TEMP': {'track': 1, 'color': '#fd79a8', 'scale': (0, 100),  'unit': '°C',   'name': 'Термометрия'},
+
+    'KS':   {'track': 2, 'color': '#e74c3c', 'scale': (0.2, 2000), 'log': True, 'unit': 'Ом·м', 'name': 'КС'},
+    'BK':   {'track': 2, 'color': '#c0392b', 'scale': (0.2, 2000), 'log': True, 'unit': 'Ом·м', 'name': 'БК'},
+    'IK':   {'track': 2, 'color': '#e67e22', 'scale': (0.2, 2000), 'log': True, 'unit': 'мСм/м', 'name': 'ИК'},
+    'BKZ':  {'track': 2, 'color': '#f39c12', 'scale': (0.2, 2000), 'log': True, 'unit': 'Ом·м', 'name': 'БКЗ (ГЗ)'},
+    'MKZ':  {'track': 2, 'color': '#d35400', 'scale': (0.2, 2000), 'log': True, 'unit': 'Ом·м', 'name': 'МКЗ'},
+    'RS':   {'track': 2, 'color': '#16a085', 'scale': (0, 10),   'unit': 'Ом·м', 'name': 'РС'},
+
+    'NGK':  {'track': 3, 'color': '#3498db', 'scale': (0, 10),   'unit': 'усл.ед.', 'name': 'НГК'},
+    'GGKP': {'track': 3, 'color': '#c0392b', 'scale': (1.8, 3.0), 'unit': 'г/см³', 'name': 'ГГКп'},
+    'AK':   {'track': 3, 'color': '#1abc9c', 'scale': (500, 150), 'unit': 'мкс/м', 'name': 'АК'},
+    'U1':   {'track': 3, 'color': '#af7ac5', 'scale': (0, 10),   'unit': 'усл.ед.', 'name': 'ЯМК'},
+    'GAZ':  {'track': 3, 'color': '#e84393', 'scale': (0, 100),  'unit': 'усл.ед.', 'name': 'Газовый каротаж'},
+
+    'KP':   {'track': 4, 'color': '#f1c40f', 'scale': (0, 0.3),  'unit': 'д.ед.', 'name': 'Кп'},
+    'KGL':  {'track': 4, 'color': '#7f8c8d', 'scale': (0, 1),    'unit': 'д.ед.', 'name': 'Кгл'},
+    'KNG':  {'track': 4, 'color': '#2980b9', 'scale': (0, 1),    'unit': 'д.ед.', 'name': 'Кнг'},
+    'KPR':  {'track': 4, 'color': '#af7ac5', 'scale': (0.01, 1000), 'log': True, 'unit': 'мД', 'name': 'Кпр'},
+    # Категориальные колонки РИГИС — рисуются как заливка по кодам, не кривой
+    'LITH': {'track': 5, 'color': '#a0522d', 'unit': 'код', 'name': 'Литология',  'categorical': 'lithology'},
+    'COLL': {'track': 5, 'color': '#3fb950', 'unit': 'код', 'name': 'Коллектор',  'categorical': 'collector'},
+    'SAT':  {'track': 5, 'color': '#8b5a2b', 'unit': 'код', 'name': 'Насыщение',  'categorical': 'saturation'},
+})
