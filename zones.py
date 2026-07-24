@@ -118,20 +118,64 @@ def validate_zones(zones_df):
     for name in dup_names:
         warnings.append(f"Повторяющееся имя зоны: «{name}»")
 
-    sorted_df = zones_df.dropna(subset=['Кровля, м', 'Подошва, м']).sort_values('Кровля, м')
-    rows = sorted_df.to_dict('records')
-    for a, b in zip(rows, rows[1:]):
-        if a['Подошва, м'] > b['Кровля, м']:
-            warnings.append(
-                f"«{a['Зона']}» и «{b['Зона']}» пересекаются по глубине "
-                f"({a['Подошва, м']:g} > {b['Кровля, м']:g})"
-            )
+    # Полный перебор пар (а не только соседних после сортировки по кровле) —
+    # иначе короткая зона, целиком вложенная в другую (не соседнюю по кровле),
+    # осталась бы незамеченной.
+    rows = zones_df.dropna(subset=['Кровля, м', 'Подошва, м']).to_dict('records')
+    for i in range(len(rows)):
+        a = rows[i]
+        for j in range(i + 1, len(rows)):
+            b = rows[j]
+            if a['Кровля, м'] > b['Кровля, м']:
+                a, b = b, a
+            if a['Подошва, м'] > b['Кровля, м']:
+                warnings.append(
+                    f"«{a['Зона']}» и «{b['Зона']}» пересекаются по глубине "
+                    f"({a['Подошва, м']:g} > {b['Кровля, м']:g})"
+                )
 
     return warnings
 
 
-def _interval_overlap(zone_top, zone_bottom, interval_top, interval_bottom):
-    return max(0.0, min(zone_bottom, interval_bottom) - max(zone_top, interval_top))
+def clean_zones_df(zones_df):
+    """
+    Приводит колонки глубины к числовому виду и отбрасывает строки без обеих
+    глубин — например, недозаполненные новые строки, добавленные через
+    st.data_editor. Возвращает (очищенный DataFrame, число отброшенных строк).
+    """
+    if zones_df is None or zones_df.empty:
+        return zones_df, 0
+
+    cleaned = zones_df.copy()
+    cleaned['Кровля, м'] = pd.to_numeric(cleaned['Кровля, м'], errors='coerce')
+    cleaned['Подошва, м'] = pd.to_numeric(cleaned['Подошва, м'], errors='coerce')
+    incomplete = cleaned['Кровля, м'].isna() | cleaned['Подошва, м'].isna()
+    dropped = int(incomplete.sum())
+    cleaned = cleaned[~incomplete].reset_index(drop=True)
+    return cleaned, dropped
+
+
+def _clip_to_zone(zone_top, zone_bottom, interval_top, interval_bottom):
+    lo = max(zone_top, interval_top)
+    hi = min(zone_bottom, interval_bottom)
+    return (lo, hi) if hi > lo else None
+
+
+def _union_length(intervals):
+    """Суммарная длина объединения интервалов (без двойного счёта перекрытий)."""
+    if not intervals:
+        return 0.0
+    intervals = sorted(intervals)
+    total = 0.0
+    cur_start, cur_end = intervals[0]
+    for start, end in intervals[1:]:
+        if start > cur_end:
+            total += cur_end - cur_start
+            cur_start, cur_end = start, end
+        else:
+            cur_end = max(cur_end, end)
+    total += cur_end - cur_start
+    return total
 
 
 def build_zone_curve_coverage(zones_df, interval_table):
@@ -156,10 +200,11 @@ def build_zone_curve_coverage(zones_df, interval_table):
         row = {'Зона': zone['Зона'], 'Кровля, м': zone_top, 'Подошва, м': zone_bottom}
 
         for method in methods:
-            overlap = sum(
-                _interval_overlap(zone_top, zone_bottom, float(r['Кровля, м']), float(r['Подошва, м']))
+            clipped = [
+                _clip_to_zone(zone_top, zone_bottom, float(r['Кровля, м']), float(r['Подошва, м']))
                 for r in interval_table if r['Метод'] == method
-            )
+            ]
+            overlap = _union_length([c for c in clipped if c is not None])
             if overlap <= 0:
                 status = 'нет'
             elif zone_length > 0 and overlap >= zone_length - 1e-6:

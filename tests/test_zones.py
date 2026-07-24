@@ -5,7 +5,8 @@ import pandas as pd
 import pytest
 
 from zones import (
-    load_zones_from_file, validate_zones, build_zone_curve_coverage, zones_to_csv_bytes
+    load_zones_from_file, validate_zones, build_zone_curve_coverage, zones_to_csv_bytes,
+    clean_zones_df
 )
 
 
@@ -83,6 +84,17 @@ class TestValidateZones:
     def test_empty_df_no_warnings(self):
         assert validate_zones(pd.DataFrame()) == []
 
+    def test_nested_non_adjacent_overlap_flagged(self):
+        # B is fully nested inside A, but C sits in between them by depth
+        # sort order — an adjacent-only pairwise check would miss A/B.
+        df = pd.DataFrame({
+            'Зона': ['A', 'C', 'B'],
+            'Кровля, м': [1000.0, 1005.0, 1010.0],
+            'Подошва, м': [1100.0, 1006.0, 1020.0],
+        })
+        warnings = validate_zones(df)
+        assert any('«A»' in w and '«B»' in w for w in warnings)
+
 
 class TestBuildZoneCurveCoverage:
     def test_full_coverage(self):
@@ -109,6 +121,39 @@ class TestBuildZoneCurveCoverage:
         zones = pd.DataFrame({'Зона': ['A'], 'Кровля, м': [1000.0], 'Подошва, м': [1010.0]})
         df = build_zone_curve_coverage(zones, [])
         assert list(df.columns) == ['Зона', 'Кровля, м', 'Подошва, м']
+
+    def test_overlapping_records_for_same_method_are_not_double_counted(self):
+        # Two GK records for the same method overlap each other by 20m
+        # (990-1030 and 1010-1050). Their union only covers 990-1050 (60m),
+        # not the 40+40=80m a naive sum would produce — so a zone with a
+        # real 10m gap (1050-1060) must NOT be reported as fully covered.
+        table = [
+            {'Метод': 'GK', 'Кровля, м': '990.0', 'Подошва, м': '1030.0', 'Мин. знач.': '1', 'Макс. знач.': '2', 'LAS-файл': 'a.las'},
+            {'Метод': 'GK', 'Кровля, м': '1010.0', 'Подошва, м': '1050.0', 'Мин. знач.': '1', 'Макс. знач.': '2', 'LAS-файл': 'b.las'},
+        ]
+        zones = pd.DataFrame({'Зона': ['A'], 'Кровля, м': [990.0], 'Подошва, м': [1060.0]})
+        df = build_zone_curve_coverage(zones, table)
+        assert df.iloc[0]['GK'] == 'частично'
+
+
+class TestCleanZonesDf:
+    def test_drops_rows_with_missing_depth(self):
+        df = pd.DataFrame({'Зона': ['A', 'B'], 'Кровля, м': [1000.0, None], 'Подошва, м': [1010.0, 1020.0]})
+        cleaned, dropped = clean_zones_df(df)
+        assert dropped == 1
+        assert list(cleaned['Зона']) == ['A']
+
+    def test_coerces_string_depth_columns(self):
+        df = pd.DataFrame({'Зона': ['A'], 'Кровля, м': ['1000'], 'Подошва, м': ['1010']})
+        cleaned, dropped = clean_zones_df(df)
+        assert dropped == 0
+        assert cleaned.iloc[0]['Кровля, м'] == 1000.0
+
+    def test_none_and_empty_pass_through(self):
+        assert clean_zones_df(None) == (None, 0)
+        empty = pd.DataFrame()
+        cleaned, dropped = clean_zones_df(empty)
+        assert cleaned.empty and dropped == 0
 
 
 class TestZonesToCsvBytes:

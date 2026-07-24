@@ -20,7 +20,10 @@ from ui_helpers import render_encoding_preview
 from qc import build_qc_report, build_well_score_summary
 from crossplots import build_crossplot, build_histogram
 from coverage import build_coverage_chart
-from zones import load_zones_from_file, validate_zones, build_zone_curve_coverage, zones_to_csv_bytes
+from zones import (
+    load_zones_from_file, validate_zones, build_zone_curve_coverage, zones_to_csv_bytes,
+    clean_zones_df
+)
 
 # Настройки для кириллицы
 matplotlib.rcParams['font.family'] = 'DejaVu Sans'
@@ -696,23 +699,30 @@ with tab2:
 
             zones_df_current = st.session_state.step2_data.get('zones_df')
             if zones_df_current is not None and not zones_df_current.empty:
-                st.write("**Ручная корректировка отбивок:**")
-                zones_df_current = st.data_editor(
-                    zones_df_current, num_rows="dynamic", use_container_width=True,
-                    key='zones_editor_step2'
-                )
-                st.session_state.step2_data['zones_df'] = zones_df_current
+                try:
+                    st.write("**Ручная корректировка отбивок:**")
+                    zones_df_current = st.data_editor(
+                        zones_df_current, num_rows="dynamic", use_container_width=True,
+                        key='zones_editor_step2'
+                    )
+                    st.session_state.step2_data['zones_df'] = zones_df_current
 
-                for w in validate_zones(zones_df_current):
-                    st.warning(f"⚠️ {w}")
+                    zones_df_for_validation, dropped_rows = clean_zones_df(zones_df_current)
+                    if dropped_rows:
+                        st.warning(f"⚠️ Строк с незаполненной глубиной (не участвуют в построении): {dropped_rows}")
+                    for w in validate_zones(zones_df_for_validation):
+                        st.warning(f"⚠️ {w}")
 
-                st.download_button(
-                    label="💾 Экспортировать зоны (CSV)",
-                    data=zones_to_csv_bytes(zones_df_current),
-                    file_name="zones.csv",
-                    mime="text/csv",
-                    key="download_zones_step2"
-                )
+                    st.download_button(
+                        label="💾 Экспортировать зоны (CSV)",
+                        data=zones_to_csv_bytes(zones_df_current),
+                        file_name="zones.csv",
+                        mime="text/csv",
+                        key="download_zones_step2"
+                    )
+                except Exception as e:
+                    st.error(f"❌ Ошибка обработки таблицы зон: {e}")
+                    st.code(traceback.format_exc())
             else:
                 st.caption("Зоны не загружены — планшеты будут построены без границ пластов.")
 
@@ -791,7 +801,7 @@ with tab2:
                             tracks_config, st.session_state.curve_limit_overrides
                         )
                         interactive = display_mode.startswith("Интерактивный")
-                        zones_df_all = st.session_state.step2_data.get('zones_df')
+                        zones_df_all, _ = clean_zones_df(st.session_state.step2_data.get('zones_df'))
 
                         for well_name, well_files in wells_data.items():
                             st.subheader(f"Скважина: {well_name}")
@@ -806,9 +816,15 @@ with tab2:
                             zones_for_well = None
                             if zones_df_all is not None and not zones_df_all.empty:
                                 if 'Скважина' in zones_df_all.columns:
-                                    zones_for_well = zones_df_all[zones_df_all['Скважина'] == well_name]
+                                    well_key = well_name.strip().casefold()
+                                    well_match = zones_df_all['Скважина'].astype(str).str.strip().str.casefold() == well_key
+                                    zones_for_well = zones_df_all[well_match]
                                     if zones_for_well.empty:
                                         zones_for_well = None
+                                        st.caption(
+                                            f"ℹ️ В файле зон нет строк со скважиной «{well_name}» — "
+                                            "планшет построен без границ пластов."
+                                        )
                                 else:
                                     zones_for_well = zones_df_all
 

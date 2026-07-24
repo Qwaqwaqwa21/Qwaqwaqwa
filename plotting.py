@@ -508,6 +508,13 @@ def plot_well_panel(well_name, merged_curves, tracks_config, depth_min, depth_ma
         st.warning(f"⚠️ Для скважины {well_name} нет данных для построения треков кривых")
         return None, None
 
+    # Строки с незаполненной глубиной (например, недооформленная новая
+    # строка в st.data_editor) не рисуем — сравнения с NaN всегда False,
+    # так что без явного dropna они бы просто тихо игнорировались.
+    zones_to_draw = None
+    if zones_df is not None and not zones_df.empty:
+        zones_to_draw = zones_df.dropna(subset=['Кровля, м', 'Подошва, м'])
+
     # Для каждой кривой резервируем свой "ряд" линейки по её позиции в
     # tracks_config, а не по порядку появления в данных этой конкретной
     # скважины — иначе одна и та же кривая оказывалась бы в разных рядах
@@ -556,8 +563,8 @@ def plot_well_panel(well_name, merged_curves, tracks_config, depth_min, depth_ma
         ax_main = fig.add_subplot(gs[0, idx])
         ax_main.set_ylim(depth_max, depth_min)
 
-        if zones_df is not None and not zones_df.empty:
-            for _, zone in zones_df.iterrows():
+        if zones_to_draw is not None and not zones_to_draw.empty:
+            for _, zone in zones_to_draw.iterrows():
                 zone_top, zone_bottom = zone['Кровля, м'], zone['Подошва, м']
                 if zone_top > depth_max or zone_bottom < depth_min:
                     continue
@@ -585,8 +592,8 @@ def plot_well_panel(well_name, merged_curves, tracks_config, depth_min, depth_ma
             ax_main.set_xticks([])
             ax_main.set_xlim(0, 1)
 
-            if zones_df is not None and not zones_df.empty:
-                for _, zone in zones_df.iterrows():
+            if zones_to_draw is not None and not zones_to_draw.empty:
+                for _, zone in zones_to_draw.iterrows():
                     zone_top, zone_bottom = zone['Кровля, м'], zone['Подошва, м']
                     if zone_top > depth_max or zone_bottom < depth_min:
                         continue
