@@ -20,6 +20,7 @@ from ui_helpers import render_encoding_preview
 from qc import build_qc_report, build_well_score_summary
 from crossplots import build_crossplot, build_histogram
 from coverage import build_coverage_chart
+from zones import load_zones_from_file, validate_zones, build_zone_curve_coverage, zones_to_csv_bytes
 
 # Настройки для кириллицы
 matplotlib.rcParams['font.family'] = 'DejaVu Sans'
@@ -669,8 +670,54 @@ with tab2:
                             st.session_state.step2_data['wells_data'] = wells_data
                             st.success(f"✅ Объединено {len(wells_to_merge)} скважин в «{merged_name_clean}»")
 
-            # 5. Визуализация
-            st.subheader("5. Построение планшета")
+            # 5. Пласты/зоны: загрузка, ручная корректировка отбивок, экспорт
+            st.subheader("5. Пласты/зоны (кровля/подошва)")
+            st.caption(
+                "Загрузите таблицу пластов/зон (CSV или Excel) с колонками «Зона», "
+                "«Кровля», «Подошва» (названия колонок могут отличаться — ищем по "
+                "распространённым синонимам, включая английские). Если в файле есть "
+                "колонка «Скважина» — зоны применяются только к соответствующей "
+                "скважине, иначе один и тот же список зон накладывается на все "
+                "планшеты. Отбивки можно скорректировать вручную прямо в таблице "
+                "ниже, а затем выгрузить результат."
+            )
+            zones_file = st.file_uploader(
+                "Файл с зонами/пластами:", type=['csv', 'xlsx', 'xls'], key='zones_file_step2'
+            )
+            if zones_file is not None and st.button("📥 Загрузить зоны", key='load_zones_step2_btn'):
+                try:
+                    zones_df_loaded, zone_load_warnings = load_zones_from_file(zones_file)
+                    st.session_state.step2_data['zones_df'] = zones_df_loaded
+                    st.success(f"✅ Загружено зон: {len(zones_df_loaded)}")
+                    for w in zone_load_warnings:
+                        st.warning(f"⚠️ {w}")
+                except ValueError as e:
+                    st.error(f"❌ {e}")
+
+            zones_df_current = st.session_state.step2_data.get('zones_df')
+            if zones_df_current is not None and not zones_df_current.empty:
+                st.write("**Ручная корректировка отбивок:**")
+                zones_df_current = st.data_editor(
+                    zones_df_current, num_rows="dynamic", use_container_width=True,
+                    key='zones_editor_step2'
+                )
+                st.session_state.step2_data['zones_df'] = zones_df_current
+
+                for w in validate_zones(zones_df_current):
+                    st.warning(f"⚠️ {w}")
+
+                st.download_button(
+                    label="💾 Экспортировать зоны (CSV)",
+                    data=zones_to_csv_bytes(zones_df_current),
+                    file_name="zones.csv",
+                    mime="text/csv",
+                    key="download_zones_step2"
+                )
+            else:
+                st.caption("Зоны не загружены — планшеты будут построены без границ пластов.")
+
+            # 6. Визуализация
+            st.subheader("6. Построение планшета")
             display_mode = st.radio(
                 "Тип отображения:",
                 ["Статичный (PNG, для печати)", "Интерактивный (для анализа на экране)"],
@@ -744,6 +791,7 @@ with tab2:
                             tracks_config, st.session_state.curve_limit_overrides
                         )
                         interactive = display_mode.startswith("Интерактивный")
+                        zones_df_all = st.session_state.step2_data.get('zones_df')
 
                         for well_name, well_files in wells_data.items():
                             st.subheader(f"Скважина: {well_name}")
@@ -755,9 +803,19 @@ with tab2:
                                 well_files, overlap_m=100
                             )
 
+                            zones_for_well = None
+                            if zones_df_all is not None and not zones_df_all.empty:
+                                if 'Скважина' in zones_df_all.columns:
+                                    zones_for_well = zones_df_all[zones_df_all['Скважина'] == well_name]
+                                    if zones_for_well.empty:
+                                        zones_for_well = None
+                                else:
+                                    zones_for_well = zones_df_all
+
                             if interactive:
                                 fig_plotly = plot_well_panel_plotly(
-                                    well_name, merged_curves, tracks_config, depth_min, depth_max
+                                    well_name, merged_curves, tracks_config, depth_min, depth_max,
+                                    zones_df=zones_for_well
                                 )
                                 interval_table = build_interval_table(merged_curves, tracks_config)
                                 if fig_plotly:
@@ -770,7 +828,8 @@ with tab2:
                                     tracks_config,
                                     depth_min,
                                     depth_max,
-                                    figsize_width_cm=50
+                                    figsize_width_cm=50,
+                                    zones_df=zones_for_well
                                 )
 
                                 if fig:
@@ -810,6 +869,17 @@ with tab2:
                                         if coverage_fig:
                                             st.plotly_chart(coverage_fig, use_container_width=True,
                                                            key=f"coverage_{well_name}")
+
+                                    if zones_for_well is not None and not zones_for_well.empty:
+                                        st.subheader("🧭 Наличие кривых по зонам")
+                                        st.caption(
+                                            "«полностью» — данные кривой покрывают всю зону, "
+                                            "«частично» — покрыта только часть, «нет» — данных "
+                                            "по кривой в этой зоне не найдено."
+                                        )
+                                        zone_coverage_df = build_zone_curve_coverage(zones_for_well, interval_table)
+                                        if not zone_coverage_df.empty:
+                                            st.dataframe(zone_coverage_df, use_container_width=True)
                                 else:
                                     st.warning(f"⚠️ Таблица интервалов пуста для скважины {well_name}. Возможные причины:\n"
                                                "- Нет данных в кривых (только -999.25)\n"

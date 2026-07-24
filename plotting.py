@@ -482,10 +482,14 @@ def calculate_curve_limits(curve_data, grid_type='linear', mnemonic=''):
             return vmin - padding, vmax + padding
 
 
-def plot_well_panel(well_name, merged_curves, tracks_config, depth_min, depth_max, figsize_width_cm=50):
+def plot_well_panel(well_name, merged_curves, tracks_config, depth_min, depth_max, figsize_width_cm=50, zones_df=None):
     """
     Строит планшет для одной скважины с корректными лимитами для кривых с малым разбросом
     и таблицей интервалов с мин/макс значениями.
+
+    zones_df: необязательная таблица зон/пластов (колонки 'Зона', 'Кровля, м',
+    'Подошва, м' — см. zones.py) — если передана, поверх всех треков рисуются
+    границы зон, а название зоны подписывается в треке "Глубина".
 
     Вызывающий код отвечает за plt.close(fig) после использования фигуры.
     """
@@ -552,6 +556,16 @@ def plot_well_panel(well_name, merged_curves, tracks_config, depth_min, depth_ma
         ax_main = fig.add_subplot(gs[0, idx])
         ax_main.set_ylim(depth_max, depth_min)
 
+        if zones_df is not None and not zones_df.empty:
+            for _, zone in zones_df.iterrows():
+                zone_top, zone_bottom = zone['Кровля, м'], zone['Подошва, м']
+                if zone_top > depth_max or zone_bottom < depth_min:
+                    continue
+                ax_main.axhline(zone_top, color='saddlebrown', linestyle='--',
+                                 linewidth=0.8, alpha=0.8, zorder=5)
+                ax_main.axhline(zone_bottom, color='saddlebrown', linestyle='--',
+                                 linewidth=0.8, alpha=0.8, zorder=5)
+
         if track_id == 0:
             wrapped_title = wrap_text('Глубина', width=12)
             ax_main.text(0.5, unified_title_offset, wrapped_title, transform=ax_main.transAxes,
@@ -570,6 +584,19 @@ def plot_well_panel(well_name, merged_curves, tracks_config, depth_min, depth_ma
             ax_main.grid(axis='x', visible=False)
             ax_main.set_xticks([])
             ax_main.set_xlim(0, 1)
+
+            if zones_df is not None and not zones_df.empty:
+                for _, zone in zones_df.iterrows():
+                    zone_top, zone_bottom = zone['Кровля, м'], zone['Подошва, м']
+                    if zone_top > depth_max or zone_bottom < depth_min:
+                        continue
+                    mid_depth = (max(zone_top, depth_min) + min(zone_bottom, depth_max)) / 2
+                    ax_main.text(0.5, mid_depth, str(zone['Зона']), fontsize=6.5,
+                                ha='center', va='center', color='saddlebrown', fontweight='bold',
+                                rotation=90, zorder=6,
+                                bbox=dict(boxstyle='round,pad=0.15', facecolor='white',
+                                          edgecolor='none', alpha=0.7))
+
             continue
 
         if config['grid'] == 'log':

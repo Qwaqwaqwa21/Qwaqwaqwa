@@ -60,10 +60,14 @@ def _track_x_range(config, curve_instance_pairs):
     return min(all_vmins), max(all_vmaxs)
 
 
-def plot_well_panel_plotly(well_name, merged_curves, tracks_config, depth_min, depth_max):
+def plot_well_panel_plotly(well_name, merged_curves, tracks_config, depth_min, depth_max, zones_df=None):
     """
     Строит интерактивный планшет для одной скважины. Возвращает go.Figure,
     либо None, если ни один трек не содержит данных.
+
+    zones_df: необязательная таблица зон/пластов (колонки 'Зона', 'Кровля, м',
+    'Подошва, м' — см. zones.py) — если передана, поверх всех треков рисуются
+    границы зон, а название зоны подписывается в треке "Глубина".
     """
     active_tracks = [(0, tracks_config[0])]
     for track_id in sorted(tracks_config.keys()):
@@ -138,6 +142,30 @@ def plot_well_panel_plotly(well_name, merged_curves, tracks_config, depth_min, d
         elif x_range is not None:
             xaxis_kwargs['range'] = list(x_range)
         fig.update_xaxes(row=1, col=col_idx, **xaxis_kwargs)
+
+    if zones_df is not None and not zones_df.empty:
+        visible_zones = zones_df[(zones_df['Кровля, м'] <= depth_max) & (zones_df['Подошва, м'] >= depth_min)]
+
+        for col_idx in range(1, len(active_tracks) + 1):
+            xref = 'x domain' if col_idx == 1 else f'x{col_idx} domain'
+            yref = 'y' if col_idx == 1 else f'y{col_idx}'
+            for _, zone in visible_zones.iterrows():
+                for zone_depth in (zone['Кровля, м'], zone['Подошва, м']):
+                    fig.add_shape(
+                        type='line', xref=xref, yref=yref,
+                        x0=0, x1=1, y0=zone_depth, y1=zone_depth,
+                        line=dict(color='saddlebrown', width=1, dash='dash'),
+                        layer='above',
+                    )
+
+        for _, zone in visible_zones.iterrows():
+            mid_depth = (max(zone['Кровля, м'], depth_min) + min(zone['Подошва, м'], depth_max)) / 2
+            fig.add_annotation(
+                x=0.5, xref='x domain', y=mid_depth, yref='y',
+                text=str(zone['Зона']), showarrow=False,
+                textangle=-90, font=dict(color='saddlebrown', size=10),
+                bgcolor='rgba(255,255,255,0.7)',
+            )
 
     # Глубина растёт вниз: верхняя граница диапазона — depth_max
     fig.update_yaxes(range=[depth_max, depth_min])
