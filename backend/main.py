@@ -924,6 +924,28 @@ def _auto_seed():
         db.close()
 
 
+# ─── Ensure a usable default project on a fresh database ─────
+@app.on_event("startup")
+def _ensure_default_project():
+    """Guarantee at least one project so Upload/Bulk-Import work out of the box.
+
+    On a brand-new database (no demo seed) there are no projects, and the
+    import buttons short-circuit with a warning. Create an empty default
+    project so a first-time user can import data immediately.
+    """
+    db = SessionLocal()
+    try:
+        if db.query(Project).count() == 0:
+            db.add(Project(name="My Project", field_name="", operator="", country=""))
+            db.commit()
+            print("✅ Created default project 'My Project'")
+    except Exception as e:
+        db.rollback()
+        print(f"⚠️ Default project creation failed: {e}")
+    finally:
+        db.close()
+
+
 # ─── Health ───────────────────────────────────────────────────
 @app.get("/api/health")
 def health():

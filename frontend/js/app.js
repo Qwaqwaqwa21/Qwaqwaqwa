@@ -2482,8 +2482,17 @@ class GeoLogApp {
             formData.append('file', file);
             GeoLoading.show(`Uploading ${file.name}...`);
             try {
-                const resp = await fetch(`/api/wells/${wellId}/${conf.endpoint}`, { method: 'POST', body: formData });
-                if (!resp.ok) throw new Error(`Upload failed: ${resp.status}`);
+                const resp = await fetch(`/api/wells/${wellId}/${conf.endpoint}`, {
+                    method: 'POST',
+                    headers: { 'X-User-Role': this.currentRole || 'viewer' },
+                    body: formData,
+                });
+                if (!resp.ok) {
+                    let detail = `Upload failed: ${resp.status}`;
+                    try { const j = await resp.json(); detail = j.detail || detail; } catch {}
+                    if (resp.status === 403) detail += ' — switch the role selector (top bar) to Interpreter or Admin to upload.';
+                    throw new Error(detail);
+                }
                 const result = await resp.json();
                 this._applyUploadedLASVersion(result);
                 const runs = result.runs_created ? ` (${result.runs_created} run${result.runs_created > 1 ? 's' : ''})` : '';
@@ -2498,18 +2507,56 @@ class GeoLogApp {
         input.click();
     }
 
+    // Guarantee a project exists (auto-create a default on a fresh database).
+    async _ensureDefaultProject() {
+        if (this.projects && this.projects.length) return this.projects[0];
+        // refresh from server first — avoids creating a duplicate default
+        try { await this.loadProjects(); } catch (e) { /* offline/backend issue */ }
+        if (this.projects && this.projects.length) return this.projects[0];
+        try {
+            await this._api('/projects/', {
+                method: 'POST',
+                body: JSON.stringify({ name: 'My Project', field_name: '', operator: '', country: '' }),
+            });
+            await this.loadProjects();
+            GeoToast.info('Created default project "My Project"');
+        } catch (e) { GeoToast.error('Could not create a project: ' + (e.message || e)); }
+        return (this.projects && this.projects[0]) || null;
+    }
+
+    // Guarantee a selected well exists so single-file upload can proceed.
+    async _ensureCurrentWell() {
+        const proj = await this._ensureDefaultProject();
+        if (!proj) return null;
+        if (this.currentWell) return this.currentWell;
+        if (this.wells && this.wells.length) {
+            await this.selectWell(this.wells[0].id);
+            return this.currentWell;
+        }
+        try {
+            const created = await this._api('/wells/', {
+                method: 'POST',
+                body: JSON.stringify({ name: 'New Well', uwi: '', project_id: proj.id }),
+            });
+            await this.loadWells(proj.id);
+            await this.selectWell(created.id);
+            GeoToast.info('Created "New Well" — rename it any time');
+        } catch (e) { GeoToast.error('Could not create a well: ' + (e.message || e)); }
+        return this.currentWell || null;
+    }
+
     async uploadLAS() {
-        if (!this.currentWell) return GeoToast.warn('Select or create a well first.');
+        if (!this.currentWell) { await this._ensureCurrentWell(); if (!this.currentWell) return; }
         return this._uploadLogFormatForWell(this.currentWell.id, 'las');
     }
 
     async uploadDLIS() {
-        if (!this.currentWell) return GeoToast.warn('Select or create a well first.');
+        if (!this.currentWell) { await this._ensureCurrentWell(); if (!this.currentWell) return; }
         return this._uploadLogFormatForWell(this.currentWell.id, 'dlis');
     }
 
     async uploadLIS() {
-        if (!this.currentWell) return GeoToast.warn('Select or create a well first.');
+        if (!this.currentWell) { await this._ensureCurrentWell(); if (!this.currentWell) return; }
         return this._uploadLogFormatForWell(this.currentWell.id, 'lis');
     }
 
@@ -2525,10 +2572,10 @@ class GeoLogApp {
         return this._uploadLogFormatForWell(wellId, 'lis');
     }
 
-    openBulkImportWizard() {
+    async openBulkImportWizard() {
         if (!this.projects.length) {
-            GeoToast.warn('Create a project first');
-            return;
+            await this._ensureDefaultProject();
+            if (!this.projects.length) return;
         }
         const modal = document.getElementById('bulkImportModal');
         if (!modal) return;
