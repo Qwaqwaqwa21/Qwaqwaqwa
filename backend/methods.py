@@ -11,6 +11,8 @@ parser, the API layer, and tests without side effects.
 """
 from __future__ import annotations
 
+import json
+import os
 import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
@@ -37,13 +39,13 @@ class LogMethod:
 METHODS: List[LogMethod] = [
     # --- Potential / spontaneous ---
     LogMethod("SP", "Spontaneous Potential", "potential", "SP",
-              ("SP", "SPC", "SPCG", "SPRL"), unit="MV", color="#9b59b6", track=0,
-              keywords=("SP", "SPONT", "SELFP")),
+              ("SP", "SPC", "SPCG", "SPRL", "ПС", "СП"), unit="MV",
+              color="#9b59b6", track=0, keywords=("SP", "SPONT", "SELFP", "ПС")),
 
     # --- Natural radioactivity ---
     LogMethod("GR", "Gamma Ray", "nuclear", "GR",
-              ("GR", "CGR", "SGR", "GRGC", "GRD", "GRR"), unit="GAPI",
-              color="#2ecc71", track=0, keywords=("GR", "GAMMA", "GAPI")),
+              ("GR", "CGR", "SGR", "GRGC", "GRD", "GRR", "ГК"), unit="GAPI",
+              color="#2ecc71", track=0, keywords=("GR", "GAMMA", "GAPI", "ГК")),
     LogMethod("KTH", "Spectral Gamma (K/Th/U)", "nuclear", "POTA",
               ("POTA", "THOR", "URAN", "K", "TH", "U"), unit="",
               color="#27ae60", track=0, derived=False,
@@ -51,34 +53,38 @@ METHODS: List[LogMethod] = [
 
     # --- Mechanical ---
     LogMethod("CAL", "Caliper", "mechanical", "CAL",
-              ("CAL", "CALI", "HCAL", "DCAL", "CLDC", "BS", "LCAL"), unit="IN",
-              color="#95a5a6", track=0, keywords=("CAL", "CALIP", "BIT", "BS")),
+              ("CAL", "CALI", "HCAL", "DCAL", "CLDC", "BS", "LCAL",
+               "ДС", "КВ", "КАВ"), unit="IN",
+              color="#95a5a6", track=0,
+              keywords=("CAL", "CALIP", "BIT", "BS", "ДС", "КАВ")),
 
     # --- Electrical / resistivity ---
     LogMethod("RES", "Deep Resistivity", "electrical", "RT",
-              ("RT", "RESD", "RES", "ILD", "RILD", "LLD", "RLA5", "RD", "AT90", "CILD"),
+              ("RT", "RESD", "RES", "ILD", "RILD", "LLD", "RLA5", "RD", "AT90",
+               "CILD", "БК", "БКЗ", "ИК", "КС", "ПЗ", "ГЗ"),
               unit="OHMM", color="#e74c3c", track=1, log_scale=True,
               keywords=("RDEEP", "RDEP", "RLLD", "RT", "RES", "ILD", "LLD",
-                        "DEEP", "AT90", "RLA")),
+                        "DEEP", "AT90", "RLA", "БК", "ИК")),
     LogMethod("RESM", "Medium Resistivity", "electrical", "RILM",
               ("RILM", "ILM", "LLM", "RLA3", "RM", "AT60", "CILM"), unit="OHMM",
               color="#e67e22", track=1, log_scale=True,
               keywords=("RMEDIUM", "RMED", "RLLM", "ILM", "MEDIUM", "AT60",
                         "RLA3", "RILM")),
     LogMethod("RESS", "Shallow / Flushed Resistivity", "electrical", "RXO",
-              ("RXO", "MSFL", "RLL3", "LL3", "SFL", "RXORT", "AT10", "RS"),
+              ("RXO", "MSFL", "RLL3", "LL3", "SFL", "RXORT", "AT10", "RS", "БМК"),
               unit="OHMM", color="#f39c12", track=1, log_scale=True,
               keywords=("RSHALLOW", "RSHAL", "RSHL", "RLLS", "RXO", "MSFL",
-                        "SFL", "SHALLOW", "FLUSH", "AT10")),
+                        "SFL", "SHALLOW", "FLUSH", "AT10", "БМК")),
     LogMethod("MICRO", "Microresistivity", "electrical", "MINV",
-              ("MINV", "MNOR", "MI", "MN", "MLL", "RMLL"), unit="OHMM",
+              ("MINV", "MNOR", "MI", "MN", "MLL", "RMLL", "МК"), unit="OHMM",
               color="#d35400", track=1, log_scale=True,
-              keywords=("MICRO", "RMLL", "MLL", "MINV", "MNOR")),
+              keywords=("MICRO", "RMLL", "MLL", "MINV", "MNOR", "МК")),
 
     # --- Density (gamma-gamma) ---
     LogMethod("DEN", "Bulk Density", "nuclear", "RHOB",
-              ("RHOB", "RHOZ", "DEN", "RHOC", "ZDEN", "DGA"), unit="G/CC",
-              color="#c0392b", track=2, keywords=("RHOB", "RHOZ", "DENS", "ZDEN")),
+              ("RHOB", "RHOZ", "DEN", "RHOC", "ZDEN", "DGA", "ГГК", "ГГКП"),
+              unit="G/CC", color="#c0392b", track=2,
+              keywords=("RHOB", "RHOZ", "DENS", "ZDEN", "ГГК")),
     LogMethod("DRHO", "Density Correction", "nuclear", "DRHO",
               ("DRHO", "DCOR", "HDRA"), unit="G/CC", color="#7f8c8d", track=2,
               keywords=("DRHO", "DCOR", "HDRA", "CORR")),
@@ -88,21 +94,24 @@ METHODS: List[LogMethod] = [
 
     # --- Neutron ---
     LogMethod("NEU", "Neutron Porosity", "nuclear", "NPHI",
-              ("NPHI", "TNPH", "CNLS", "NPRL", "NEUT", "CNC", "APLC"), unit="V/V",
-              color="#3498db", track=2, keywords=("NPHI", "NEUT", "TNPH", "CN")),
+              ("NPHI", "TNPH", "CNLS", "NPRL", "NEUT", "CNC", "APLC",
+               "НГК", "ННК", "ННКТ", "НКТ"), unit="V/V",
+              color="#3498db", track=2,
+              keywords=("NPHI", "NEUT", "TNPH", "CN", "НГК", "ННК")),
 
     # --- Acoustic ---
     LogMethod("SON", "Compressional Sonic", "acoustic", "DT",
-              ("DT", "DTC", "DTP", "DT35", "AC", "DTCO"), unit="US/F",
-              color="#1abc9c", track=2, keywords=("DT", "SON", "ACOUS", "SLOW")),
+              ("DT", "DTC", "DTP", "DT35", "AC", "DTCO", "АК", "ДТ", "ИНК"),
+              unit="US/F", color="#1abc9c", track=2,
+              keywords=("DT", "SON", "ACOUS", "SLOW", "АК", "ДТ")),
     LogMethod("SONS", "Shear Sonic", "acoustic", "DTS",
               ("DTS", "DTSM", "DTSH"), unit="US/F", color="#16a085", track=2,
               keywords=("DTS", "SHEAR")),
 
     # --- Auxiliary measured ---
     LogMethod("TEMP", "Borehole Temperature", "auxiliary", "TEMP",
-              ("TEMP", "DTEM", "TEMPC"), unit="DEGC", color="#e84393", track=0,
-              keywords=("TEMP", "DTEM")),
+              ("TEMP", "DTEM", "TEMPC", "ТМ", "ТЕМ"), unit="DEGC",
+              color="#e84393", track=0, keywords=("TEMP", "DTEM", "ТМ")),
 
     # --- Derived / interpreted results ---
     LogMethod("DPOR", "Density Porosity", "derived", "DPOR",
@@ -145,7 +154,92 @@ def method_for_mnemonic(mnemonic: str) -> Optional[LogMethod]:
     """Return the LogMethod a (possibly aliased) mnemonic belongs to, or None."""
     if not mnemonic:
         return None
-    return _MNEMONIC_TO_METHOD.get(mnemonic.strip().upper())
+    up = mnemonic.strip().upper()
+    meth = _MNEMONIC_TO_METHOD.get(up)
+    if meth is not None:
+        return meth
+    # honour user-defined custom aliases (raw -> canonical)
+    canon = CUSTOM_ALIASES.get(up)
+    if canon:
+        return _MNEMONIC_TO_METHOD.get(canon.upper())
+    return None
+
+
+# ── User-defined custom aliases (editable defaults + Excel/CSV import) ────────
+# Persisted as a flat {RAW: CANONICAL} JSON map so operators can teach GeoLog
+# their own vendor mnemonics without code changes. Overrides the built-in table.
+CUSTOM_ALIASES: Dict[str, str] = {}
+
+_CUSTOM_PATH = os.environ.get(
+    "GEOLOG_CUSTOM_MNEMONICS",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "custom_mnemonics.json"),
+)
+
+
+def load_custom_aliases() -> Dict[str, str]:
+    """(Re)load the custom-alias map from disk into CUSTOM_ALIASES."""
+    global CUSTOM_ALIASES
+    data: Dict[str, str] = {}
+    try:
+        with open(_CUSTOM_PATH, "r", encoding="utf-8") as fh:
+            raw = json.load(fh)
+        if isinstance(raw, dict):
+            for k, v in raw.items():
+                rk, rv = str(k).strip().upper(), str(v).strip().upper()
+                if rk and rv:
+                    data[rk] = rv
+    except (FileNotFoundError, ValueError, OSError):
+        data = {}
+    CUSTOM_ALIASES = data
+    return CUSTOM_ALIASES
+
+
+def save_custom_aliases() -> None:
+    try:
+        with open(_CUSTOM_PATH, "w", encoding="utf-8") as fh:
+            json.dump(CUSTOM_ALIASES, fh, ensure_ascii=False, indent=2, sort_keys=True)
+    except OSError:
+        pass
+
+
+def set_custom_alias(raw: str, canonical: str) -> Dict[str, str]:
+    rk, rv = str(raw or "").strip().upper(), str(canonical or "").strip().upper()
+    if not rk or not rv:
+        raise ValueError("raw and canonical are required")
+    CUSTOM_ALIASES[rk] = rv
+    save_custom_aliases()
+    return {"raw": rk, "canonical": rv}
+
+
+def remove_custom_alias(raw: str) -> bool:
+    rk = str(raw or "").strip().upper()
+    if rk in CUSTOM_ALIASES:
+        del CUSTOM_ALIASES[rk]
+        save_custom_aliases()
+        return True
+    return False
+
+
+def import_custom_aliases(pairs, replace: bool = False) -> Dict[str, int]:
+    """Merge (raw, canonical) pairs into the custom map. Returns counts."""
+    global CUSTOM_ALIASES
+    if replace:
+        CUSTOM_ALIASES = {}
+    added = 0
+    skipped = 0
+    for raw, canon in pairs:
+        rk, rv = str(raw or "").strip().upper(), str(canon or "").strip().upper()
+        if not rk or not rv:
+            skipped += 1
+            continue
+        CUSTOM_ALIASES[rk] = rv
+        added += 1
+    save_custom_aliases()
+    return {"added": added, "skipped": skipped, "total": len(CUSTOM_ALIASES)}
+
+
+# load persisted custom aliases at import time
+load_custom_aliases()
 
 
 # ── Mnemonic auto-mapping ────────────────────────────────────────────────────
@@ -200,6 +294,16 @@ def suggest_mnemonic(raw: str) -> MnemonicSuggestion:
     up = (raw or "").strip().upper()
     if not up:
         return MnemonicSuggestion(raw, raw, None, None, 0.0, "empty", False)
+
+    # 0) user-defined custom alias — highest priority
+    if up in CUSTOM_ALIASES:
+        canon = CUSTOM_ALIASES[up]
+        meth = _MNEMONIC_TO_METHOD.get(canon.upper())
+        already = up == canon
+        return MnemonicSuggestion(
+            raw, canon, meth.key if meth else None,
+            meth.name if meth else None, 1.0,
+            "canonical" if already else "custom", already)
 
     # 1) exact
     if up in ALIAS_TO_CANONICAL:

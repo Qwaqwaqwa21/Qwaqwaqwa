@@ -29,6 +29,18 @@
 
   window.ResearchCoverageView = {
     data: null,
+    logData: null,
+
+    _viewMode() {
+      return (document.getElementById('coverageViewMode') || {}).value || 'matrix';
+    },
+
+    switchMode() {
+      var planshet = this._viewMode() === 'planshet';
+      var mc = document.getElementById('coverageMatrixControls');
+      if (mc) mc.style.display = planshet ? 'none' : 'contents';
+      this.load();
+    },
 
     async load() {
       var pid = projectId();
@@ -39,7 +51,11 @@
       }
       if (host) host.innerHTML = '<p style="color:#8b949e">Computing coverage…</p>';
       try {
-        this.data = await app._api('/projects/' + pid + '/research-coverage?depth_bins=24');
+        if (this._viewMode() === 'planshet') {
+          this.logData = await app._api('/projects/' + pid + '/coverage-log?bins=200');
+        } else {
+          this.data = await app._api('/projects/' + pid + '/research-coverage?depth_bins=24');
+        }
       } catch (e) {
         if (host) host.innerHTML = '<p style="color:#f85149">Failed to load coverage: ' + (e.message || e) + '</p>';
         return;
@@ -49,6 +65,11 @@
     },
 
     render() {
+      if (this._viewMode() === 'planshet') return this.renderPlanshet();
+      return this.renderMatrix();
+    },
+
+    renderMatrix() {
       var host = document.getElementById('coverageContent');
       var data = this.data;
       if (!host || !data) return;
@@ -156,6 +177,134 @@
       html += '</div>';
 
       host.innerHTML = html;
+    },
+
+    // Correlation-style planshet: shared depth axis, one filled column per
+    // method per well, coloured where valid data exists at that depth.
+    renderPlanshet() {
+      var host = document.getElementById('coverageContent');
+      var data = this.logData;
+      if (!host || !data) return;
+      var cols = data.columns || [];
+      var wells = data.wells || [];
+      var info = document.getElementById('coverageInfo');
+      if (info) info.textContent = wells.length + ' wells · ' + cols.length + ' methods · '
+        + data.depth_top + '–' + data.depth_bottom;
+      if (!cols.length || !wells.length) {
+        host.innerHTML = '<p style="color:#8b949e">No recognized method data to plot.</p>';
+        return;
+      }
+
+      var AXIS_W = 62, COL_W = 13, WELL_PAD = 18, HDR = 96, TOP = 8, BOT = 24;
+      var wellW = cols.length * COL_W + WELL_PAD;
+      var plotH = 720;
+      var totalW = AXIS_W + wells.length * wellW + 16;
+      var totalH = HDR + plotH + BOT;
+
+      host.innerHTML = '<div style="overflow-x:auto"><canvas id="coverageLogCanvas"></canvas></div>'
+        + this._planshetLegend(cols);
+      var canvas = document.getElementById('coverageLogCanvas');
+      var dpr = window.devicePixelRatio || 1;
+      canvas.style.width = totalW + 'px';
+      canvas.style.height = totalH + 'px';
+      canvas.width = totalW * dpr;
+      canvas.height = totalH * dpr;
+      var ctx = canvas.getContext('2d');
+      ctx.scale(dpr, dpr);
+      ctx.textBaseline = 'middle';
+      ctx.font = '11px system-ui, sans-serif';
+
+      var top = data.depth_top, bot = data.depth_bottom, span = bot - top || 1;
+      var y0 = HDR, y1 = HDR + plotH;
+      var depthToY = function (d) { return y0 + (d - top) / span * (y1 - y0); };
+
+      // Depth axis grid + labels
+      ctx.strokeStyle = '#30363d';
+      ctx.fillStyle = '#8b949e';
+      ctx.lineWidth = 1;
+      var ticks = 10;
+      for (var t = 0; t <= ticks; t++) {
+        var d = top + span * t / ticks;
+        var y = depthToY(d);
+        ctx.beginPath(); ctx.moveTo(AXIS_W, y); ctx.lineTo(totalW - 8, y); ctx.stroke();
+        ctx.fillText(Math.round(d).toString(), 6, y);
+      }
+
+      // Per-well column groups
+      wells.forEach(function (w, wi) {
+        var wx = AXIS_W + wi * wellW + WELL_PAD / 2;
+        // well name header
+        ctx.save();
+        ctx.fillStyle = '#c9d1d9';
+        ctx.font = '600 12px system-ui, sans-serif';
+        ctx.translate(wx + (cols.length * COL_W) / 2, HDR - 8);
+        var label = w.well_name || ('Well ' + w.well_id);
+        var maxLbl = cols.length * COL_W + 8;
+        // rotate long labels
+        if (ctx.measureText(label).width > maxLbl) {
+          ctx.rotate(-Math.PI / 5);
+          ctx.textAlign = 'left';
+          ctx.fillText(label, -maxLbl / 2, 0);
+        } else {
+          ctx.textAlign = 'center';
+          ctx.fillText(label, 0, 0);
+        }
+        ctx.restore();
+
+        // separator between wells
+        if (wi > 0) {
+          ctx.strokeStyle = '#21262d';
+          ctx.beginPath();
+          ctx.moveTo(AXIS_W + wi * wellW, y0 - 4);
+          ctx.lineTo(AXIS_W + wi * wellW, y1);
+          ctx.stroke();
+        }
+
+        cols.forEach(function (col, ci) {
+          var cx = wx + ci * COL_W;
+          // column background
+          ctx.fillStyle = '#0d1117';
+          ctx.fillRect(cx, y0, COL_W - 2, y1 - y0);
+          ctx.strokeStyle = '#161b22';
+          ctx.strokeRect(cx + 0.5, y0 + 0.5, COL_W - 3, y1 - y0 - 1);
+          // method header tick (small colored square + key rotated)
+          ctx.fillStyle = col.color;
+          ctx.fillRect(cx, HDR - 4, COL_W - 2, 3);
+
+          var arr = w.present && w.present[col.key];
+          if (!arr) return;
+          var n = arr.length;
+          var binH = (y1 - y0) / n;
+          ctx.fillStyle = col.color;
+          // draw contiguous filled runs for crisp columns
+          var runStart = -1;
+          for (var i = 0; i <= n; i++) {
+            var on = i < n && arr[i];
+            if (on && runStart < 0) runStart = i;
+            if (!on && runStart >= 0) {
+              var ry = y0 + runStart * binH;
+              var rh = (i - runStart) * binH;
+              ctx.fillRect(cx, ry, COL_W - 2, Math.max(1, rh));
+              runStart = -1;
+            }
+          }
+        });
+      });
+
+      // axis title
+      ctx.fillStyle = '#8b949e';
+      ctx.font = '10px system-ui, sans-serif';
+      ctx.textAlign = 'left';
+      ctx.fillText('Depth', 6, HDR - 10);
+    },
+
+    _planshetLegend(cols) {
+      var items = cols.map(function (c) {
+        return '<span style="display:inline-flex;align-items:center;gap:5px;margin:3px 10px 3px 0;color:#c9d1d9">'
+          + '<span style="width:11px;height:11px;border-radius:2px;background:' + c.color + '"></span>'
+          + c.key + ' — ' + c.name + '</span>';
+      }).join('');
+      return '<div style="margin-top:12px;font-size:12px;display:flex;flex-wrap:wrap">' + items + '</div>';
     }
   };
 

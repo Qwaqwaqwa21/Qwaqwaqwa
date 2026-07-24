@@ -1085,8 +1085,8 @@ async def upload_las(wid: int, file: UploadFile = File(...), db: Session = Depen
         raise HTTPException(400, "Empty file")
 
     try:
-        text = content.decode('utf-8', errors='replace')
-        las = LASParser.parse_string(text)
+        # Auto-detect encoding (UTF-8 / CP1251 / CP866 …) for Cyrillic field files
+        las = LASParser.parse_bytes(content)
     except Exception as e:
         raise HTTPException(400, f"Failed to parse LAS file: {str(e)}")
 

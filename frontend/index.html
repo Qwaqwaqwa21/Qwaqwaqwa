@@ -1295,10 +1295,12 @@
             </div>
             <div style="padding:16px">
                 <div id="bulkDropZone" style="border:2px dashed #30363d;border-radius:10px;padding:26px;text-align:center;color:#8b949e;cursor:pointer;background:#0d1117">
-                    <p style="margin:0 0 6px 0;color:#c9d1d9">Drag & drop LAS files here</p>
-                    <p style="margin:0 0 10px 0;font-size:12px">Accepts multiple <code>.las</code> files</p>
+                    <p style="margin:0 0 6px 0;color:#c9d1d9">Drag & drop LAS files or a folder here</p>
+                    <p style="margin:0 0 10px 0;font-size:12px">Accepts multiple <code>.las</code> files — folders are scanned recursively (with subfolders)</p>
                     <input type="file" id="bulkImportFileInput" multiple accept=".las,.LAS" style="display:none">
+                    <input type="file" id="bulkImportFolderInput" webkitdirectory directory multiple style="display:none">
                     <button class="btn-primary" onclick="document.getElementById('bulkImportFileInput').click()"><i data-lucide="upload"></i> Select Files</button>
+                    <button class="btn-primary" onclick="document.getElementById('bulkImportFolderInput').click()" style="margin-left:8px"><i data-lucide="folder-tree"></i> Select Folder</button>
                 </div>
                 <div id="bulkImportList" style="margin-top:14px"></div>
                 <div id="bulkImportSummary" style="margin-top:12px;color:#8b949e;font-size:13px"></div>
@@ -1411,21 +1413,29 @@
         <!-- Research Coverage Map Panel -->
         <div id="coveragePanel" class="panel" style="display:none">
             <div class="panel-toolbar">
-                <div class="toolbar-group"><label>Research Coverage Map</label><span class="toolbar-hint">Logging-method coverage across every well in the project (карта охвата исследованиями)</span></div>
-                <div class="toolbar-group"><label>Show</label>
-                    <select id="coverageMode" class="depth-select" onchange="ResearchCoverageView.render()">
-                        <option value="coverage">Depth coverage</option>
-                        <option value="fill">Sample fill</option>
-                        <option value="presence">Presence only</option>
+                <div class="toolbar-group"><label>Research Coverage</label><span class="toolbar-hint">Logging-method coverage across the project (карта охвата исследованиями)</span></div>
+                <div class="toolbar-group"><label>View</label>
+                    <select id="coverageViewMode" class="depth-select" onchange="ResearchCoverageView.switchMode()">
+                        <option value="matrix">Matrix (well × method)</option>
+                        <option value="planshet">Planshet (by depth)</option>
                     </select>
                 </div>
-                <div class="toolbar-group"><label>Group</label>
-                    <select id="coverageGroup" class="depth-select" onchange="ResearchCoverageView.render()">
-                        <option value="category">By category</option>
-                        <option value="none">Flat</option>
-                    </select>
-                </div>
-                <label style="display:flex;align-items:center;gap:6px"><input id="coverageMeasuredOnly" type="checkbox" onchange="ResearchCoverageView.render()"> Measured only</label>
+                <span id="coverageMatrixControls" style="display:contents">
+                    <div class="toolbar-group"><label>Show</label>
+                        <select id="coverageMode" class="depth-select" onchange="ResearchCoverageView.render()">
+                            <option value="coverage">Depth coverage</option>
+                            <option value="fill">Sample fill</option>
+                            <option value="presence">Presence only</option>
+                        </select>
+                    </div>
+                    <div class="toolbar-group"><label>Group</label>
+                        <select id="coverageGroup" class="depth-select" onchange="ResearchCoverageView.render()">
+                            <option value="category">By category</option>
+                            <option value="none">Flat</option>
+                        </select>
+                    </div>
+                    <label style="display:flex;align-items:center;gap:6px"><input id="coverageMeasuredOnly" type="checkbox" onchange="ResearchCoverageView.render()"> Measured only</label>
+                </span>
                 <button class="btn-sm" onclick="ResearchCoverageView.load()"><i data-lucide="refresh-cw"></i> Refresh</button>
                 <span id="coverageInfo" class="toolbar-hint"></span>
             </div>

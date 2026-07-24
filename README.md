@@ -29,13 +29,37 @@ single logging-method registry (`backend/methods.py`):
   tracks (shear sonic, PE, SP, temperature, micro-SFL added), and the coverage
   map. API: `GET /api/methods`.
 - **Auto-apply mnemonics** (авто применение мнемоник) — scan a well's curves,
-  map vendor names to canonical families with a confidence score (exact alias →
-  stripped variant → fuzzy keyword), and normalize them in one click
-  (`Analysis → Mnemonics`). Idempotent and collision-safe.
+  map vendor names to canonical families with a confidence score (custom alias →
+  exact alias → stripped variant → fuzzy keyword), and normalize them in one
+  click (`Analysis → Mnemonics`). Idempotent and collision-safe.
   API: `GET /api/wells/{wid}/mnemonic-suggestions`,
   `POST /api/wells/{wid}/apply-mnemonics`.
 
-Tests for the registry and auto-mapper live in `tests/test_methods.py`.
+### Follow-up additions
+
+- **Method coverage planshet** (карта охвата методами) — a correlation-style
+  depth panel added to `Analysis → Coverage` (toggle **View → Planshet**).
+  Instead of drawing curves it paints one filled column per method per well on
+  a shared depth axis, coloured wherever valid data exists — a fast read of
+  which surveys cover which intervals across the field.
+  API: `GET /api/projects/{pid}/coverage-log`.
+- **Custom mnemonics from Excel / editable defaults** — teach GeoLog your own
+  vendor mnemonics without code changes: add `raw → canonical` rows by hand,
+  import a two-column `.xlsx`/`.csv`/`.tsv` table, or browse the 100+ built-in
+  defaults (`Analysis → Mnemonics`). Custom aliases take precedence everywhere
+  (parser, auto-mapper, coverage). Persisted to `backend/custom_mnemonics.json`.
+  API: `GET/POST /api/mnemonic-aliases`, `DELETE /api/mnemonic-aliases/{raw}`,
+  `POST /api/mnemonic-aliases/import`.
+- **UTF-8 / Cyrillic curves** — the LAS parser accepts Cyrillic mnemonics and
+  auto-detects encoding (UTF-8, CP1251, CP866, …), so Russian ГИС files parse
+  cleanly. Russian method aliases are built in (ГК→GR, ПС→SP, НГК→NPHI, БК→RT,
+  ГГКп→RHOB, АК→DT, ДС→CAL, МК→MINV …).
+- **Recursive folder import** — the bulk-import wizard now has a **Select
+  Folder** picker and recursive drag-and-drop that walk subfolders, ingesting
+  every `.las` file beneath a directory tree.
+
+Tests for the registry, auto-mapper, Cyrillic parsing, and custom aliases live
+in `tests/test_methods.py` and `tests/test_cyrillic_custom.py`.
 
 ---
 

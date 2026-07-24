@@ -228,18 +228,45 @@ class LASParser:
     """
 
     # Regex to parse a LAS line: mnemonic.unit value : description
+    # Mnemonic accepts Latin AND Cyrillic letters (Ѐ-ӿ) so Russian
+    # ГИС mnemonics (ГК, ПС, НГК, ГГКп, АК, ДС, БК ...) parse correctly.
     LINE_RE = re.compile(
-        r'^\s*(?P<mnemonic>[A-Za-z0-9_\-]+)'      # mnemonic (letters, digits, underscore, dash — NO dots)
+        r'^\s*(?P<mnemonic>[A-Za-z0-9_\-Ѐ-ӿ]+)'  # mnemonic (Latin+Cyrillic, no dots)
         r'\s*(?:\.(?P<unit>[^\s:]*))?'            # optional .unit (supports "MNEM.UNIT" and "MNEM .UNIT")
         r'\s*(?P<value>[^:]*)'                     # optional/empty value before colon
         r'(?::\s*(?P<description>.*))?$'           # optional : description
     )
 
+    # Candidate encodings tried in order when decoding raw LAS bytes. Russian
+    # field files are frequently CP1251 or CP866 rather than UTF-8.
+    ENCODINGS = ('utf-8-sig', 'utf-8', 'cp1251', 'cp866', 'iso-8859-5', 'latin-1')
+
+    @staticmethod
+    def decode_bytes(data: bytes) -> str:
+        """Decode LAS bytes, auto-detecting UTF-8 / Cyrillic code pages.
+
+        Picks the first candidate encoding that decodes without error; falls
+        back to latin-1 with replacement (which never fails) as a last resort.
+        """
+        if isinstance(data, str):
+            return data
+        for enc in LASParser.ENCODINGS:
+            try:
+                return data.decode(enc)
+            except (UnicodeDecodeError, LookupError):
+                continue
+        return data.decode('latin-1', errors='replace')
+
     @staticmethod
     def parse_file(filepath: str) -> LASFile:
-        """Parse a LAS file from disk."""
-        with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
-            return LASParser.parse(f)
+        """Parse a LAS file from disk (encoding auto-detected)."""
+        with open(filepath, 'rb') as f:
+            return LASParser.parse_bytes(f.read())
+
+    @staticmethod
+    def parse_bytes(data: bytes) -> LASFile:
+        """Parse a LAS file from raw bytes with encoding auto-detection."""
+        return LASParser.parse_string(LASParser.decode_bytes(data))
 
     @staticmethod
     def parse_string(content: str) -> LASFile:
@@ -249,6 +276,14 @@ class LASParser:
     @staticmethod
     def _canonical_mnemonic(mnemonic: str) -> str:
         m = (mnemonic or '').strip().upper()
+        # User-defined custom aliases take precedence over built-ins. Looked up
+        # live so mappings taught at runtime affect subsequent uploads.
+        try:
+            import methods as _methods
+        except ImportError:  # pragma: no cover
+            from backend import methods as _methods
+        if m in _methods.CUSTOM_ALIASES:
+            return _methods.CUSTOM_ALIASES[m]
         return CURVE_ALIASES.get(m, m)
 
     @staticmethod

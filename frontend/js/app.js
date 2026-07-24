@@ -4778,10 +4778,25 @@ class GeoLogApp {
             });
         }
 
+        // Recursive folder picker (includes files in subfolders)
+        const folderInput = document.getElementById('bulkImportFolderInput');
+        if (folderInput && !folderInput._bound) {
+            folderInput._bound = true;
+            folderInput.addEventListener('change', async () => {
+                const files = folderInput.files;
+                if (!files || !files.length) return;
+                await this._startBulkImport(files);
+                folderInput.value = '';
+            });
+        }
+
         const dropZone = document.getElementById('bulkDropZone');
         if (dropZone && !dropZone._bound) {
             dropZone._bound = true;
-            dropZone.addEventListener('click', () => wizInput?.click());
+            dropZone.addEventListener('click', (e) => {
+                if (e.target.closest('button')) return; // let buttons handle themselves
+                wizInput?.click();
+            });
             dropZone.addEventListener('dragover', (e) => {
                 e.preventDefault();
                 dropZone.style.borderColor = '#58a6ff';
@@ -4792,11 +4807,52 @@ class GeoLogApp {
             dropZone.addEventListener('drop', async (e) => {
                 e.preventDefault();
                 dropZone.style.borderColor = '#30363d';
-                const files = e.dataTransfer?.files;
+                let files = null;
+                // Prefer the entries API so dropped folders (and subfolders) recurse.
+                const items = e.dataTransfer?.items;
+                if (items && items.length && typeof items[0].webkitGetAsEntry === 'function') {
+                    try {
+                        files = await this._filesFromDataTransferItems(items);
+                    } catch { files = null; }
+                }
+                if (!files || !files.length) files = e.dataTransfer?.files;
                 if (!files || !files.length) return;
                 await this._startBulkImport(files);
             });
         }
+    }
+
+    // Walk dropped DataTransferItems, recursing into directories/subdirectories.
+    async _filesFromDataTransferItems(items) {
+        const entries = [];
+        for (let i = 0; i < items.length; i++) {
+            const entry = items[i].webkitGetAsEntry && items[i].webkitGetAsEntry();
+            if (entry) entries.push(entry);
+        }
+
+        const readEntry = (entry) => new Promise((resolve) => {
+            if (entry.isFile) {
+                entry.file((f) => resolve([f]), () => resolve([]));
+            } else if (entry.isDirectory) {
+                const reader = entry.createReader();
+                const all = [];
+                const readBatch = () => reader.readEntries(async (batch) => {
+                    if (!batch.length) {
+                        const nested = await Promise.all(all.map(readEntry));
+                        resolve(nested.flat());
+                        return;
+                    }
+                    all.push(...batch);
+                    readBatch(); // directories can return entries in multiple batches
+                }, () => resolve([]));
+                readBatch();
+            } else {
+                resolve([]);
+            }
+        });
+
+        const nested = await Promise.all(entries.map(readEntry));
+        return nested.flat();
     }
 
     // ─── Depth Shift ─────────────────────────────────────────

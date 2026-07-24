@@ -17,18 +17,21 @@ Provides three capabilities layered on top of the existing well/curve model:
 """
 from __future__ import annotations
 
+import csv
+import io
 import json
 import math
 from typing import Any, Dict, List, Optional
 
 import numpy as np
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 try:
     from database import get_db
     from models import Well, LogRun, CurveData
+    import methods as _methods
     from methods import (
         METHODS,
         methods_catalog,
@@ -38,6 +41,7 @@ try:
 except ImportError:  # pragma: no cover - package-relative import
     from backend.database import get_db
     from backend.models import Well, LogRun, CurveData
+    from backend import methods as _methods
     from backend.methods import (
         METHODS,
         methods_catalog,
@@ -65,6 +69,132 @@ def _valid_mask(arr: np.ndarray, null_value: Optional[float]) -> np.ndarray:
     if null_value is not None and math.isfinite(null_value):
         mask &= ~np.isclose(arr, null_value, rtol=0, atol=1e-6)
     return mask
+
+
+def _known_canonicals() -> List[str]:
+    return sorted({m.canonical for m in METHODS})
+
+
+# ── Custom mnemonic aliases (editable defaults + Excel/CSV import) ────────────
+@router.get("/api/mnemonic-aliases")
+def get_aliases() -> Dict[str, Any]:
+    """Built-in default aliases plus user-defined custom aliases."""
+    defaults = []
+    for m in METHODS:
+        for c in m.curves:
+            if c.upper() != m.canonical.upper():
+                defaults.append({"raw": c.upper(), "canonical": m.canonical,
+                                 "method_key": m.key, "method_name": m.name})
+    custom = [{"raw": k, "canonical": v,
+               "method_key": (method_for_mnemonic(v).key if method_for_mnemonic(v) else None),
+               "method_name": (method_for_mnemonic(v).name if method_for_mnemonic(v) else None)}
+              for k, v in sorted(_methods.CUSTOM_ALIASES.items())]
+    return {
+        "canonicals": _known_canonicals(),
+        "defaults": defaults,
+        "custom": custom,
+        "custom_count": len(custom),
+    }
+
+
+class AliasBody(BaseModel):
+    raw: str
+    canonical: str
+
+
+@router.post("/api/mnemonic-aliases")
+def add_alias(body: AliasBody) -> Dict[str, Any]:
+    try:
+        rec = _methods.set_custom_alias(body.raw, body.canonical)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True, "alias": rec, "custom_count": len(_methods.CUSTOM_ALIASES)}
+
+
+@router.delete("/api/mnemonic-aliases/{raw}")
+def delete_alias(raw: str) -> Dict[str, Any]:
+    removed = _methods.remove_custom_alias(raw)
+    if not removed:
+        raise HTTPException(404, "Alias not found")
+    return {"ok": True, "removed": raw.strip().upper(), "custom_count": len(_methods.CUSTOM_ALIASES)}
+
+
+def _parse_alias_table(filename: str, data: bytes) -> List[tuple]:
+    """Extract (raw, canonical) pairs from an uploaded xlsx/csv/tsv table.
+
+    Accepts two- (or more) column tables; a header row naming columns
+    raw/mnemonic and canonical/target is honoured, otherwise the first two
+    columns are used. Encoding is auto-detected for CSV.
+    """
+    name = (filename or "").lower()
+    rows: List[List[str]] = []
+
+    if name.endswith((".xlsx", ".xlsm", ".xltx")):
+        try:
+            import openpyxl
+        except ImportError:
+            raise HTTPException(400, "Excel support requires openpyxl on the server")
+        try:
+            wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+        except Exception as e:
+            raise HTTPException(400, f"Could not read workbook: {e}")
+        ws = wb.active
+        for r in ws.iter_rows(values_only=True):
+            rows.append([("" if c is None else str(c)) for c in r])
+    else:
+        # CSV / TSV with encoding auto-detection
+        text = None
+        for enc in ("utf-8-sig", "utf-8", "cp1251", "cp866", "latin-1"):
+            try:
+                text = data.decode(enc)
+                break
+            except (UnicodeDecodeError, LookupError):
+                continue
+        if text is None:
+            text = data.decode("latin-1", errors="replace")
+        delim = "\t" if ("\t" in text.splitlines()[0] if text.splitlines() else False) else ","
+        rows = [list(r) for r in csv.reader(io.StringIO(text), delimiter=delim)]
+
+    if not rows:
+        return []
+
+    # Detect and skip a header row
+    start = 0
+    hdr = [str(c).strip().lower() for c in rows[0]]
+    ci_raw, ci_canon = 0, 1
+    if any(h in ("raw", "mnemonic", "vendor", "alias", "мнемоника") for h in hdr):
+        start = 1
+        for i, h in enumerate(hdr):
+            if h in ("raw", "mnemonic", "vendor", "alias", "мнемоника"):
+                ci_raw = i
+            if h in ("canonical", "target", "standard", "canon", "канон"):
+                ci_canon = i
+
+    pairs: List[tuple] = []
+    for r in rows[start:]:
+        if len(r) <= max(ci_raw, ci_canon):
+            continue
+        raw = str(r[ci_raw]).strip()
+        canon = str(r[ci_canon]).strip()
+        if raw and canon:
+            pairs.append((raw, canon))
+    return pairs
+
+
+@router.post("/api/mnemonic-aliases/import")
+async def import_aliases(
+    file: UploadFile = File(...),
+    replace: bool = Query(False),
+) -> Dict[str, Any]:
+    """Import custom aliases from an Excel (.xlsx) or CSV/TSV file."""
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "Empty file")
+    pairs = _parse_alias_table(file.filename or "", data)
+    if not pairs:
+        raise HTTPException(400, "No (raw, canonical) pairs found in file")
+    result = _methods.import_custom_aliases(pairs, replace=replace)
+    return {"ok": True, **result, "sample": [{"raw": p[0], "canonical": p[1]} for p in pairs[:10]]}
 
 
 # ── Methods catalogue ────────────────────────────────────────────────────────
@@ -319,5 +449,103 @@ def research_coverage(
         "project_id": pid,
         "well_count": n_wells,
         "methods": method_summary,
+        "wells": well_rows,
+    }
+
+
+# ── Method coverage planshet (depth-resolved presence columns) ───────────────
+@router.get("/api/projects/{pid}/coverage-log")
+def coverage_log(
+    pid: int,
+    bins: int = Query(160, ge=20, le=1000),
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    """Depth-resolved method coverage for a project's wells.
+
+    Returns a shared depth grid plus, for every well and method, a per-bin
+    presence array (1 = valid data somewhere in that depth bin). This drives a
+    correlation-style planshet of filled columns instead of drawn curves.
+    """
+    wells = db.query(Well).filter(Well.project_id == pid).all()
+    if not wells:
+        raise HTTPException(404, "Project has no wells")
+
+    # Global depth extent across all runs.
+    g_top, g_bot = None, None
+    for w in wells:
+        for run in w.log_runs:
+            if run.start_depth is not None:
+                g_top = run.start_depth if g_top is None else min(g_top, run.start_depth)
+            if run.stop_depth is not None:
+                g_bot = run.stop_depth if g_bot is None else max(g_bot, run.stop_depth)
+    if g_top is None or g_bot is None or g_bot <= g_top:
+        raise HTTPException(400, "Wells have no usable depth range")
+
+    span = g_bot - g_top
+    bin_size = span / bins
+
+    def to_bin(d: float) -> int:
+        idx = int((d - g_top) / bin_size)
+        return 0 if idx < 0 else (bins - 1 if idx >= bins else idx)
+
+    present_union = set()
+    well_rows: List[dict] = []
+
+    for w in wells:
+        methods_bins: Dict[str, np.ndarray] = {}
+        w_top, w_bot = None, None
+        for run in w.log_runs:
+            null_value = run.null_value
+            depth_arr = None
+            for cd in run.curve_data:
+                if (cd.mnemonic or "").strip().upper() in _DEPTH_MNEMONICS:
+                    depth_arr = _decode(cd)
+                    break
+            if depth_arr is None:
+                continue
+            for cd in run.curve_data:
+                mnem = (cd.mnemonic or "").strip()
+                if not mnem or mnem.upper() in _DEPTH_MNEMONICS:
+                    continue
+                meth = method_for_mnemonic(mnem)
+                if meth is None:
+                    continue
+                arr = _decode(cd)
+                if arr is None or arr.size != depth_arr.size:
+                    continue
+                mask = _valid_mask(arr, null_value) & np.isfinite(depth_arr)
+                if not mask.any():
+                    continue
+                dvals = depth_arr[mask]
+                w_top = float(dvals.min()) if w_top is None else min(w_top, float(dvals.min()))
+                w_bot = float(dvals.max()) if w_bot is None else max(w_bot, float(dvals.max()))
+                col = methods_bins.setdefault(meth.key, np.zeros(bins, dtype=bool))
+                idx = ((dvals - g_top) / bin_size).astype(int)
+                idx = np.clip(idx, 0, bins - 1)
+                col[idx] = True
+                present_union.add(meth.key)
+
+        well_rows.append({
+            "well_id": w.id,
+            "well_name": w.name,
+            "depth_top": w_top,
+            "depth_bottom": w_bot,
+            "present": {k: v.astype(int).tolist() for k, v in methods_bins.items()},
+        })
+
+    # Column layout = union of methods present anywhere, in catalogue order.
+    columns = [
+        {"key": m.key, "name": m.name, "category": m.category, "color": m.color,
+         "derived": m.derived}
+        for m in METHODS if m.key in present_union
+    ]
+
+    return {
+        "project_id": pid,
+        "depth_top": round(g_top, 2),
+        "depth_bottom": round(g_bot, 2),
+        "bins": bins,
+        "bin_size": round(bin_size, 4),
+        "columns": columns,
         "wells": well_rows,
     }
