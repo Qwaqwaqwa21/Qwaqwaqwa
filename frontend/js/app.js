@@ -911,6 +911,44 @@ class GeoLogApp {
         try {
             this.curveConfig = await this._api('/curve-config');
         } catch { this.curveConfig = {}; }
+        // Keep a pristine copy of the default scales so auto-fit can always
+        // fall back to them (and not bleed a fitted scale across wells).
+        try { this._defaultCurveConfig = JSON.parse(JSON.stringify(this.curveConfig)); }
+        catch { this._defaultCurveConfig = {}; }
+    }
+
+    // Fit each curve's display scale to its actual data when the default scale
+    // doesn't contain it (e.g. Russian logs: GR in µR/h, non-API caliper units).
+    // Curves whose data already fits the default keep the nice fixed scale;
+    // log-scaled curves (resistivity/perm) are left to their configured scale.
+    _autoFitCurveScales(curveData) {
+        const defaults = this._defaultCurveConfig || {};
+        for (const [mn, values] of Object.entries(curveData || {})) {
+            const U = (mn || '').toUpperCase();
+            if (U === 'DEPTH' || U === 'DEPT' || U === 'MD' || U === 'TVD') continue;
+            if (this.curveConfig[mn] && this.curveConfig[mn].log) continue; // keep log scaling
+            if (!values || values.length < 20) continue;
+            const valid = [];
+            for (const v of values) if (v != null && isFinite(v)) valid.push(v);
+            if (valid.length < 20) continue;
+            valid.sort((a, b) => a - b);
+            const p2 = valid[Math.floor(valid.length * 0.02)];
+            const p98 = valid[Math.floor(valid.length * 0.98)];
+            if (!(p98 > p2)) continue;
+            const def = (defaults[mn] && Array.isArray(defaults[mn].scale)) ? defaults[mn].scale : null;
+            if (!this.curveConfig[mn]) this.curveConfig[mn] = {};
+            if (def) {
+                const lo = Math.min(def[0], def[1]), hi = Math.max(def[0], def[1]);
+                let inside = 0;
+                for (const v of valid) if (v >= lo && v <= hi) inside++;
+                if (inside / valid.length >= 0.7) { this.curveConfig[mn].scale = def.slice(); continue; }
+            }
+            const pad = (p98 - p2) * 0.05;
+            let s = [p2 - pad, p98 + pad];
+            if (def && def[0] > def[1]) s = [s[1], s[0]]; // preserve reversed orientation
+            this.curveConfig[mn].scale = s;
+        }
+        if (this.renderer) this.renderer.curveConfig = this.curveConfig;
     }
 
     async loadProjects() {
@@ -959,6 +997,7 @@ class GeoLogApp {
                 const botIn = document.getElementById('depthBottom');
                 if (topIn && this.currentLogRun.start_depth != null) topIn.value = this.currentLogRun.start_depth;
                 if (botIn && this.currentLogRun.stop_depth != null) botIn.value = this.currentLogRun.stop_depth;
+                this._autoZoomPending = true;   // fit view to logged interval on first load
                 await this._loadCurveData();
                 await this._loadFormationTops();
                 await this._loadZones();
@@ -1005,6 +1044,7 @@ class GeoLogApp {
             const bottomInput = document.getElementById('depthBottom');
             if (topInput && chosen.start_depth != null) topInput.value = chosen.start_depth;
             if (bottomInput && chosen.stop_depth != null) bottomInput.value = chosen.stop_depth;
+            this._autoZoomPending = true;   // fit view to logged interval on first load
             await this._loadCurveData();
             await this._loadFormationTops();
             await this._loadZones();
@@ -1108,6 +1148,7 @@ class GeoLogApp {
         for (const c of curves) {
             if (data[c.mnemonic]) curveData[c.mnemonic] = data[c.mnemonic];
         }
+        this._autoFitCurveScales(curveData);
         this.renderer.setData(depth, curveData, this.formationTops, this.curveConfig);
         this.renderer.setBadHoleIntervals([]);
         const scale = parseInt(document.getElementById('scaleSelect')?.value || '100', 10);
@@ -1165,7 +1206,48 @@ class GeoLogApp {
                 if (topInput) topInput.value = viewStart?.toFixed(1) || '';
                 if (bottomInput) bottomInput.value = viewStop?.toFixed(1) || '';
             }
+
+            // One-time auto-zoom to the interval that actually carries data.
+            // Real LAS often declares the full hole (0–TD) but logs only a deep
+            // interval; without this the curves render squeezed into a sliver.
+            if (this._autoZoomPending && !preserveInputs) {
+                this._autoZoomPending = false;
+                const ext = this._finiteDataExtent();
+                if (ext) {
+                    const [dTop, dBot] = ext;
+                    const span = stop - start;
+                    // only re-zoom if data covers noticeably less than the window
+                    if (span > 0 && (dBot - dTop) < span * 0.85 && (dBot - dTop) > 0) {
+                        const pad = Math.max((dBot - dTop) * 0.02, 0.5);
+                        if (topInput) topInput.value = (dTop - pad).toFixed(1);
+                        if (bottomInput) bottomInput.value = (dBot + pad).toFixed(1);
+                        await this._loadCurveData();   // flag cleared → no recursion
+                    }
+                }
+            }
         } catch (e) { console.error('Failed to load curve data:', e); }
+    }
+
+    // Depth range [top, bottom] over which any displayed curve has finite data.
+    _finiteDataExtent() {
+        const r = this.renderer;
+        if (!r || !r.depthData || !r.curveData) return null;
+        const d = r.depthData;
+        let dTop = Infinity, dBot = -Infinity;
+        for (const [mn, arr] of Object.entries(r.curveData)) {
+            const U = (mn || '').toUpperCase();
+            if (U === 'DEPTH' || U === 'DEPT' || U === 'MD' || U === 'TVD') continue;
+            if (!arr) continue;
+            for (let i = 0; i < arr.length; i++) {
+                const v = arr[i];
+                if (v != null && isFinite(v)) {
+                    const dep = d[i];
+                    if (dep < dTop) dTop = dep;
+                    if (dep > dBot) dBot = dep;
+                }
+            }
+        }
+        return (isFinite(dTop) && isFinite(dBot) && dBot > dTop) ? [dTop, dBot] : null;
     }
 
     async _loadFormationTops() {

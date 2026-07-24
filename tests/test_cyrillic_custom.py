@@ -26,6 +26,36 @@ def test_decode_cp1251_bytes():
     assert LASParser.decode_bytes(text.encode("utf-8")) == text
 
 
+def test_latin_transliterated_russian_gis_codes():
+    """Real Russian LAS use Latin-transliterated method codes."""
+    cases = {"GK": "GR", "PS": "SP", "KS": "RT", "NGK": "NPHI", "BK": "RT",
+             "IK": "RT", "DS": "CAL", "GZ1": "RT", "MPZ": "MINV", "MGZ": "MINV",
+             "INCL": "INCL", "AZ": "INCL"}
+    for raw, canon in cases.items():
+        s = suggest_mnemonic(raw)
+        assert s.canonical == canon, (raw, s.canonical)
+        assert s.confidence >= 0.6
+
+
+def test_scale_suffix_variants_strip_to_family():
+    for raw, canon in [("GK_500", "GR"), ("GK_500_2", "GR"), ("NGK_500", "NPHI"),
+                       ("GZ4_500_3", "RT"), ("PS_1", "SP")]:
+        s = suggest_mnemonic(raw)
+        assert s.canonical == canon, (raw, s.canonical)
+
+
+def test_no_false_positive_uranium():
+    # U1/U2 must NOT map to spectral uranium (was a keyword false positive)
+    for raw in ("U1", "U2"):
+        assert suggest_mnemonic(raw).confidence == 0.0
+
+
+def test_russian_interpreted_curves():
+    for raw, canon in [("КГЛ", "VSH"), ("КП", "PHIE"), ("ЛИТОЛОГИЯ", "LITH"),
+                       ("НАСЫЩЕНИЕ", "SAT")]:
+        assert suggest_mnemonic(raw).canonical == canon, raw
+
+
 def test_parse_cyrillic_las_cp1251():
     las_txt = (
         "~Version\nVERS. 2.0 :\nWRAP. NO :\n"
