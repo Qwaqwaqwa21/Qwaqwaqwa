@@ -93,9 +93,9 @@
       if (wh && info) info.textContent = 'Карта устьев · ' + wh.count + ' скв.';
 
       host.innerHTML = '<div style="display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap">'
-        + '<canvas id="mapCanvas" style="flex:0 0 auto"></canvas>'
-        + '<div id="mapLegend" style="min-width:170px"></div></div>';
-      var cv = document.getElementById('mapCanvas'), dpr = window.devicePixelRatio || 1;
+        + '<canvas id="geoMapCanvas" style="flex:0 0 auto"></canvas>'
+        + '<div id="geoMapLegend" style="min-width:170px"></div></div>';
+      var cv = document.getElementById('geoMapCanvas'), dpr = window.devicePixelRatio || 1;
       if (!cv) return;
       cv.style.width = W + 'px'; cv.style.height = H + 'px';
       cv.width = W * dpr; cv.height = H * dpr;
@@ -198,7 +198,7 @@
       g.save(); g.translate(16, H / 2); g.rotate(-Math.PI / 2);
       g.fillText('Y, м (СК-63)', 0, 0); g.restore();
 
-      var lg = document.getElementById('mapLegend');
+      var lg = document.getElementById('geoMapLegend');
       if (lg) lg.innerHTML = this._legend(d, rev);
     },
 
