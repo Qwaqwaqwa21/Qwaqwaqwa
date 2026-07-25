@@ -1596,3 +1596,6 @@ tr:hover td {
 .imp-res.imp-ok { background: rgba(63,185,80,.12); color: #3fb950; }
 .imp-res.imp-err { background: rgba(248,81,73,.12); color: #f85149; }
 .imp-warn { color: #d29922; }
+.ct-bulk { padding: 2px 8px 6px; color: #6e7681; font-size: 11px; }
+.ct-bulk a { color: #58a6ff; text-decoration: none; }
+.ct-bulk a:hover { text-decoration: underline; }

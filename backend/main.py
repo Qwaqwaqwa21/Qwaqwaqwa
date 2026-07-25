@@ -2339,6 +2339,11 @@ def get_curve_config(mnemonics: str = ""):
                 "unit": meth.unit,
                 "name": f"{meth.key} ({mn})",
             }
+        # Интерпретационные колонки РИГИС рисуются заливкой по кодам, а не линией,
+        # поэтому признак должен доехать до фронтенда под любым именем кривой.
+        book = {"LITH": "lithology", "COLL": "collector", "SAT": "saturation"}.get(meth.key)
+        if book:
+            entry["categorical"] = book
         cfg[mn] = entry
     return cfg
 

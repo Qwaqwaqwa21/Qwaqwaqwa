@@ -1424,7 +1424,10 @@ class GeoLogApp {
                 const allCurves = curves.concat(extra.map(e => ({
                     mnemonic: e.mnemonic, unit: '', description: 'из другого рейса',
                 })));
-                await this._ensureCurveConfig(allCurves.map(c => c.mnemonic));
+                // Настройки нужны и для базовых имён наложенных кривых —
+                // из них берутся трек, шкала и признак категориальной колонки.
+                await this._ensureCurveConfig(
+                    allCurves.map(c => c.mnemonic).concat(extra.map(e => e.base)));
                 this._applyExtraRunStyles(extra);
                 this._applyCurveDataToRenderer(data, allCurves);
             }
@@ -9918,6 +9921,35 @@ try {
     _geologShowFatal(err);
 }
 window.app = app;
+
+// ─── Закрытие окон: Escape и клик мимо ──────────────────────────
+// Часть окон открывалась без своего обработчика закрытия и «залипала»;
+// здесь один общий выход для всех модальных наложений и выпадающих меню.
+function _geologCloseFloatingUI() {
+    let closed = false;
+    document.querySelectorAll('.help-modal-overlay').forEach((el) => {
+        if (el.style.display && el.style.display !== 'none') {
+            el.style.display = 'none';
+            closed = true;
+        }
+    });
+    document.querySelectorAll('.btn-group-dropdown.open').forEach((el) => {
+        el.classList.remove('open');
+        closed = true;
+    });
+    return closed;
+}
+
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && _geologCloseFloatingUI()) e.stopPropagation();
+}, true);
+
+document.addEventListener('click', (e) => {
+    if (!e.target.closest('.btn-group-dropdown')) {
+        document.querySelectorAll('.btn-group-dropdown.open')
+            .forEach((el) => el.classList.remove('open'));
+    }
+});
 
 // ─── Keyboard Shortcuts ────────────────────────────────────────
 document.addEventListener('keydown', (e) => {

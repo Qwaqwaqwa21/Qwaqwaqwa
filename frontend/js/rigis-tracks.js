@@ -101,14 +101,32 @@
     ensureCodes: loadCodes,
     lookup: lookup,
 
+    /**
+     * Справочник кодов для кривой: lithology / collector / saturation.
+     *
+     * Имя кривой в файле произвольное (LITHOLOGY, ЛИТОЛОГИЯ, LIT_1, LITH·РИГИС),
+     * поэтому сначала спрашиваем разрешённую настройку трека — там лежит поле
+     * `categorical`, выведенное из справочника методов; и только потом сверяемся
+     * с точным именем.
+     */
+    bookFor: function (mnemonic) {
+      var raw = String(mnemonic || '');
+      var cfg = (window.app && window.app.curveConfig) ? window.app.curveConfig[raw] : null;
+      if (cfg && cfg.categorical) return cfg.categorical;
+
+      // кривая соседнего рейса приходит с суффиксом «·имя рейса»
+      var basePart = raw.split('·')[0];
+      if (basePart !== raw && window.app && window.app.curveConfig) {
+        var c2 = window.app.curveConfig[basePart];
+        if (c2 && c2.categorical) return c2.categorical;
+      }
+      var m = basePart.toUpperCase();
+      return m === 'LITH' ? 'lithology' : (m === 'COLL' ? 'collector' : (m === 'SAT' ? 'saturation' : null));
+    },
+
     /** Категориальная кривая? */
     isCategorical: function (mnemonic) {
-      var m = (mnemonic || '').toUpperCase();
-      return m === 'LITH' || m === 'COLL' || m === 'SAT';
-    },
-    bookFor: function (mnemonic) {
-      var m = (mnemonic || '').toUpperCase();
-      return m === 'LITH' ? 'lithology' : (m === 'COLL' ? 'collector' : (m === 'SAT' ? 'saturation' : null));
+      return !!this.bookFor(mnemonic);
     },
 
     /** Отрисовать колонку кодов в прямоугольнике трека. */

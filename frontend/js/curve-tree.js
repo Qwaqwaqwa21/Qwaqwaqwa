@@ -38,11 +38,12 @@
       }
       var self = this;
       if (this.data) {
-        // По умолчанию показываем первый рейс, остальные — по желанию.
+        // По умолчанию на планшет выводятся ВСЕ рейсы скважины: иначе виден
+        // только первый, и кажется, что остальной каротаж не загрузился.
         var known = {};
-        this.data.runs.forEach(function (r, i) {
+        this.data.runs.forEach(function (r) {
           known[r.id] = true;
-          if (self.shown[r.id] === undefined) self.shown[r.id] = (i === 0);
+          if (self.shown[r.id] === undefined) self.shown[r.id] = true;
         });
         Object.keys(this.shown).forEach(function (k) { if (!known[k]) delete self.shown[k]; });
       }
@@ -75,6 +76,9 @@
 
       if (!d.runs.length) {
         h += '<div class="ct-empty">Нет загруженного каротажа</div>';
+      } else {
+        h += '<div class="ct-bulk">На планшет: '
+          + '<a href="#" data-all="1">все</a> · <a href="#" data-none="1">ни одного</a></div>';
       }
       d.runs.forEach(function (r) {
         var isOpen = !!self.open[r.id];
@@ -115,6 +119,19 @@
           self.render();
         };
       });
+      var setAll = function (v) {
+        return function (e) {
+          e.preventDefault();
+          self.data.runs.forEach(function (r) { self.shown[r.id] = v; });
+          self.render();
+          if (app() && app().renderShownRuns) app().renderShownRuns();
+        };
+      };
+      var allEl = host.querySelector('[data-all]');
+      if (allEl) allEl.onclick = setAll(true);
+      var noneEl = host.querySelector('[data-none]');
+      if (noneEl) noneEl.onclick = setAll(false);
+
       host.querySelectorAll('[data-show]').forEach(function (el) {
         el.onchange = function () {
           self.shown[el.getAttribute('data-show')] = el.checked;

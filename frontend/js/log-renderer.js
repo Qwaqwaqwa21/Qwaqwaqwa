@@ -1449,7 +1449,10 @@ class LogRenderer {
             
             // Curve statistics overlay (Feature 7)
             let statY = this.margin.top - 14;
+            const statLimit = 6;
+            let statShown = 0;
             for (const mnemonic of track.curves) {
+                if (statShown >= statLimit) break;
                 const data = this.curveData[mnemonic];
                 if (!data || data.length === 0) continue;
                 const cfg = this.curveConfig[mnemonic] || {};
@@ -1468,22 +1471,35 @@ class LogRenderer {
                 ctx.font = '8px IBM Plex Mono';
                 ctx.textAlign = 'left';
                 ctx.fillText(`${mnemonic}: ${mean.toFixed(1)}`, trackX + 3, statY);
+                statShown++;
                 statY -= 10;
                 if (statY < 4) break;
             }
             ctx.fillText(track.name, trackX + track.width / 2, 18);
 
-            // Curve names with colors
+            // Названия кривых. При показе нескольких рейсов их набирается
+            // столько, что подписи наезжают друг на друга — поэтому в шапке
+            // помещается ровно столько строк, сколько влезает, остальные
+            // сворачиваются в счётчик.
             const activeCurves = track.curves.filter(m => this.curveData[m] && this.curveData[m].length > 0);
+            const rowH = 12;
+            const maxRows = Math.max(1, Math.floor((this.margin.top - 15 - 33) / rowH));
+            const shown = activeCurves.slice(0, activeCurves.length > maxRows ? maxRows - 1 : maxRows);
             let cy = 33;
-            for (const mnemonic of activeCurves) {
+            for (const mnemonic of shown) {
                 const cfg = this.curveConfig[mnemonic] || {};
                 ctx.fillStyle = cfg.color || '#58a6ff';
                 ctx.font = '10px IBM Plex Mono';
                 ctx.textAlign = 'center';
                 const unit = cfg.unit ? ` (${cfg.unit})` : '';
                 ctx.fillText(mnemonic + unit, trackX + track.width / 2, cy);
-                cy += 14;
+                cy += rowH;
+            }
+            if (activeCurves.length > shown.length) {
+                ctx.fillStyle = '#8b949e';
+                ctx.font = '10px IBM Plex Mono';
+                ctx.textAlign = 'center';
+                ctx.fillText(`+ ещё ${activeCurves.length - shown.length}`, trackX + track.width / 2, cy);
             }
 
             trackX += track.width;

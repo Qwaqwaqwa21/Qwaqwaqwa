@@ -92,3 +92,25 @@ def test_minimum_curvature_deviated_well_shortens_tvd():
     tvd, _, east = _minimum_curvature(md, [0.0, 30.0, 30.0], [90.0, 90.0, 90.0])
     assert tvd[-1] < 200.0            # наклон укорачивает вертикаль
     assert east[-1] > 0.0             # смещение на восток при азимуте 90°
+
+
+def test_curve_config_resolves_field_mnemonics():
+    """Настройки трека выводятся для имён вне встроенной таблицы."""
+    from backend.main import get_curve_config
+
+    cfg = get_curve_config(mnemonics="GK_500,GZ1,ЛИТОЛОГИЯ,НАСЫЩЕНИЕ,КОЛЛЕКТОР,ЧУШЬ")
+    assert "GK_500" in cfg and cfg["GK_500"]["track"] == cfg["GK"]["track"]
+    assert "GZ1" in cfg                       # градиент-зонд → трек БКЗ
+    # интерпретационные колонки помечаются справочником кодов
+    assert cfg["ЛИТОЛОГИЯ"]["categorical"] == "lithology"
+    assert cfg["КОЛЛЕКТОР"]["categorical"] == "collector"
+    assert cfg["НАСЫЩЕНИЕ"]["categorical"] == "saturation"
+    # неизвестная мнемоника не выдумывается
+    assert "ЧУШЬ" not in cfg
+
+
+def test_curve_config_without_query_is_builtin_table():
+    from backend.main import get_curve_config
+
+    cfg = get_curve_config()
+    assert "GK" in cfg and "LITH" in cfg
