@@ -1599,3 +1599,11 @@ tr:hover td {
 .ct-bulk { padding: 2px 8px 6px; color: #6e7681; font-size: 11px; }
 .ct-bulk a { color: #58a6ff; text-decoration: none; }
 .ct-bulk a:hover { text-decoration: underline; }
+
+/* сворачивание панелей сайдбара */
+.panel-toggle { cursor: pointer; user-select: none; display: flex; align-items: center; gap: 5px; }
+.panel-toggle:hover { color: #c9d1d9; }
+.panel-caret { display: inline-block; transition: transform .15s ease; }
+.clipboard-panel.collapsed .panel-caret { transform: rotate(-90deg); }
+.clipboard-panel.collapsed .clipboard-content { display: none; }
+.clipboard-panel.collapsed { max-height: none; flex: 0 0 auto; }

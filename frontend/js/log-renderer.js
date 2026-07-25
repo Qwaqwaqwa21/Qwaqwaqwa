@@ -10,16 +10,26 @@ class LogRenderer {
         this.dpr = window.devicePixelRatio || 1;
 
         // Display config
-        // Базовые треки. Список кривых — только «затравка»: реальные мнемоники
+        // Треки планшета. Списки кривых — только «затравка»: реальные мнемоники
         // (GK_500, GZ1, МПЗ…) добавляются автоматически по curveConfig.track,
-        // иначе промысловый LAS рисуется пустым планшетом.
-        this.tracks = [
-            { name: 'ГК / ПС / ДС', curves: ['GR', 'SGR', 'CGR', 'SP', 'CAL', 'CALI', 'HCAL', 'BS', 'GK', 'PS', 'DS'], width: 180 },
-            { name: 'Сопротивление', curves: ['RT', 'RESD', 'RXO', 'RILD', 'RILM', 'RLL3', 'RLLS', 'ILD', 'ILM', 'MSFL', 'KS', 'BK', 'IK', 'BKZ', 'MKZ'], width: 180, log: true },
-            { name: 'Пористость / НГК', curves: ['NPHI', 'NPHI_LS', 'RHOB', 'RHOZ', 'DT', 'DTC', 'DTS', 'PEF', 'DRHO', 'NGK', 'GGKP', 'AK'], width: 180 },
-            { name: 'Насыщение / прочее', curves: ['SW', 'VSH', 'PHIE', 'PHIT', 'BVW', 'PERM', 'KP', 'KGL', 'KNG', 'KPR', 'GAZ', 'YMK'], width: 180 },
+        // иначе промысловый LAS рисуется пустым планшетом. Пустые треки на
+        // экран не выводятся.
+        this.allTracks = [
+            { name: 'Стандартный', curves: ['DS', 'BS', 'KS', 'PS', 'RS', 'SP', 'CAL', 'CALI', 'HCAL', 'TEMP'], width: 180 },
+            { name: 'Радиоактивный', curves: ['GK', 'NGK', 'GR', 'SGR', 'CGR'], width: 170 },
+            { name: 'Сопротивление', curves: ['IK', 'BK', 'BKZ', 'RT', 'RESD', 'RILD', 'RILM', 'ILD', 'RLL3'], width: 180, log: true },
+            { name: 'Микрозонды', curves: ['MKZ', 'RXO', 'MSFL'], width: 150, log: true },
+            { name: 'ЯМК', curves: ['YMK'], width: 140 },
+            { name: 'Расширенный', curves: ['AK', 'AKS', 'GGKP', 'PE', 'DRHO', 'NPHI', 'RHOB', 'DT', 'DTS'], width: 170 },
+            { name: 'Газовый', curves: ['GAZ'], width: 140 },
+            { name: 'Пористость', curves: ['KP', 'PHIE', 'PHIT', 'BVW'], width: 130, fixedScale: [0, 0.4] },
+            { name: 'Глинистость', curves: ['KGL', 'VSH'], width: 130, fixedScale: [0, 0.4] },
+            { name: 'Нефтенасыщ.', curves: ['KNG', 'SW'], width: 130, fixedScale: [0, 1] },
             { name: 'РИГИС', curves: ['LITH', 'COLL', 'SAT'], width: 132, categorical: true },
+            { name: 'Прочее', curves: ['KPR', 'PERM'], width: 150 },
         ];
+        // на экране — только треки с данными (заполняется в _autoAssignTracks)
+        this.tracks = this.allTracks.slice();
 
         // Layout constants
         this.depthTrackWidth = 70;       // Depth ruler column
@@ -122,11 +132,12 @@ class LogRenderer {
         this.curveData = curveData;
         this.formationTops = formationTops || [];
         this.curveConfig = curveConfig || {};
-        // Restore track widths from localStorage
+        // Ширины треков запоминаются по имени: набор треков теперь переменный,
+        // и привязка к порядковому номеру ломалась при скрытии пустых.
         try {
-            const saved = JSON.parse(localStorage.getItem('geolog_track_widths') || 'null');
-            if (Array.isArray(saved) && saved.length === this.tracks.length) {
-                this.tracks.forEach((t, i) => { t.width = saved[i]; });
+            const saved = JSON.parse(localStorage.getItem('geolog_track_widths_v2') || 'null');
+            if (saved && typeof saved === 'object') {
+                this.allTracks.forEach((t) => { if (saved[t.name] > 0) t.width = saved[t.name]; });
             }
         } catch {}
         this._autoAssignTracks();
@@ -141,9 +152,13 @@ class LogRenderer {
      */
     _autoAssignTracks() {
         const cfg = this.curveConfig || {};
+        const all = this.allTracks;
+        const other = all.length - 1;      // «Прочее» — последний трек
+
         // Сначала убираем ранее добавленные автоматически, чтобы при смене
-        // скважины треки не копили кривые прошлых рейсов.
-        for (const t of this.tracks) {
+        // скважины треки не копили кривые прошлых рейсов. Ручные переносы
+        // пользователя (_pinned) сохраняются.
+        for (const t of all) {
             if (t._auto) for (const m of t._auto) {
                 const i = t.curves.indexOf(m);
                 if (i >= 0) t.curves.splice(i, 1);
@@ -153,13 +168,38 @@ class LogRenderer {
         for (const mn of Object.keys(this.curveData || {})) {
             const U = String(mn).toUpperCase();
             if (['DEPTH', 'DEPT', 'MD', 'TVD'].includes(U)) continue;
-            if (this.tracks.some(t => t.curves.includes(mn))) continue;
+            if (all.some(t => t.curves.includes(mn))) continue;
             const c = cfg[mn];
             let idx = Number.isFinite(Number(c?.track)) ? Number(c.track) - 1 : -1;
-            if (!(idx >= 0 && idx < this.tracks.length)) idx = 0;
-            this.tracks[idx].curves.push(mn);
-            this.tracks[idx]._auto.push(mn);
+            if (!(idx >= 0 && idx < all.length)) idx = other;
+            all[idx].curves.push(mn);
+            all[idx]._auto.push(mn);
         }
+
+        // Треки без единой кривой с данными на планшет не выводятся.
+        this.tracks = all.filter(t =>
+            t.curves.some(m => this.curveData[m] && this.curveData[m].length > 0));
+        if (!this.tracks.length) this.tracks = all.slice(0, 1);
+    }
+
+    /** Перенести кривую в другой трек вручную (сохраняется при перерисовке). */
+    moveCurveToTrack(mnemonic, trackName) {
+        const dst = this.allTracks.find(t => t.name === trackName);
+        if (!dst) return false;
+        for (const t of this.allTracks) {
+            const i = t.curves.indexOf(mnemonic);
+            if (i >= 0) t.curves.splice(i, 1);
+            const j = (t._auto || []).indexOf(mnemonic);
+            if (j >= 0) t._auto.splice(j, 1);
+        }
+        dst.curves.push(mnemonic);
+        if (this.curveConfig[mnemonic]) {
+            this.curveConfig[mnemonic].track = this.allTracks.indexOf(dst) + 1;
+        }
+        this.tracks = this.allTracks.filter(t =>
+            t.curves.some(m => this.curveData[m] && this.curveData[m].length > 0));
+        this.render();
+        return true;
     }
 
     setLithologyData(lithologyData) {
@@ -188,6 +228,7 @@ class LogRenderer {
     }
 
     updateTracks(tracks) {
+        this.allTracks = tracks;
         this.tracks = tracks;
         this.render();
     }
@@ -403,13 +444,15 @@ class LogRenderer {
             this._resizeState = null;
             this.canvas.style.cursor = 'default';
             // Save to localStorage
-            const widths = this.tracks.map(t => t.width);
-            localStorage.setItem('geolog_track_widths', JSON.stringify(widths));
+            const widths = {};
+            this.allTracks.forEach(t => { widths[t.name] = t.width; });
+            localStorage.setItem('geolog_track_widths_v2', JSON.stringify(widths));
             if (typeof this.onTrackResize === 'function') this.onTrackResize(widths);
             return;
         }
 
-        // Feature 4: Curve drag-drop end
+        // Подпись кривой: короткий клик — настройка границ, протяжка — перенос
+        // кривой в другой трек.
         if (this._dragCurve) {
             const rect = this.canvas.getBoundingClientRect();
             const x = e.clientX - rect.left;
@@ -417,19 +460,20 @@ class LogRenderer {
             const drag = this._dragCurve;
             this._dragCurve = null;
             this.canvas.style.cursor = 'default';
-            if (targetTrack >= 0 && targetTrack !== drag.fromTrack) {
-                // Remove from old track
-                const oldTrack = this.tracks[drag.fromTrack];
-                const idx = oldTrack.curves.indexOf(drag.mnemonic);
-                if (idx >= 0) oldTrack.curves.splice(idx, 1);
-                // Add to new track
-                this.tracks[targetTrack].curves.push(drag.mnemonic);
-                // Update curveConfig
-                if (this.curveConfig[drag.mnemonic]) {
-                    this.curveConfig[drag.mnemonic].track = targetTrack + 1;
+            const moved = Math.abs(e.clientX - drag.startX) + Math.abs(e.clientY - drag.startY);
+            if (moved < 5) {
+                if (typeof this.onCurveScaleEdit === 'function') {
+                    this.onCurveScaleEdit(drag.mnemonic, drag.fromTrack);
                 }
                 this.render();
+                return;
+            }
+            if (targetTrack >= 0 && targetTrack !== drag.fromTrack) {
+                const dstName = this.tracks[targetTrack].name;
+                this.moveCurveToTrack(drag.mnemonic, dstName);
                 if (typeof this.onCurveMoved === 'function') this.onCurveMoved(drag.mnemonic, drag.fromTrack, targetTrack);
+            } else {
+                this.render();
             }
             return;
         }
@@ -463,19 +507,32 @@ class LogRenderer {
         }
     }
 
+    /**
+     * Раскладка подписей кривых в шапке трека. Отрисовка и попадание мышью
+     * обязаны считать её одинаково, иначе клик «промахивается» мимо подписи.
+     */
+    _headerRows(track) {
+        const active = track.curves.filter(m => this.curveData[m] && this.curveData[m].length > 0);
+        const rowH = 12;
+        const top = 33;
+        const maxRows = Math.max(1, Math.floor((this.margin.top - 15 - top) / rowH));
+        const shown = active.slice(0, active.length > maxRows ? maxRows - 1 : maxRows);
+        const rows = shown.map((m, i) => ({ mnemonic: m, y: top + i * rowH }));
+        return { rows, rowH, hidden: active.length - shown.length,
+                 moreY: top + shown.length * rowH };
+    }
+
     _getCurveAtHeaderPos(x, y) {
         const lithTrackWidth = (this._showLithology && this.lithologyData?.lith_code?.length) ? 46 : 0;
         let trackX = this.margin.left + this.depthTrackWidth + lithTrackWidth;
         for (let t = 0; t < this.tracks.length; t++) {
             const track = this.tracks[t];
             if (x >= trackX && x <= trackX + track.width) {
-                const activeCurves = track.curves.filter(m => this.curveData[m] && this.curveData[m].length > 0);
-                let cy = 33;
-                for (const mnemonic of activeCurves) {
-                    if (y >= cy - 8 && y <= cy + 4) {
-                        return { mnemonic, trackIdx: t, trackX, trackWidth: track.width };
+                const { rows, rowH } = this._headerRows(track);
+                for (const r of rows) {
+                    if (y >= r.y - rowH + 2 && y <= r.y + 3) {
+                        return { mnemonic: r.mnemonic, trackIdx: t, trackX, trackWidth: track.width };
                     }
-                    cy += 14;
                 }
                 return null;
             }
@@ -504,6 +561,16 @@ class LogRenderer {
     _getCurveLabelAtPos(x, y) {
         if (y > this.margin.top - 15) return null;
         return this._getCurveAtHeaderPos(x, y);
+    }
+
+    /** Короткая запись границы шкалы для подписи в шапке. */
+    _fmtScale(v) {
+        if (!Number.isFinite(v)) return '?';
+        const a = Math.abs(v);
+        if (a >= 1000) return String(Math.round(v));
+        if (a >= 10) return v.toFixed(0);
+        if (a >= 1) return v.toFixed(1);
+        return v.toFixed(2).replace(/0$/, '');
     }
 
     _getTrackAtX(x) {
@@ -1481,25 +1548,20 @@ class LogRenderer {
             // столько, что подписи наезжают друг на друга — поэтому в шапке
             // помещается ровно столько строк, сколько влезает, остальные
             // сворачиваются в счётчик.
-            const activeCurves = track.curves.filter(m => this.curveData[m] && this.curveData[m].length > 0);
-            const rowH = 12;
-            const maxRows = Math.max(1, Math.floor((this.margin.top - 15 - 33) / rowH));
-            const shown = activeCurves.slice(0, activeCurves.length > maxRows ? maxRows - 1 : maxRows);
-            let cy = 33;
-            for (const mnemonic of shown) {
-                const cfg = this.curveConfig[mnemonic] || {};
+            const layout = this._headerRows(track);
+            for (const r of layout.rows) {
+                const cfg = this.curveConfig[r.mnemonic] || {};
                 ctx.fillStyle = cfg.color || '#58a6ff';
                 ctx.font = '10px IBM Plex Mono';
                 ctx.textAlign = 'center';
-                const unit = cfg.unit ? ` (${cfg.unit})` : '';
-                ctx.fillText(mnemonic + unit, trackX + track.width / 2, cy);
-                cy += rowH;
+                const sc = Array.isArray(cfg.scale) ? ` ${this._fmtScale(cfg.scale[0])}…${this._fmtScale(cfg.scale[1])}` : '';
+                ctx.fillText(r.mnemonic + sc, trackX + track.width / 2, r.y);
             }
-            if (activeCurves.length > shown.length) {
+            if (layout.hidden > 0) {
                 ctx.fillStyle = '#8b949e';
                 ctx.font = '10px IBM Plex Mono';
                 ctx.textAlign = 'center';
-                ctx.fillText(`+ ещё ${activeCurves.length - shown.length}`, trackX + track.width / 2, cy);
+                ctx.fillText(`+ ещё ${layout.hidden}`, trackX + track.width / 2, layout.moreY);
             }
 
             trackX += track.width;

@@ -28,6 +28,7 @@ try:
     from routers.inclinometry import router as inkl_router
     from routers.maps import router as maps_router
     from routers.ingest import router as ingest_router
+    from curve_lookup import find_curve as _find_curve, find_depth as _find_depth
 except ImportError:
     from backend.routers.qc import router as qc_router
     from backend.routers.correlation import router as corr_router
@@ -39,6 +40,7 @@ except ImportError:
     from backend.routers.inclinometry import router as inkl_router
     from backend.routers.maps import router as maps_router
     from backend.routers.ingest import router as ingest_router
+    from backend.curve_lookup import find_curve as _find_curve, find_depth as _find_depth
 
 
 class SafeJSONResponse(JSONResponse):
@@ -1600,7 +1602,7 @@ def shoulder_bed_correction(lr_id: int, data: dict, db: Session = Depends(get_db
     if not curve_cd:
         raise HTTPException(404, f"Curve {mnemonic} not found")
 
-    depth_cd = db.query(CurveData).filter(CurveData.log_run_id == lr_id, CurveData.mnemonic.in_(["DEPT", "DEPTH", "MD", "TVD"])).first()
+    depth_cd = _find_depth(db, lr_id)
     if not depth_cd:
         raise HTTPException(404, "Depth curve not found")
 
@@ -1612,11 +1614,11 @@ def shoulder_bed_correction(lr_id: int, data: dict, db: Session = Depends(get_db
     if int(np.sum(~np.isnan(z_meas))) < 5:
         raise HTTPException(400, "Not enough valid data points")
 
-    rt_cd = db.query(CurveData).filter(CurveData.log_run_id == lr_id, CurveData.mnemonic.in_(["RT", "RESD", "RILD", "ILD"])) .first()
-    rxo_cd = db.query(CurveData).filter(CurveData.log_run_id == lr_id, CurveData.mnemonic.in_(["RXO", "RILM", "RLLS", "MSFL"])) .first()
-    gr_cd = db.query(CurveData).filter(CurveData.log_run_id == lr_id, CurveData.mnemonic.in_(["GR", "SGR", "CGR"])) .first()
-    cali_cd = db.query(CurveData).filter(CurveData.log_run_id == lr_id, CurveData.mnemonic.in_(["CALI", "CAL", "HCAL"])) .first()
-    bs_cd = db.query(CurveData).filter(CurveData.log_run_id == lr_id, CurveData.mnemonic.in_(["BS", "BIT", "BITSIZE"])) .first()
+    rt_cd = _find_curve(db, lr_id, "RT")
+    rxo_cd = _find_curve(db, lr_id, "RXO")
+    gr_cd = _find_curve(db, lr_id, "GR")
+    cali_cd = _find_curve(db, lr_id, "CAL")
+    bs_cd = _find_curve(db, lr_id, "BS")
 
     rt = np.frombuffer(rt_cd.data_binary, dtype=np.float64).copy()[:n] if rt_cd else None
     rxo = np.frombuffer(rxo_cd.data_binary, dtype=np.float64).copy()[:n] if rxo_cd else None
@@ -2642,9 +2644,9 @@ def sensitivity_analysis(wid: int, data: dict, db: Session = Depends(get_db)):
     if not lr:
         raise HTTPException(404, "No log run")
 
-    rt_cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic.in_(["RT", "RESD", "RILD", "ILD"])).first()
-    nphi_cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic.in_(["NPHI", "NPHI_LS"])).first()
-    gr_cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic.in_(["GR", "SGR", "CGR"])).first()
+    rt_cd = _find_curve(db, lr.id, "RT")
+    nphi_cd = _find_curve(db, lr.id, "NPHI")
+    gr_cd = _find_curve(db, lr.id, "GR")
     if not rt_cd or not nphi_cd:
         raise HTTPException(400, "Need RT and NPHI curves")
 
@@ -2685,7 +2687,7 @@ def sensitivity_analysis(wid: int, data: dict, db: Session = Depends(get_db)):
     if step == 0:
         step = 0.5
 
-    depth_cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic.in_(["DEPT", "DEPTH"])).first()
+    depth_cd = _find_depth(db, lr.id)
     depth_arr = np.frombuffer(depth_cd.data_binary, dtype=np.float64).copy() if depth_cd else None
     depth_mask = np.ones(len(rt), dtype=bool)
     if depth_arr is not None and (start_depth is not None or stop_depth is not None):
@@ -3567,7 +3569,7 @@ def splice_curves(wid: int, data: dict, db: Session = Depends(get_db)):
             continue
         cd = db.query(CurveData).filter(CurveData.log_run_id == lr_id, CurveData.mnemonic == mnemonic).first()
         if cd:
-            dept_cd = db.query(CurveData).filter(CurveData.log_run_id == lr_id, CurveData.mnemonic.in_(["DEPT", "DEPTH"])).first()
+            dept_cd = _find_depth(db, lr_id)
             if dept_cd:
                 depth = np.frombuffer(dept_cd.data_binary, dtype=np.float64)
                 values = np.frombuffer(cd.data_binary, dtype=np.float64)
@@ -3689,7 +3691,7 @@ def compute_electrofacies(wid: int, data: dict, db: Session = Depends(get_db)):
         cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic == cn).first()
         if cd:
             curves_data[cn] = np.frombuffer(cd.data_binary, dtype=np.float64).copy()
-    dept_cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic.in_(["DEPT", "DEPTH"])).first()
+    dept_cd = _find_depth(db, lr.id)
     if dept_cd:
         dept = np.frombuffer(dept_cd.data_binary, dtype=np.float64).copy()
 
@@ -3844,8 +3846,8 @@ def auto_depth_match(wid: int, data: dict, db: Session = Depends(get_db)):
     if not cd_a or not cd_b:
         raise HTTPException(404, f"Curve {mnemonic} not found in both runs")
 
-    dept_a_cd = db.query(CurveData).filter(CurveData.log_run_id == run_a, CurveData.mnemonic.in_(["DEPT", "DEPTH"])).first()
-    dept_b_cd = db.query(CurveData).filter(CurveData.log_run_id == run_b, CurveData.mnemonic.in_(["DEPT", "DEPTH"])).first()
+    dept_a_cd = _find_depth(db, run_a)
+    dept_b_cd = _find_depth(db, run_b)
     if not dept_a_cd or not dept_b_cd:
         raise HTTPException(404, "Depth curve not found")
 
@@ -3919,7 +3921,7 @@ def curve_override(lr_id: int, data: dict, db: Session = Depends(get_db)):
     if not cd:
         raise HTTPException(404, f"Curve {mnemonic} not found")
 
-    dept_cd = db.query(CurveData).filter(CurveData.log_run_id == lr_id, CurveData.mnemonic.in_(["DEPT", "DEPTH"])).first()
+    dept_cd = _find_depth(db, lr_id)
     if not dept_cd:
         raise HTTPException(404, "Depth not found")
 
@@ -3954,7 +3956,7 @@ def curve_edit(lr_id: int, data: dict, db: Session = Depends(get_db)):
     if not cd:
         raise HTTPException(404, f"Curve {mnemonic} not found")
 
-    dept_cd = db.query(CurveData).filter(CurveData.log_run_id == lr_id, CurveData.mnemonic.in_(["DEPT", "DEPTH"])) .first()
+    dept_cd = _find_depth(db, lr_id)
     if not dept_cd:
         raise HTTPException(404, "Depth curve not found")
 
@@ -4040,7 +4042,7 @@ def strip_log_data(pid: int, curve: str = "GR", db: Session = Depends(get_db)):
         if not lr:
             continue
         cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic == curve).first()
-        dept_cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic.in_(["DEPT", "DEPTH"])).first()
+        dept_cd = _find_depth(db, lr.id)
         if not cd or not dept_cd:
             continue
         depth = np.frombuffer(dept_cd.data_binary, dtype=np.float64)
@@ -4116,7 +4118,7 @@ def project_cross_section(pid: int, well_ids: str = "", curve: str = "GR", db: S
         lr = db.query(LogRun).filter(LogRun.well_id == w.id).order_by(LogRun.id.desc()).first()
         if not lr:
             continue
-        dept_cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic.in_(["DEPT", "DEPTH"])).first()
+        dept_cd = _find_depth(db, lr.id)
         if not dept_cd:
             continue
         cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic == mn).first()
@@ -4177,7 +4179,7 @@ def auto_pick_tops(wid: int, data: dict, db: Session = Depends(get_db), _role: s
         raise HTTPException(404, "No log run found")
 
     cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic == curve).first()
-    dept_cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic.in_(["DEPT", "DEPTH"])).first()
+    dept_cd = _find_depth(db, lr.id)
     if not cd or not dept_cd:
         raise HTTPException(404, f"Curve {curve} not found")
 
@@ -4421,7 +4423,7 @@ def strat_normalize(wid: int, data: dict, db: Session = Depends(get_db)):
         raise HTTPException(404, "No log run")
 
     cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic == mnemonic).first()
-    dept_cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic.in_(["DEPT", "DEPTH"])).first()
+    dept_cd = _find_depth(db, lr.id)
     if not cd or not dept_cd:
         raise HTTPException(404, f"Curve {mnemonic} not found")
 
@@ -4471,7 +4473,7 @@ def compute_permeability(wid: int, data: dict, db: Session = Depends(get_db)):
     timur_a = float(data.get("timur_a", 0.136))
     sdr_a = float(data.get("sdr_a", 4.0))
 
-    depth_cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic.in_(["DEPT", "DEPTH"])).first()
+    depth_cd = _find_depth(db, lr.id)
     if not depth_cd:
         raise HTTPException(404, "Depth curve not found")
 
@@ -4700,7 +4702,7 @@ def probability_plot(wid: int, data: dict, db: Session = Depends(get_db)):
     stop_depth = data.get("stop_depth")
 
     cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic == mnemonic).first()
-    depth_cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic.in_(["DEPT", "DEPTH"])).first()
+    depth_cd = _find_depth(db, lr.id)
     if not cd:
         raise HTTPException(404, f"Curve {mnemonic} not found")
 
@@ -4793,7 +4795,7 @@ def moveable_oil_index(wid: int, data: dict, db: Session = Depends(get_db)):
             phie_computed = False
     else:
         phie_computed = False
-    depth_cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic.in_(["DEPT", "DEPTH"])).first()
+    depth_cd = _find_depth(db, lr.id)
     if not rt_cd or not rxo_cd or not depth_cd:
         raise HTTPException(404, f"Required curves not found (need RT + at least one shallow resistivity + DEPTH). Available: {[c.mnemonic for c in db.query(CurveData).filter(CurveData.log_run_id == lr.id).all()]}")
 
@@ -4846,7 +4848,7 @@ def dip_plot(wid: int, data: dict, db: Session = Depends(get_db)):
         lr = db.query(LogRun).filter(LogRun.well_id == wid).order_by(LogRun.id.desc()).first()
         if not lr:
             raise HTTPException(404, "No deviation survey or log run data")
-        depth_cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic.in_(["DEPT", "DEPTH"])).first()
+        depth_cd = _find_depth(db, lr.id)
         if not depth_cd:
             depth_cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id).order_by(CurveData.id.asc()).first()
         if not depth_cd or not depth_cd.data_binary:
@@ -4920,7 +4922,7 @@ def buckles_plot(wid: int, data: dict, db: Session = Depends(get_db)):
     sw_curve = str(data.get("sw_curve", "SW")).upper()
 
     phie_cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic == phie_curve).first()
-    depth_cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic.in_(["DEPT", "DEPTH", "MD", "TVD"])).first()
+    depth_cd = _find_depth(db, lr.id)
     if not phie_cd or not depth_cd:
         raise HTTPException(404, f"Required curves not found (need {phie_curve} and depth)")
 
@@ -4933,7 +4935,7 @@ def buckles_plot(wid: int, data: dict, db: Session = Depends(get_db)):
         sw = np.frombuffer(sw_cd.data_binary, dtype=np.float64).copy()
     else:
         # Compute Sw via Archie if SW curve missing
-        rt_cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic.in_(["RT", "RESD", "RILD", "ILD"])).first()
+        rt_cd = _find_curve(db, lr.id, "RT")
         if not rt_cd:
             raise HTTPException(404, "SW curve not found and no RT curve available for Archie")
         rt = np.frombuffer(rt_cd.data_binary, dtype=np.float64).copy()
@@ -4998,7 +5000,7 @@ def hingle_plot(wid: int, data: dict, db: Session = Depends(get_db)):
 
     rt_cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic == rt_curve).first()
     x_cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic == x_curve).first()
-    depth_cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic.in_(["DEPT", "DEPTH"])).first()
+    depth_cd = _find_depth(db, lr.id)
     if not rt_cd or not x_cd or not depth_cd:
         raise HTTPException(404, "Required curves not found")
 
@@ -5993,10 +5995,10 @@ def compute_dual_water(wid: int, data: dict, db: Session = Depends(get_db)):
     if not lr:
         raise HTTPException(404, "No log run")
 
-    rt_cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic.in_(["RT", "RESD", "RILD", "ILD"])).first()
-    nphi_cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic.in_(["NPHI", "NPHI_LS"])).first()
-    gr_cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic.in_(["GR", "SGR", "CGR"])).first()
-    dept_cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic.in_(["DEPT", "DEPTH"])).first()
+    rt_cd = _find_curve(db, lr.id, "RT")
+    nphi_cd = _find_curve(db, lr.id, "NPHI")
+    gr_cd = _find_curve(db, lr.id, "GR")
+    dept_cd = _find_depth(db, lr.id)
     if not rt_cd or not nphi_cd:
         raise HTTPException(400, "Need RT and NPHI curves")
 
@@ -6086,10 +6088,10 @@ def compute_vcl_models(wid: int, data: dict, db: Session = Depends(get_db)):
     if not lr:
         raise HTTPException(404, "No log run")
 
-    gr_cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic.in_(["GR", "SGR", "CGR"])).first()
-    dept_cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic.in_(["DEPT", "DEPTH"])).first()
+    gr_cd = _find_curve(db, lr.id, "GR")
+    dept_cd = _find_depth(db, lr.id)
     if not gr_cd:
-        raise HTTPException(400, "GR curve required")
+        raise HTTPException(400, "Нужна кривая гамма-каротажа (ГК / GK / GR) — в выбранном рейсе её нет")
 
     gr = np.frombuffer(gr_cd.data_binary, dtype=np.float64).copy()
     dept = np.frombuffer(dept_cd.data_binary, dtype=np.float64).copy() if dept_cd else np.arange(len(gr)) * 0.5
@@ -6164,13 +6166,13 @@ def classify_lithology(wid: int, data: dict, db: Session = Depends(get_db)):
     if gr_max <= gr_min:
         raise HTTPException(400, "gr_max must be greater than gr_min")
 
-    gr_cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic.in_(["GR", "SGR", "CGR"])).first()
+    gr_cd = _find_curve(db, lr.id, "GR")
     if not gr_cd:
-        raise HTTPException(400, "GR curve required")
+        raise HTTPException(400, "Нужна кривая гамма-каротажа (ГК / GK / GR) — в выбранном рейсе её нет")
 
-    rhob_cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic.in_(["RHOB", "RHOZ", "DEN"])) .first()
-    nphi_cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic.in_(["NPHI", "NPHI_LS"])) .first()
-    dept_cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic.in_(["DEPT", "DEPTH", "MD", "TVD"])) .first()
+    rhob_cd = _find_curve(db, lr.id, "RHOB")
+    nphi_cd = _find_curve(db, lr.id, "NPHI")
+    dept_cd = _find_depth(db, lr.id)
 
     gr = np.frombuffer(gr_cd.data_binary, dtype=np.float64).copy()
     n = len(gr)
@@ -6698,11 +6700,11 @@ def compute_vcl_enhanced(wid: int, data: dict, db: Session = Depends(get_db)):
     if not lr:
         raise HTTPException(404, "No log run")
 
-    gr_cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic.in_(["GR", "SGR", "CGR"])).first()
-    dept_cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic.in_(["DEPT", "DEPTH"])).first()
+    gr_cd = _find_curve(db, lr.id, "GR")
+    dept_cd = _find_depth(db, lr.id)
 
     if not gr_cd:
-        raise HTTPException(400, "GR curve required")
+        raise HTTPException(400, "Нужна кривая гамма-каротажа (ГК / GK / GR) — в выбранном рейсе её нет")
 
     gr = np.frombuffer(gr_cd.data_binary, dtype=np.float64).copy()
     dept = np.frombuffer(dept_cd.data_binary, dtype=np.float64).copy() if dept_cd else np.arange(len(gr))
@@ -6755,9 +6757,9 @@ def tornado_analysis(wid: int, data: dict, db: Session = Depends(get_db)):
     if not lr:
         raise HTTPException(404, "No log run")
 
-    rt_cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic.in_(["RT", "RESD", "RILD", "ILD"])).first()
-    nphi_cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic.in_(["NPHI", "NPHI_LS"])).first()
-    gr_cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic.in_(["GR", "SGR", "CGR"])).first()
+    rt_cd = _find_curve(db, lr.id, "RT")
+    nphi_cd = _find_curve(db, lr.id, "NPHI")
+    gr_cd = _find_curve(db, lr.id, "GR")
     if not rt_cd or not nphi_cd:
         raise HTTPException(400, "Need RT and NPHI")
 
@@ -6887,7 +6889,7 @@ def core_calibration(wid: int, data: dict, db: Session = Depends(get_db)):
         raise HTTPException(404, "No log run")
 
     log_cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic == log_curve).first()
-    dept_cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic.in_(["DEPT", "DEPTH", "MD", "TVD"])).first()
+    dept_cd = _find_depth(db, lr.id)
     if not log_cd or not dept_cd:
         raise HTTPException(400, f"Curve {log_curve} or DEPTH not found")
 
@@ -6999,7 +7001,7 @@ def qc_autofix(wid: int, data: dict, db: Session = Depends(get_db)):
         raise HTTPException(404, "No log run")
 
     curves = db.query(CurveData).filter(CurveData.log_run_id == lr.id).all()
-    dept_cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic.in_(["DEPT", "DEPTH"])).first()
+    dept_cd = _find_depth(db, lr.id)
     dept = np.frombuffer(dept_cd.data_binary, dtype=np.float64).copy() if dept_cd else None
 
     issues = []
@@ -7156,9 +7158,9 @@ def _compute_synthetic_seismogram(wid: int, data: dict, db: Session):
     if not lr:
         raise HTTPException(404, "No log run")
 
-    dt_cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic.in_(["DT", "DTC", "DTCO"])).first()
-    rhob_cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic.in_(["RHOB", "RHOZ", "DEN"])).first()
-    dept_cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic.in_(["DEPT", "DEPTH"])).first()
+    dt_cd = _find_curve(db, lr.id, "DT")
+    rhob_cd = _find_curve(db, lr.id, "RHOB")
+    dept_cd = _find_depth(db, lr.id)
 
     if not dt_cd or not rhob_cd:
         raise HTTPException(400, "Need DT and RHOB curves for synthetic seismogram")
@@ -9311,11 +9313,11 @@ def image_log(wid: int, data: dict, db: Session = Depends(get_db)):
     cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic == curve_name).first()
     if not cd:
         # Try alternatives
-        cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic.in_(["RT", "RESD", "RILD", "ILD"])).first()
+        cd = _find_curve(db, lr.id, "RT")
     if not cd:
         raise HTTPException(400, f"No resistivity curve found")
 
-    dept_cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic.in_(["DEPT", "DEPTH"])).first()
+    dept_cd = _find_depth(db, lr.id)
     arr = np.frombuffer(cd.data_binary, dtype=np.float64).copy()
     dept = np.frombuffer(dept_cd.data_binary, dtype=np.float64).copy() if dept_cd else np.arange(len(arr)) * 0.5
 

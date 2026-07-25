@@ -33,6 +33,21 @@ const GeoModal = {
             setTimeout(() => { const first = body.querySelector('input, select'); if (first) first.focus(); }, 100);
         });
     },
+    /**
+     * Показать произвольную разметку (настройка кривой и подобные окна).
+     * Обычный show() принимает описание полей; здесь нужен готовый HTML,
+     * поэтому это отдельный вход — иначе fields.map падает на строке.
+     */
+    showHtml(html, title = '') {
+        const t = document.getElementById('modalTitle');
+        if (t) t.textContent = title;
+        const body = document.getElementById('modalBody');
+        if (body) body.innerHTML = html;
+        const footer = document.getElementById('modalFooter');
+        if (footer) footer.innerHTML = '';
+        const ov = document.getElementById('modalOverlay');
+        if (ov) ov.style.display = 'flex';
+    },
     _hide() {
         document.getElementById('modalOverlay').style.display = 'none';
         this._resolve = null;
@@ -927,38 +942,36 @@ class GeoLogApp {
 
     // Fit each curve's display scale to its actual data when the default scale
     // doesn't contain it (e.g. Russian logs: GR in µR/h, non-API caliper units).
-    // Curves whose data already fits the default keep the nice fixed scale;
-    // log-scaled curves (resistivity/perm) are left to their configured scale.
+    /**
+     * Границы шкалы подбираются ОТДЕЛЬНО ДЛЯ КАЖДОЙ КРИВОЙ по 2–98 перцентилю.
+     *
+     * Исключения: категориальные колонки РИГИС (там коды, а не значения) и
+     * кривые с признаком `fixed` — интерпретационные шкалы Кп/Кгл/Кнг и всё,
+     * что пользователь зафиксировал вручную.
+     */
     _autoFitCurveScales(curveData) {
         const defaults = this._defaultCurveConfig || {};
-        const resetToDefault = (mn) => {
-            const d = defaults[mn] && Array.isArray(defaults[mn].scale) ? defaults[mn].scale : null;
-            if (d && this.curveConfig[mn]) this.curveConfig[mn].scale = d.slice();
-        };
         for (const [mn, values] of Object.entries(curveData || {})) {
             const U = (mn || '').toUpperCase();
             if (U === 'DEPTH' || U === 'DEPT' || U === 'MD' || U === 'TVD') continue;
             if (typeof RigisTracks !== 'undefined' && RigisTracks.isCategorical(mn)) continue;
-            if (this.curveConfig[mn] && this.curveConfig[mn].log) continue; // keep log scaling
-            if (!values || values.length < 20) { resetToDefault(mn); continue; }
-            const valid = [];
-            for (const v of values) if (v != null && isFinite(v)) valid.push(v);
-            if (valid.length < 20) { resetToDefault(mn); continue; }  // no stale bleed
-            valid.sort((a, b) => a - b);
-            const p2 = valid[Math.floor(valid.length * 0.02)];
-            const p98 = valid[Math.floor(valid.length * 0.98)];
-            if (!(p98 > p2)) continue;
-            const def = (defaults[mn] && Array.isArray(defaults[mn].scale)) ? defaults[mn].scale : null;
+            const cfg = this.curveConfig[mn];
+            if (cfg && cfg.fixed) continue;
+
+            const r = this._percentileRange(values);
+            if (!r) continue;
             if (!this.curveConfig[mn]) this.curveConfig[mn] = {};
-            if (def) {
-                const lo = Math.min(def[0], def[1]), hi = Math.max(def[0], def[1]);
-                let inside = 0;
-                for (const v of valid) if (v >= lo && v <= hi) inside++;
-                if (inside / valid.length >= 0.7) { this.curveConfig[mn].scale = def.slice(); continue; }
+            const def = (defaults[mn] && Array.isArray(defaults[mn].scale)) ? defaults[mn].scale : null;
+
+            if (this.curveConfig[mn].log) {
+                // на логарифмической шкале нижняя граница должна быть > 0
+                const lo = Math.max(r[0], 1e-3);
+                const hi = Math.max(r[1], lo * 10);
+                this.curveConfig[mn].scale = [lo, hi];
+                continue;
             }
-            const pad = (p98 - p2) * 0.05;
-            let s = [p2 - pad, p98 + pad];
-            if (def && def[0] > def[1]) s = [s[1], s[0]]; // preserve reversed orientation
+            let s = r.slice();
+            if (def && def[0] > def[1]) s = [s[1], s[0]];   // сохраняем обратную ориентацию
             this.curveConfig[mn].scale = s;
         }
         if (this.renderer) this.renderer.curveConfig = this.curveConfig;
@@ -1184,7 +1197,9 @@ class GeoLogApp {
             this.curveConfig[e.mnemonic] = {
                 ...base,
                 color: SHADES[i % SHADES.length],
-                name: e.mnemonic,
+                // название метода сохраняем, добавляя рейс — иначе теряется
+                // и человекочитаемое имя, и признак категориальной колонки
+                name: (base.name ? `${base.name} · ${e.mnemonic.split('·')[1] || ''}` : e.mnemonic),
                 dashed: true,
             };
         });
@@ -9627,56 +9642,123 @@ class GeoLogApp {
         }
     }
 
-    // ─── Feature 1: Curve Scale Editor ────────────────────
+    // ─── Настройка кривой: границы, шкала, трек ───────────
     _initCurveScaleEditor() {
         if (!this.renderer) return;
-        this.renderer.onCurveScaleEdit = (mnemonic, trackIdx) => {
+        this.renderer.onCurveScaleEdit = (mnemonic) => {
             const cfg = this.curveConfig[mnemonic] || {};
-            const scale = cfg.scale || [0, 100];
+            const scale = Array.isArray(cfg.scale) ? cfg.scale : [0, 100];
             const isLog = !!cfg.log;
             const isReverse = scale[0] > scale[1];
+            const tracks = this.renderer.allTracks || this.renderer.tracks;
+            const curIdx = tracks.findIndex(t => t.curves.includes(mnemonic));
+            const esc = (v) => String(v).replace(/"/g, '&quot;');
+
+            const opts = tracks.map((t, i) =>
+                `<option value="${i}" ${i === curIdx ? 'selected' : ''}>${esc(t.name)}</option>`).join('');
 
             const html = `
-                <div style="padding:16px;min-width:280px">
-                    <h3 style="margin:0 0 12px;color:#58a6ff;font-size:14px">Edit Scale: ${mnemonic}</h3>
-                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">
-                        <label style="color:#8b949e;font-size:11px">Min
+                <div style="padding:16px;min-width:320px">
+                    <h3 style="margin:0 0 12px;color:#58a6ff;font-size:14px">Кривая ${esc(mnemonic)}</h3>
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
+                        <label style="color:#8b949e;font-size:11px">Минимум
                             <input type="number" id="scaleMinInput" value="${isReverse ? scale[1] : scale[0]}" step="any" style="width:100%;background:#161b22;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:6px;margin-top:2px">
                         </label>
-                        <label style="color:#8b949e;font-size:11px">Max
+                        <label style="color:#8b949e;font-size:11px">Максимум
                             <input type="number" id="scaleMaxInput" value="${isReverse ? scale[0] : scale[1]}" step="any" style="width:100%;background:#161b22;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:6px;margin-top:2px">
                         </label>
                     </div>
-                    <div style="display:flex;gap:12px;margin-bottom:12px">
+                    <label style="color:#8b949e;font-size:11px;display:block;margin-bottom:10px">Трек
+                        <select id="scaleTrackSelect" style="width:100%;background:#161b22;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:6px;margin-top:2px">${opts}</select>
+                    </label>
+                    <div style="display:flex;gap:12px;margin-bottom:12px;flex-wrap:wrap">
                         <label style="color:#8b949e;font-size:11px;display:flex;align-items:center;gap:4px">
-                            <input type="checkbox" id="scaleLogCheck" ${isLog ? 'checked' : ''}> Log scale
+                            <input type="checkbox" id="scaleLogCheck" ${isLog ? 'checked' : ''}> логарифм
                         </label>
                         <label style="color:#8b949e;font-size:11px;display:flex;align-items:center;gap:4px">
-                            <input type="checkbox" id="scaleReverseCheck" ${isReverse ? 'checked' : ''}> Reversed
+                            <input type="checkbox" id="scaleReverseCheck" ${isReverse ? 'checked' : ''}> обратная
+                        </label>
+                        <label style="color:#8b949e;font-size:11px;display:flex;align-items:center;gap:4px">
+                            <input type="checkbox" id="scaleFixedCheck" ${cfg.fixed ? 'checked' : ''}> не подбирать автоматически
                         </label>
                     </div>
-                    <div style="display:flex;gap:8px;justify-content:flex-end">
-                        <button onclick="GeoModal.close()" style="background:#30363d;color:#c9d1d9;border:none;border-radius:6px;padding:6px 14px;cursor:pointer;font-size:12px">Cancel</button>
-                        <button id="scaleApplyBtn" style="background:#238636;color:#fff;border:none;border-radius:6px;padding:6px 14px;cursor:pointer;font-size:12px">Apply</button>
+                    <div style="display:flex;gap:8px;justify-content:space-between">
+                        <button id="scaleAutoBtn" style="background:#30363d;color:#c9d1d9;border:none;border-radius:6px;padding:6px 14px;cursor:pointer;font-size:12px">Подобрать по данным</button>
+                        <span>
+                            <button onclick="GeoModal.close()" style="background:#30363d;color:#c9d1d9;border:none;border-radius:6px;padding:6px 14px;cursor:pointer;font-size:12px">Отмена</button>
+                            <button id="scaleApplyBtn" style="background:#238636;color:#fff;border:none;border-radius:6px;padding:6px 14px;cursor:pointer;font-size:12px">Применить</button>
+                        </span>
                     </div>
                 </div>`;
 
-            GeoModal.show(html);
+            GeoModal.showHtml(html, 'Настройка кривой');
+
+            document.getElementById('scaleAutoBtn')?.addEventListener('click', () => {
+                const r = this._percentileRange(this.renderer.curveData[mnemonic]);
+                if (!r) { GeoToast.warn('Недостаточно данных для подбора'); return; }
+                document.getElementById('scaleMinInput').value = r[0].toFixed(4);
+                document.getElementById('scaleMaxInput').value = r[1].toFixed(4);
+            });
+
             document.getElementById('scaleApplyBtn')?.addEventListener('click', () => {
                 const minVal = parseFloat(document.getElementById('scaleMinInput').value);
                 const maxVal = parseFloat(document.getElementById('scaleMaxInput').value);
                 const logCheck = document.getElementById('scaleLogCheck').checked;
                 const reverseCheck = document.getElementById('scaleReverseCheck').checked;
-                if (!isFinite(minVal) || !isFinite(maxVal)) { GeoToast.warn('Invalid values'); return; }
+                const fixedCheck = document.getElementById('scaleFixedCheck').checked;
+                const trackIdxNew = parseInt(document.getElementById('scaleTrackSelect').value, 10);
+                if (!isFinite(minVal) || !isFinite(maxVal) || minVal === maxVal) {
+                    GeoToast.warn('Границы заданы неверно'); return;
+                }
                 if (!this.curveConfig[mnemonic]) this.curveConfig[mnemonic] = {};
                 this.curveConfig[mnemonic].scale = reverseCheck ? [maxVal, minVal] : [minVal, maxVal];
                 this.curveConfig[mnemonic].log = logCheck;
+                this.curveConfig[mnemonic].fixed = fixedCheck;
                 this.renderer.curveConfig = this.curveConfig;
-                this.renderer.render();
+                if (trackIdxNew >= 0 && trackIdxNew !== curIdx) {
+                    this.renderer.moveCurveToTrack(mnemonic, tracks[trackIdxNew].name);
+                } else {
+                    this.renderer.render();
+                }
                 GeoModal.close();
-                GeoToast.info(`Scale updated: ${mnemonic}`);
+                GeoToast.info(`Настройки применены: ${mnemonic}`);
             });
         };
+    }
+
+    /** Свернуть/развернуть панель сайдбара; состояние запоминается. */
+    toggleSidePanel(panelId) {
+        const el = document.getElementById(panelId);
+        if (!el) return;
+        el.classList.toggle('collapsed');
+        try {
+            const st = JSON.parse(localStorage.getItem('geolog_side_panels') || '{}');
+            st[panelId] = el.classList.contains('collapsed');
+            localStorage.setItem('geolog_side_panels', JSON.stringify(st));
+        } catch {}
+    }
+
+    _restoreSidePanels() {
+        try {
+            const st = JSON.parse(localStorage.getItem('geolog_side_panels') || '{}');
+            for (const [id, collapsed] of Object.entries(st)) {
+                if (collapsed) document.getElementById(id)?.classList.add('collapsed');
+            }
+        } catch {}
+    }
+
+    /** Диапазон 2–98 перцентиль по кривой — основа автоподбора границ. */
+    _percentileRange(values) {
+        if (!values || values.length < 20) return null;
+        const valid = [];
+        for (const v of values) if (v != null && isFinite(v)) valid.push(v);
+        if (valid.length < 20) return null;
+        valid.sort((a, b) => a - b);
+        const p2 = valid[Math.floor(valid.length * 0.02)];
+        const p98 = valid[Math.floor(valid.length * 0.98)];
+        if (!(p98 > p2)) return null;
+        const pad = (p98 - p2) * 0.05;
+        return [p2 - pad, p98 + pad];
     }
 
     // ─── Feature 2: Auto-Scale ────────────────────────────
@@ -9857,11 +9939,13 @@ class GeoLogApp {
     _wireRendererCallbacks() {
         if (!this.renderer) return;
         this._initCurveScaleEditor();
-        this.renderer.onTrackResize = (widths) => {
-            GeoToast.info('Track widths saved');
+        this._restoreSidePanels();
+        this.renderer.onTrackResize = () => {
+            GeoToast.info('Ширина треков сохранена');
         };
         this.renderer.onCurveMoved = (mnemonic, from, to) => {
-            GeoToast.info(`Moved ${mnemonic} → Track ${to + 1}`);
+            const name = (this.renderer.tracks[to] || {}).name || (to + 1);
+            GeoToast.info(`${mnemonic} → трек «${name}»`);
         };
         this.renderer.onDepthHover = (depth) => {
             this._publishDepthSync(depth, 'viewer');
@@ -9921,6 +10005,11 @@ try {
     _geologShowFatal(err);
 }
 window.app = app;
+// модальное окно и уведомления вызываются из inline-обработчиков разметки,
+// поэтому должны быть доступны на window, а не только в области модуля
+window.GeoModal = GeoModal;
+window.GeoToast = GeoToast;
+window.GeoLoading = typeof GeoLoading !== 'undefined' ? GeoLoading : undefined;
 
 // ─── Закрытие окон: Escape и клик мимо ──────────────────────────
 // Часть окон открывалась без своего обработчика закрытия и «залипала»;

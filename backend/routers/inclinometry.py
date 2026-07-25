@@ -46,8 +46,27 @@ def _decode(cd: CurveData) -> Optional[np.ndarray]:
         return None
 
 
-def _find_survey(well: Well):
-    """Найти рейс с инклинометрией: MD + зенит (+ азимут)."""
+def _find_survey(well: Well, db: Session = None):
+    """Замеры инклинометрии скважины.
+
+    Основной источник — таблица замеров (туда кладёт пакетный импорт, который
+    не заводит для инклинометрии отдельный рейс). Если её нет, ищем среди
+    рейсов — так лежат данные, загруженные поштучно как обычный LAS.
+    """
+    if db is not None:
+        try:
+            from models import DeviationSurvey
+        except ImportError:  # pragma: no cover
+            from backend.models import DeviationSurvey
+        pts = (db.query(DeviationSurvey)
+               .filter(DeviationSurvey.well_id == well.id)
+               .order_by(DeviationSurvey.md).all())
+        if len(pts) >= 2:
+            md = np.array([float(p.md) for p in pts])
+            incl = np.array([float(p.inc) for p in pts])
+            azim = np.array([float(p.azi) for p in pts])
+            return (len(md), None, md, incl, azim)
+
     best = None
     for run in well.log_runs:
         md = incl = azim = None
@@ -120,7 +139,7 @@ def inclinometry(
     well = db.query(Well).filter(Well.id == wid).first()
     if not well:
         raise HTTPException(404, "Well not found")
-    found = _find_survey(well)
+    found = _find_survey(well, db)
     if not found:
         raise HTTPException(404, "Инклинометрия не найдена (нужны MD и зенитный угол)")
     _, run, md, incl, azim = found
@@ -181,7 +200,9 @@ def inclinometry(
                          "message": f"Пропуск {gaps[i]:.0f} м между замерами на {md[i]:.0f} м"})
 
     return {
-        "well_id": wid, "well_name": well.name, "log_run_id": run.id,
+        "well_id": wid, "well_name": well.name,
+        "log_run_id": (run.id if run is not None else None),
+        "source": ("замеры инклинометрии" if run is None else f"рейс {run.name or run.filename}"),
         "count": int(len(md)), "dls_limit": dls_limit,
         "duplicates": {"exact": dup_exact, "conflicting": dup_conflict},
         "max_dls": round(float(dls.max()), 2) if len(dls) else 0.0,
@@ -208,7 +229,7 @@ def inclinometry_dedupe(wid: int, db: Session = Depends(get_db)) -> Dict[str, An
     well = db.query(Well).filter(Well.id == wid).first()
     if not well:
         raise HTTPException(404, "Well not found")
-    found = _find_survey(well)
+    found = _find_survey(well, db)
     if not found:
         raise HTTPException(404, "Инклинометрия не найдена")
     _, run, md, incl, azim = found
@@ -218,22 +239,36 @@ def inclinometry_dedupe(wid: int, db: Session = Depends(get_db)) -> Dict[str, An
     if removed <= 0:
         return {"ok": True, "removed": 0, "message": "Дублей не найдено"}
 
-    for cd in run.curve_data:
-        m = (cd.mnemonic or "").strip().upper()
-        new = None
-        if m in _DEPTH:
-            new = md2
-        elif m in _INCL:
-            new = incl2
-        elif m in _AZIM:
-            new = azim2
-        if new is not None:
-            cd.data_binary = np.asarray(new, dtype=np.float64).tobytes()
-            cd.num_points = len(new)
-            valid = new[np.isfinite(new)]
-            cd.min_value = float(valid.min()) if valid.size else None
-            cd.max_value = float(valid.max()) if valid.size else None
-    run.num_points = len(md2)
+    if run is None:
+        # замеры лежат в таблице инклинометрии — переписываем её
+        try:
+            from models import DeviationSurvey
+        except ImportError:  # pragma: no cover
+            from backend.models import DeviationSurvey
+        tvd2, north2, east2, _ = _trajectory(md2, incl2, azim2)
+        db.query(DeviationSurvey).filter(DeviationSurvey.well_id == wid).delete()
+        db.bulk_save_objects([
+            DeviationSurvey(well_id=wid, md=float(m), inc=float(i), azi=float(a),
+                            tvd=float(t), northing=float(nn), easting=float(ee))
+            for m, i, a, t, nn, ee in zip(md2, incl2, azim2, tvd2, north2, east2)
+        ])
+    else:
+        for cd in run.curve_data:
+            m = (cd.mnemonic or "").strip().upper()
+            new = None
+            if m in _DEPTH:
+                new = md2
+            elif m in _INCL:
+                new = incl2
+            elif m in _AZIM:
+                new = azim2
+            if new is not None:
+                cd.data_binary = np.asarray(new, dtype=np.float64).tobytes()
+                cd.num_points = len(new)
+                valid = new[np.isfinite(new)]
+                cd.min_value = float(valid.min()) if valid.size else None
+                cd.max_value = float(valid.max()) if valid.size else None
+        run.num_points = len(md2)
     db.commit()
     return {"ok": True, "removed": removed, "kept": int(len(md2)),
             "exact": dup_exact, "conflicting": dup_conflict,

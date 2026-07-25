@@ -114,3 +114,50 @@ def test_curve_config_without_query_is_builtin_table():
 
     cfg = get_curve_config()
     assert "GK" in cfg and "LITH" in cfg
+
+
+def test_track_layout_matches_requested_scheme():
+    """Раскладка треков: стандартный / радиоактивный / сопротивление / …"""
+    from backend.las_parser import CURVE_TRACKS as C
+
+    assert C["DS"]["track"] == C["KS"]["track"] == C["PS"]["track"] == 1
+    assert C["GK"]["track"] == C["NGK"]["track"] == 2
+    assert C["IK"]["track"] == C["BK"]["track"] == C["BKZ"]["track"] == 3
+    assert C["MKZ"]["track"] == 4
+    assert C["YMK"]["track"] == 5
+    assert C["AK"]["track"] == C["GGKP"]["track"] == 6
+    assert C["GAZ"]["track"] == 7
+    assert C["LITH"]["track"] == C["COLL"]["track"] == C["SAT"]["track"] == 11
+
+
+def test_interpretation_scales_are_fixed():
+    """Кп и Кгл 0–0.4, Кнг 0–1; автоподбор их не трогает."""
+    from backend.las_parser import CURVE_TRACKS as C
+
+    assert tuple(C["KP"]["scale"]) == (0, 0.4) and C["KP"]["fixed"]
+    assert tuple(C["KGL"]["scale"]) == (0, 0.4) and C["KGL"]["fixed"]
+    assert tuple(C["KNG"]["scale"]) == (0, 1) and C["KNG"]["fixed"]
+    assert C["KP"]["track"] != C["KGL"]["track"] != C["KNG"]["track"]
+
+
+def test_curve_lookup_finds_russian_and_suffixed_names():
+    """Поиск по методу работает для ГК, GK_500 и западного GR одинаково."""
+    from backend.curve_lookup import method_key
+
+    assert method_key("GK_500") == "GK"
+    assert method_key("ГК") == "GK"
+    # западное имя приводится к российскому методу — это одно исследование
+    assert method_key("GR") == "GK"
+    assert method_key("ЛИТОЛОГИЯ") == "LITH"
+    assert method_key("GZ3") == "BKZ"
+    assert method_key("НЕТ_ТАКОГО") is None
+
+
+def test_curve_lookup_treats_russian_and_western_methods_as_equivalent():
+    """ГК ищется по запросу GR — расчётные модули писались под западные имена."""
+    from backend.curve_lookup import EQUIVALENT
+
+    assert "GK" in EQUIVALENT["GR"]
+    assert "NGK" in EQUIVALENT["NPHI"]
+    assert "DS" in EQUIVALENT["CAL"]
+    assert "PS" in EQUIVALENT["SP"]

@@ -82,15 +82,15 @@ CURVE_ALIASES = {
 
 # Additional curve track configs for non-standard canonical names
 EXTRA_CURVE_TRACKS = {
-    'DPOR': {'track': 3, 'color': '#f39c12', 'scale': (0.45, -0.15), 'unit': 'PU', 'name': 'Density Porosity'},
-    'DGA':  {'track': 3, 'color': '#e67e22', 'scale': (1.95, 2.95), 'unit': 'GM/CC', 'name': 'Gamma-Gamma Density'},
-    'RLL3': {'track': 2, 'color': '#f39c12', 'scale': (0.2, 2000), 'log': True, 'unit': 'OHMM', 'name': 'Laterolog 3'},
-    'RILM': {'track': 2, 'color': '#e67e22', 'scale': (0.2, 2000), 'log': True, 'unit': 'OHMM', 'name': 'Medium Induction'},
-    'DTS':  {'track': 2, 'color': '#16a085', 'scale': (240, 40), 'unit': 'US/F', 'name': 'Shear Sonic'},
-    'PE':   {'track': 2, 'color': '#8e44ad', 'scale': (0, 10), 'unit': 'B/E', 'name': 'Photoelectric'},
-    'SP':   {'track': 0, 'color': '#9b59b6', 'scale': (-160, 40), 'unit': 'MV', 'name': 'Spontaneous Potential'},
-    'TEMP': {'track': 0, 'color': '#e84393', 'scale': (0, 200), 'unit': 'DEGC', 'name': 'Temperature'},
-    'MSFL': {'track': 2, 'color': '#f39c12', 'scale': (0.2, 2000), 'log': True, 'unit': 'OHMM', 'name': 'Micro-SFL'},
+    'DPOR': {'track': 6, 'color': '#f39c12', 'scale': (0.45, -0.15), 'unit': 'PU', 'name': 'Density Porosity'},
+    'DGA':  {'track': 6, 'color': '#e67e22', 'scale': (1.95, 2.95), 'unit': 'GM/CC', 'name': 'Gamma-Gamma Density'},
+    'RLL3': {'track': 3, 'color': '#f39c12', 'scale': (0.2, 2000), 'log': True, 'unit': 'OHMM', 'name': 'Laterolog 3'},
+    'RILM': {'track': 3, 'color': '#e67e22', 'scale': (0.2, 2000), 'log': True, 'unit': 'OHMM', 'name': 'Medium Induction'},
+    'DTS':  {'track': 6, 'color': '#16a085', 'scale': (240, 40), 'unit': 'US/F', 'name': 'Shear Sonic'},
+    'PE':   {'track': 6, 'color': '#8e44ad', 'scale': (0, 10), 'unit': 'B/E', 'name': 'Photoelectric'},
+    'SP':   {'track': 1, 'color': '#9b59b6', 'scale': (-160, 40), 'unit': 'MV', 'name': 'Spontaneous Potential'},
+    'TEMP': {'track': 1, 'color': '#e84393', 'scale': (0, 200), 'unit': 'DEGC', 'name': 'Temperature'},
+    'MSFL': {'track': 4, 'color': '#f39c12', 'scale': (0.2, 2000), 'log': True, 'unit': 'OHMM', 'name': 'Micro-SFL'},
 }
 
 
@@ -555,40 +555,40 @@ class LASParser:
 
 CURVE_TRACKS = {
     # Track 1: GR, SP, CAL
-    'GR':   {'track': 1, 'color': '#2ecc71', 'scale': (0, 150), 'unit': 'GAPI', 'name': 'Gamma Ray'},
-    'SGR':  {'track': 1, 'color': '#27ae60', 'scale': (0, 150), 'unit': 'GAPI', 'name': 'Spectral GR'},
-    'CGR':  {'track': 1, 'color': '#1abc9c', 'scale': (0, 150), 'unit': 'GAPI', 'name': 'Corrected GR'},
+    'GR':   {'track': 2, 'color': '#2ecc71', 'scale': (0, 150), 'unit': 'GAPI', 'name': 'Gamma Ray'},
+    'SGR':  {'track': 2, 'color': '#27ae60', 'scale': (0, 150), 'unit': 'GAPI', 'name': 'Spectral GR'},
+    'CGR':  {'track': 2, 'color': '#1abc9c', 'scale': (0, 150), 'unit': 'GAPI', 'name': 'Corrected GR'},
     'SP':   {'track': 1, 'color': '#3498db', 'scale': (-200, 200), 'unit': 'MV', 'name': 'Spontaneous Potential'},
     'CAL':  {'track': 1, 'color': '#e67e22', 'scale': (6, 16), 'unit': 'IN', 'name': 'Caliper'},
     'HCAL': {'track': 1, 'color': '#e67e22', 'scale': (6, 16), 'unit': 'IN', 'name': 'Hole Caliper'},
     'BS':   {'track': 1, 'color': '#d35400', 'scale': (6, 16), 'unit': 'IN', 'name': 'Bit Size'},
 
     # Track 2: Resistivity (log scale)
-    'RT':   {'track': 2, 'color': '#e74c3c', 'scale': (0.2, 2000), 'log': True, 'unit': 'OHMM', 'name': 'Deep Resistivity'},
-    'RXO':  {'track': 2, 'color': '#c0392b', 'scale': (0.2, 2000), 'log': True, 'unit': 'OHMM', 'name': 'Flushed Zone Resistivity'},
-    'RILD': {'track': 2, 'color': '#e74c3c', 'scale': (0.2, 2000), 'log': True, 'unit': 'OHMM', 'name': 'Deep Induction'},
-    'RILM': {'track': 2, 'color': '#e67e22', 'scale': (0.2, 2000), 'log': True, 'unit': 'OHMM', 'name': 'Medium Induction'},
-    'RLL3': {'track': 2, 'color': '#f39c12', 'scale': (0.2, 2000), 'log': True, 'unit': 'OHMM', 'name': 'Laterolog 3'},
-    'RLLS': {'track': 2, 'color': '#f1c40f', 'scale': (0.2, 2000), 'log': True, 'unit': 'OHMM', 'name': 'Shallow Laterolog'},
-    'MSFL': {'track': 2, 'color': '#f39c12', 'scale': (0.2, 2000), 'log': True, 'unit': 'OHMM', 'name': 'Micro-Spherically Focused'},
+    'RT':   {'track': 3, 'color': '#e74c3c', 'scale': (0.2, 2000), 'log': True, 'unit': 'OHMM', 'name': 'Deep Resistivity'},
+    'RXO':  {'track': 4, 'color': '#c0392b', 'scale': (0.2, 2000), 'log': True, 'unit': 'OHMM', 'name': 'Flushed Zone Resistivity'},
+    'RILD': {'track': 3, 'color': '#e74c3c', 'scale': (0.2, 2000), 'log': True, 'unit': 'OHMM', 'name': 'Deep Induction'},
+    'RILM': {'track': 3, 'color': '#e67e22', 'scale': (0.2, 2000), 'log': True, 'unit': 'OHMM', 'name': 'Medium Induction'},
+    'RLL3': {'track': 3, 'color': '#f39c12', 'scale': (0.2, 2000), 'log': True, 'unit': 'OHMM', 'name': 'Laterolog 3'},
+    'RLLS': {'track': 3, 'color': '#f1c40f', 'scale': (0.2, 2000), 'log': True, 'unit': 'OHMM', 'name': 'Shallow Laterolog'},
+    'MSFL': {'track': 4, 'color': '#f39c12', 'scale': (0.2, 2000), 'log': True, 'unit': 'OHMM', 'name': 'Micro-Spherically Focused'},
 
     # Track 3: Porosity
-    'NPHI': {'track': 3, 'color': '#3498db', 'scale': (0.45, -0.15), 'unit': 'V/V', 'name': 'Neutron Porosity'},
-    'RHOB': {'track': 3, 'color': '#e74c3c', 'scale': (1.95, 2.95), 'unit': 'G/C3', 'name': 'Bulk Density'},
-    'RHOZ': {'track': 3, 'color': '#e74c3c', 'scale': (1.95, 2.95), 'unit': 'G/C3', 'name': 'Density (Z-axis)'},
-    'DT':   {'track': 3, 'color': '#9b59b6', 'scale': (140, 40), 'unit': 'US/F', 'name': 'Sonic Transit Time'},
-    'DTC':  {'track': 3, 'color': '#9b59b6', 'scale': (140, 40), 'unit': 'US/F', 'name': 'Compressional Slowness'},
-    'DTS':  {'track': 3, 'color': '#8e44ad', 'scale': (300, 50), 'unit': 'US/F', 'name': 'Shear Slowness'},
-    'PEF':  {'track': 3, 'color': '#1abc9c', 'scale': (0, 10), 'unit': 'B/E', 'name': 'Photoelectric Factor'},
-    'DRHO': {'track': 3, 'color': '#95a5a6', 'scale': (-0.2, 0.2), 'unit': 'G/C3', 'name': 'Density Correction'},
+    'NPHI': {'track': 6, 'color': '#3498db', 'scale': (0.45, -0.15), 'unit': 'V/V', 'name': 'Neutron Porosity'},
+    'RHOB': {'track': 6, 'color': '#e74c3c', 'scale': (1.95, 2.95), 'unit': 'G/C3', 'name': 'Bulk Density'},
+    'RHOZ': {'track': 6, 'color': '#e74c3c', 'scale': (1.95, 2.95), 'unit': 'G/C3', 'name': 'Density (Z-axis)'},
+    'DT':   {'track': 6, 'color': '#9b59b6', 'scale': (140, 40), 'unit': 'US/F', 'name': 'Sonic Transit Time'},
+    'DTC':  {'track': 6, 'color': '#9b59b6', 'scale': (140, 40), 'unit': 'US/F', 'name': 'Compressional Slowness'},
+    'DTS':  {'track': 6, 'color': '#8e44ad', 'scale': (300, 50), 'unit': 'US/F', 'name': 'Shear Slowness'},
+    'PEF':  {'track': 6, 'color': '#1abc9c', 'scale': (0, 10), 'unit': 'B/E', 'name': 'Photoelectric Factor'},
+    'DRHO': {'track': 6, 'color': '#95a5a6', 'scale': (-0.2, 0.2), 'unit': 'G/C3', 'name': 'Density Correction'},
 
     # Track 4: Saturation / Formation
-    'SW':    {'track': 4, 'color': '#3498db', 'scale': (0, 1), 'unit': 'V/V', 'name': 'Water Saturation'},
-    'PHIE':  {'track': 4, 'color': '#2ecc71', 'scale': (0, 0.4), 'unit': 'V/V', 'name': 'Effective Porosity'},
-    'PHIT':  {'track': 4, 'color': '#27ae60', 'scale': (0, 0.4), 'unit': 'V/V', 'name': 'Total Porosity'},
-    'VSH':   {'track': 4, 'color': '#e67e22', 'scale': (0, 1), 'unit': 'V/V', 'name': 'Shale Volume'},
-    'BVW':   {'track': 4, 'color': '#2980b9', 'scale': (0, 0.4), 'unit': 'V/V', 'name': 'Bulk Volume Water'},
-    'PERM':  {'track': 4, 'color': '#16a085', 'scale': (0.01, 10000), 'log': True, 'unit': 'MD', 'name': 'Permeability'},
+    'SW':    {'track': 10, 'color': '#3498db', 'scale': (0, 1), 'unit': 'V/V', 'name': 'Water Saturation'},
+    'PHIE':  {'track': 8, 'color': '#2ecc71', 'scale': (0, 0.4), 'unit': 'V/V', 'name': 'Effective Porosity'},
+    'PHIT':  {'track': 8, 'color': '#27ae60', 'scale': (0, 0.4), 'unit': 'V/V', 'name': 'Total Porosity'},
+    'VSH':   {'track': 9, 'color': '#e67e22', 'scale': (0, 1), 'unit': 'V/V', 'name': 'Shale Volume'},
+    'BVW':   {'track': 8, 'color': '#2980b9', 'scale': (0, 0.4), 'unit': 'V/V', 'name': 'Bulk Volume Water'},
+    'PERM':  {'track': 12, 'color': '#16a085', 'scale': (0.01, 10000), 'log': True, 'unit': 'MD', 'name': 'Permeability'},
 }
 
 # Track layout defaults
@@ -604,33 +604,54 @@ CURVE_TRACKS.update(EXTRA_CURVE_TRACKS)
 
 
 # ── Русский стандарт ГИС: треки/шкалы для канонических мнемоник ──────────────
-# track: 1=ГК/ПС/ДС, 2=сопротивление, 3=пористость, 4=интерпретация
+# Раскладка треков планшета (номер = 1-based индекс трека):
+#   1  Стандартный каротаж   ДС, КС, ПС
+#   2  Радиоактивный         ГК, НГК
+#   3  Сопротивление (лог)   ИК, БК, БКЗ (ГЗ1–ГЗ5)
+#   4  Микрозонды            МКЗ, МГЗ, МПЗ
+#   5  ЯМК                   U1–U3
+#   6  Расширенный           АК, ГГКп
+#   7  Газовый каротаж       GAZ
+#   8  Пористость            Кп        0–0.4
+#   9  Глинистость           Кгл       0–0.4
+#   10 Нефтенасыщенность     Кнг       0–1
+#   11 РИГИС                 литология / коллектор / насыщение
+#   12 Прочее                всё, что не опознано
 CURVE_TRACKS.update({
-    'GK':   {'track': 1, 'color': '#2ecc71', 'scale': (0, 20),   'unit': 'мкР/ч', 'name': 'ГК'},
-    'PS':   {'track': 1, 'color': '#9b59b6', 'scale': (-100, 100), 'unit': 'мВ', 'name': 'ПС'},
     'DS':   {'track': 1, 'color': '#95a5a6', 'scale': (100, 400), 'unit': 'мм',  'name': 'ДС'},
     'BS':   {'track': 1, 'color': '#7f8c8d', 'scale': (100, 400), 'unit': 'мм',  'name': 'Долото'},
+    'KS':   {'track': 1, 'color': '#e74c3c', 'scale': (0.2, 2000), 'log': True, 'unit': 'Ом·м', 'name': 'КС'},
+    'PS':   {'track': 1, 'color': '#9b59b6', 'scale': (-100, 100), 'unit': 'мВ', 'name': 'ПС'},
+    'RS':   {'track': 1, 'color': '#16a085', 'scale': (0, 10),   'unit': 'Ом·м', 'name': 'РС'},
     'TEMP': {'track': 1, 'color': '#fd79a8', 'scale': (0, 100),  'unit': '°C',   'name': 'Термометрия'},
 
-    'KS':   {'track': 2, 'color': '#e74c3c', 'scale': (0.2, 2000), 'log': True, 'unit': 'Ом·м', 'name': 'КС'},
-    'BK':   {'track': 2, 'color': '#c0392b', 'scale': (0.2, 2000), 'log': True, 'unit': 'Ом·м', 'name': 'БК'},
-    'IK':   {'track': 2, 'color': '#e67e22', 'scale': (0.2, 2000), 'log': True, 'unit': 'мСм/м', 'name': 'ИК'},
-    'BKZ':  {'track': 2, 'color': '#f39c12', 'scale': (0.2, 2000), 'log': True, 'unit': 'Ом·м', 'name': 'БКЗ (ГЗ)'},
-    'MKZ':  {'track': 2, 'color': '#d35400', 'scale': (0.2, 2000), 'log': True, 'unit': 'Ом·м', 'name': 'МКЗ'},
-    'RS':   {'track': 2, 'color': '#16a085', 'scale': (0, 10),   'unit': 'Ом·м', 'name': 'РС'},
+    'GK':   {'track': 2, 'color': '#2ecc71', 'scale': (0, 20),   'unit': 'мкР/ч',   'name': 'ГК'},
+    'NGK':  {'track': 2, 'color': '#3498db', 'scale': (0, 10),   'unit': 'усл.ед.', 'name': 'НГК'},
 
-    'NGK':  {'track': 3, 'color': '#3498db', 'scale': (0, 10),   'unit': 'усл.ед.', 'name': 'НГК'},
-    'GGKP': {'track': 3, 'color': '#c0392b', 'scale': (1.8, 3.0), 'unit': 'г/см³', 'name': 'ГГКп'},
-    'AK':   {'track': 3, 'color': '#1abc9c', 'scale': (500, 150), 'unit': 'мкс/м', 'name': 'АК'},
-    'U1':   {'track': 3, 'color': '#af7ac5', 'scale': (0, 10),   'unit': 'усл.ед.', 'name': 'ЯМК'},
-    'GAZ':  {'track': 3, 'color': '#e84393', 'scale': (0, 100),  'unit': 'усл.ед.', 'name': 'Газовый каротаж'},
+    'IK':   {'track': 3, 'color': '#e67e22', 'scale': (0.2, 2000), 'log': True, 'unit': 'мСм/м', 'name': 'ИК'},
+    'BK':   {'track': 3, 'color': '#c0392b', 'scale': (0.2, 2000), 'log': True, 'unit': 'Ом·м', 'name': 'БК'},
+    'BKZ':  {'track': 3, 'color': '#f39c12', 'scale': (0.2, 2000), 'log': True, 'unit': 'Ом·м', 'name': 'БКЗ (ГЗ)'},
 
-    'KP':   {'track': 4, 'color': '#f1c40f', 'scale': (0, 0.3),  'unit': 'д.ед.', 'name': 'Кп'},
-    'KGL':  {'track': 4, 'color': '#7f8c8d', 'scale': (0, 1),    'unit': 'д.ед.', 'name': 'Кгл'},
-    'KNG':  {'track': 4, 'color': '#2980b9', 'scale': (0, 1),    'unit': 'д.ед.', 'name': 'Кнг'},
-    'KPR':  {'track': 4, 'color': '#af7ac5', 'scale': (0.01, 1000), 'log': True, 'unit': 'мД', 'name': 'Кпр'},
+    'MKZ':  {'track': 4, 'color': '#d35400', 'scale': (0.2, 2000), 'log': True, 'unit': 'Ом·м', 'name': 'МКЗ'},
+
+    'YMK':  {'track': 5, 'color': '#af7ac5', 'scale': (0, 10),   'unit': 'усл.ед.', 'name': 'ЯМК'},
+
+    'AK':   {'track': 6, 'color': '#1abc9c', 'scale': (500, 150), 'unit': 'мкс/м', 'name': 'АК'},
+    'AKS':  {'track': 6, 'color': '#48c9b0', 'scale': (700, 200), 'unit': 'мкс/м', 'name': 'АК (S)'},
+    'GGKP': {'track': 6, 'color': '#c0392b', 'scale': (1.8, 3.0), 'unit': 'г/см³', 'name': 'ГГКп'},
+    'PE':   {'track': 6, 'color': '#8e44ad', 'scale': (0, 10),   'unit': 'б/э',   'name': 'ФЭП'},
+    'DRHO': {'track': 6, 'color': '#bdc3c7', 'scale': (-0.5, 0.5), 'unit': 'г/см³', 'name': 'Поправка ρ'},
+
+    'GAZ':  {'track': 7, 'color': '#e84393', 'scale': (0, 100),  'unit': 'усл.ед.', 'name': 'Газовый каротаж'},
+
+    # fixed=True — границы заданы отраслевым соглашением и автоподбором не трогаются
+    'KP':   {'track': 8,  'color': '#f1c40f', 'scale': (0, 0.4), 'unit': 'д.ед.', 'name': 'Кп',  'fixed': True},
+    'KGL':  {'track': 9,  'color': '#7f8c8d', 'scale': (0, 0.4), 'unit': 'д.ед.', 'name': 'Кгл', 'fixed': True},
+    'KNG':  {'track': 10, 'color': '#2980b9', 'scale': (0, 1),   'unit': 'д.ед.', 'name': 'Кнг', 'fixed': True},
+    'KPR':  {'track': 12, 'color': '#af7ac5', 'scale': (0.01, 1000), 'log': True, 'unit': 'мД', 'name': 'Кпр'},
+
     # Категориальные колонки РИГИС — рисуются как заливка по кодам, не кривой
-    'LITH': {'track': 5, 'color': '#a0522d', 'unit': 'код', 'name': 'Литология',  'categorical': 'lithology'},
-    'COLL': {'track': 5, 'color': '#3fb950', 'unit': 'код', 'name': 'Коллектор',  'categorical': 'collector'},
-    'SAT':  {'track': 5, 'color': '#8b5a2b', 'unit': 'код', 'name': 'Насыщение',  'categorical': 'saturation'},
+    'LITH': {'track': 11, 'color': '#a0522d', 'unit': 'код', 'name': 'Литология',  'categorical': 'lithology'},
+    'COLL': {'track': 11, 'color': '#3fb950', 'unit': 'код', 'name': 'Коллектор',  'categorical': 'collector'},
+    'SAT':  {'track': 11, 'color': '#8b5a2b', 'unit': 'код', 'name': 'Насыщение',  'categorical': 'saturation'},
 })

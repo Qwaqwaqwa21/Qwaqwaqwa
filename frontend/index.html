@@ -150,16 +150,20 @@
         <div class="sidebar-content" id="projectTree">
             <!-- Projects and wells rendered here -->
         </div>
-        <div class="clipboard-panel">
+        <div class="clipboard-panel" id="curveTreePanel">
             <div class="clipboard-header">
-                <span>КРИВЫЕ СКВАЖИНЫ</span>
+                <span class="panel-toggle" onclick="app.toggleSidePanel('curveTreePanel')" title="Свернуть/развернуть">
+                    <span class="panel-caret">▾</span> КРИВЫЕ СКВАЖИНЫ
+                </span>
                 <button class="btn-icon" onclick="CurveTree.load(CurveTree.wellId)" title="Обновить"><i data-lucide="refresh-cw"></i></button>
             </div>
             <div id="curveTreeContent" class="clipboard-content curve-tree"></div>
         </div>
-        <div class="clipboard-panel">
+        <div class="clipboard-panel" id="clipboardPanel">
             <div class="clipboard-header">
-                <span>CLIPBOARD</span>
+                <span class="panel-toggle" onclick="app.toggleSidePanel('clipboardPanel')" title="Свернуть/развернуть">
+                    <span class="panel-caret">▾</span> CLIPBOARD
+                </span>
                 <button class="btn-icon" onclick="ClipboardPanel.load()" title="Обновить"><i data-lucide="refresh-cw"></i></button>
             </div>
             <div id="clipboardContent" class="clipboard-content"></div>

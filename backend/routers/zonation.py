@@ -15,6 +15,7 @@ try:
 except ImportError:
     from backend.database import get_db
     from backend.models import Well, LogRun, CurveData, FormationTop, Zone, PetroParams
+    from backend.curve_lookup import find_depth as _find_depth
 
 router = APIRouter(prefix="/api/wells/{wid}", tags=["zonation"])
 
@@ -243,7 +244,7 @@ def auto_zone_from_tops(wid: int, db: Session = Depends(get_db)):
         lr = db.query(LogRun).filter(LogRun.well_id == wid).order_by(LogRun.id.desc()).first()
         if lr:
             gr_cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic == "GR").first()
-            depth_cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic.in_(["DEPT", "DEPTH"])).first()
+            depth_cd = _find_depth(db, lr.id)
             if gr_cd and depth_cd:
                 gr = np.frombuffer(gr_cd.data_binary, dtype=np.float64).copy()
                 depth = np.frombuffer(depth_cd.data_binary, dtype=np.float64).copy()
