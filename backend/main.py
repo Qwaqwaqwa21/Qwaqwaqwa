@@ -3320,7 +3320,9 @@ def _compute_eur(best_fit, days_to_limit=3650.0, q_limit=1.0):
     if np.any(mask):
         t = t[mask]
         q = q[mask]
-    eur = float(np.trapz(q, t))
+    # np.trapz удалён в NumPy 2.0, заменён на np.trapezoid.
+    _trapz = getattr(np, "trapezoid", None) or np.trapz
+    eur = float(_trapz(q, t))
     return eur
 
 

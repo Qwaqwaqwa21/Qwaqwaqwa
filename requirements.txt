@@ -1,9 +1,11 @@
-fastapi==0.115.0
-uvicorn[standard]==0.30.6
-sqlalchemy==2.0.35
-pydantic==2.9.2
-python-multipart==0.0.12
-numpy==1.26.4
-reportlab==4.5.1
-PyJWT==2.9.0
-openpyxl==3.1.5
+# Диапазоны, а не точные версии: на новых Python (3.13, 3.14) для старых пинов
+# нет готовых wheel-ов, и pip пытается собирать numpy/pydantic из исходников.
+fastapi>=0.115,<1
+uvicorn[standard]>=0.30,<1
+sqlalchemy>=2.0.35,<3
+pydantic>=2.9,<3
+python-multipart>=0.0.12
+numpy>=1.26,<3
+reportlab>=4.2,<5
+PyJWT>=2.9,<3
+openpyxl>=3.1,<4

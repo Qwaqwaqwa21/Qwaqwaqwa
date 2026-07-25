@@ -6,16 +6,21 @@ cd /d "%~dp0"
 set "PORT=%~1"
 if "%PORT%"=="" set "PORT=8000"
 
-rem --- ishem Python ---
+rem --- ishem Python: snachala provernnye versii 3.13..3.11 ---
 set "PY="
-py -3 --version >nul 2>&1 && set "PY=py -3"
+for %%V in (3.13 3.12 3.11 3.10) do (
+  if not defined PY (py -%%V --version >nul 2>&1 && set "PY=py -%%V")
+)
+if not defined PY (py -3 --version >nul 2>&1 && set "PY=py -3")
 if not defined PY (python --version >nul 2>&1 && set "PY=python")
 if not defined PY (
-  echo [X] Python ne naiden. Ustanovite Python 3.9+ s https://www.python.org/downloads/
+  echo [X] Python ne naiden. Ustanovite Python 3.12 s https://www.python.org/downloads/
   echo     Pri ustanovke otmette galochku "Add python.exe to PATH".
   pause
   exit /b 1
 )
+for /f "tokens=2" %%A in ('%PY% --version 2^>^&1') do set "PYVER=%%A"
+echo [i] Python: %PYVER%   ^(%PY%^)
 
 rem --- virtualnoe okruzhenie ---
 if not exist ".venv\Scripts\python.exe" (
