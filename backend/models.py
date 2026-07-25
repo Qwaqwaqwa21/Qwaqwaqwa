@@ -61,6 +61,9 @@ class LogRun(Base):
     well_id = Column(Integer, ForeignKey("wells.id"), nullable=False)
     run_number = Column(Integer, default=1)
     filename = Column(String(500), nullable=False)
+    name = Column(String(200), default="")      # отображаемое имя рейса (ГИС_С1, РИГИС…)
+    kind = Column(String(20), default="gis")    # gis / rigis / inkl / other
+    depth_unit = Column(String(10), default="M")
     las_version = Column(String(10), default="2.0")
     start_depth = Column(Float, nullable=True)
     stop_depth = Column(Float, nullable=True)

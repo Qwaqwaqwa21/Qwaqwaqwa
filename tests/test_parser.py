@@ -73,14 +73,21 @@ def test_null_sentinel():
     print("✅ test_null_sentinel")
 
 def test_alias_normalization():
-    """Alias normalization: DEPTH→DEPT, CALI→CAL, RESD→RT, ILD→RILD, DTP→DT."""
+    """Имя кривой сохраняется как в файле, нормализация уходит в `canonical`.
+
+    Геолог ищет на планшете свои мнемоники (GZ1, МПЗ, CALI), поэтому парсер их
+    не переписывает; сопоставление с методом хранится отдельным полем.
+    """
     p = _parse(ALIAS_LAS)
     mnemonics = [c.mnemonic for c in p.curves]
-    assert 'DEPT' in mnemonics, f"DEPT not found in {mnemonics}"
-    assert 'CAL' in mnemonics, f"CAL not found in {mnemonics}"
-    assert 'RT' in mnemonics, f"RT not found in {mnemonics}"
-    assert 'RILD' in mnemonics, f"RILD not found in {mnemonics}"
-    assert 'DT' in mnemonics, f"DT not found in {mnemonics}"
+    canon = {c.mnemonic: c.canonical for c in p.curves}
+    for raw in ('DEPTH', 'CALI', 'RESD', 'ILD', 'DTP'):
+        assert raw in mnemonics, f"{raw} not found in {mnemonics}"
+    assert canon['DEPTH'] == 'DEPT'
+    assert canon['CALI'] == 'CAL'
+    assert canon['RESD'] == 'RT'
+    assert canon['ILD'] == 'RILD'
+    assert canon['DTP'] == 'DT'
     print("✅ test_alias_normalization")
 
 def test_operator_extraction():
@@ -93,10 +100,13 @@ def test_depth_unit():
     """Depth unit extraction from curve definition."""
     p_ft = _parse(ALIAS_LAS)
     p_m = _parse(SAMPLE_LAS)
-    ft_depth = next(c for c in p_ft.curves if c.mnemonic == 'DEPT')
-    m_depth = next(c for c in p_m.curves if c.mnemonic == 'DEPT')
+    ft_depth = next(c for c in p_ft.curves if c.mnemonic == p_ft.depth_key)
+    m_depth = next(c for c in p_m.curves if c.mnemonic == p_m.depth_key)
     assert ft_depth.unit == 'FT', f"Expected FT, got {ft_depth.unit}"
     assert m_depth.unit == 'M', f"Expected M, got {m_depth.unit}"
+    # единица индекса дублируется в шапке скважины — по ней выбираем метры/футы
+    assert p_ft.well.depth_unit in ('FT', ''), p_ft.well.depth_unit
+    assert p_m.well.depth_unit in ('M', ''), p_m.well.depth_unit
     print("✅ test_depth_unit")
 
 def test_well_info():

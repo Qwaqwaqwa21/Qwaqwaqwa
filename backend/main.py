@@ -27,6 +27,7 @@ try:
     from routers.research import router as research_router
     from routers.inclinometry import router as inkl_router
     from routers.maps import router as maps_router
+    from routers.ingest import router as ingest_router
 except ImportError:
     from backend.routers.qc import router as qc_router
     from backend.routers.correlation import router as corr_router
@@ -37,6 +38,7 @@ except ImportError:
     from backend.routers.research import router as research_router
     from backend.routers.inclinometry import router as inkl_router
     from backend.routers.maps import router as maps_router
+    from backend.routers.ingest import router as ingest_router
 
 
 class SafeJSONResponse(JSONResponse):
@@ -145,6 +147,24 @@ def _ensure_well_coordinate_columns():
 
 
 _ensure_well_coordinate_columns()
+
+
+def _ensure_log_run_columns():
+    """Имя рейса, тип и единица глубины для уже существующих баз (идемпотентно)."""
+    ddls = [
+        "ALTER TABLE log_runs ADD COLUMN name VARCHAR(200) DEFAULT '';",
+        "ALTER TABLE log_runs ADD COLUMN kind VARCHAR(20) DEFAULT 'gis';",
+        "ALTER TABLE log_runs ADD COLUMN depth_unit VARCHAR(10) DEFAULT 'M';",
+    ]
+    with engine.begin() as conn:
+        for ddl in ddls:
+            try:
+                conn.execute(text(ddl))
+            except Exception:
+                pass
+
+
+_ensure_log_run_columns()
 
 
 def _ensure_production_table():
@@ -409,6 +429,7 @@ app.include_router(reports_router)
 app.include_router(research_router)
 app.include_router(inkl_router)
 app.include_router(maps_router)
+app.include_router(ingest_router)
 
 JOB_EXECUTOR = ThreadPoolExecutor(max_workers=2)
 JOBS = {}
@@ -2281,9 +2302,45 @@ def delivery_bundle(wid: int, db: Session = Depends(get_db)):
 
 # ─── Curve Metadata ───────────────────────────────────────────
 @app.get("/api/curve-config")
-def get_curve_config():
-    """Return standard curve track configurations."""
-    return CURVE_TRACKS
+def get_curve_config(mnemonics: str = ""):
+    """Настройки треков для кривых.
+
+    Без параметров — встроенная таблица. С `mnemonics=GK_500,GZ1,…` дополнительно
+    возвращает записи для мнемоник, которых в таблице нет: они выводятся из
+    справочника методов (ГЗ1 → БКЗ, GK_500 → ГК), иначе реальные промысловые
+    имена кривых не попадают ни на один трек и планшет остаётся пустым.
+    """
+    cfg = dict(CURVE_TRACKS)
+    if not mnemonics:
+        return cfg
+
+    try:
+        from methods import method_for_mnemonic as _mfm
+    except ImportError:  # pragma: no cover
+        from backend.methods import method_for_mnemonic as _mfm
+
+    for raw in mnemonics.split(","):
+        mn = raw.strip()
+        if not mn or mn in cfg or mn.upper() in {"DEPT", "DEPTH", "MD", "TVD"}:
+            continue
+        meth = _mfm(mn)
+        if meth is None:
+            continue
+        base = CURVE_TRACKS.get(meth.canonical) or CURVE_TRACKS.get(meth.key)
+        if base:
+            entry = dict(base)
+            entry["name"] = f"{entry.get('name', meth.key)} ({mn})"
+        else:
+            entry = {
+                "track": (meth.track or 0) + 1,
+                "color": meth.color,
+                "scale": [0.2, 2000] if meth.log_scale else [0, 100],
+                "log": bool(meth.log_scale),
+                "unit": meth.unit,
+                "name": f"{meth.key} ({mn})",
+            }
+        cfg[mn] = entry
+    return cfg
 
 
 

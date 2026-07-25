@@ -98,6 +98,8 @@ class GeoLogApp {
         this.renderer = null;
         this.currentWell = null;
         this.currentLogRun = null;
+        this.depthMode = 'MD';       // MD | TVD | ABS — ось глубин планшета
+        this._tvd = null;            // таблица пересчёта MD→TVD активной скважины
         this.curveConfig = {};
         this.wells = [];
         this.projects = [];
@@ -1000,6 +1002,8 @@ class GeoLogApp {
             this.renderTemplateCards();
             this._initBulkUpload();
             this._initCSVUpload();
+            await this._loadTvdTable(wellId);
+            if (typeof CurveTree !== 'undefined') await CurveTree.load(wellId);
             if (well.log_runs && well.log_runs.length > 0) {
                 this.currentLogRun = this._normalizeLogRunVersion(well.log_runs[0]);
                 this._populateLogRunSelector(well.log_runs, this.currentLogRun.id);
@@ -1072,12 +1076,12 @@ class GeoLogApp {
             return;
         }
         sel.innerHTML = logRuns.map((r, idx) => {
-            const runNo = r.run_number ?? (idx + 1);
-            const file = r.filename || 'unknown.log';
+            // Имя рейса задаётся при импорте (папка) и правится в дереве кривых;
+            // если его нет — падаем на имя файла, как было раньше.
+            const label = (r.name && String(r.name).trim()) || r.filename || `Run ${r.run_number ?? (idx + 1)}`;
             const pts = r.num_points ?? 0;
-            const versionLabel = this._formatRunVersion(r.version || r.las_version, file);
-            const versionText = versionLabel ? ` • ${versionLabel}` : '';
-            return `<option value="${r.id}">Run ${runNo} • ${file} • ${pts} pts${versionText}</option>`;
+            const kind = r.kind && r.kind !== 'gis' ? ` • ${r.kind.toUpperCase()}` : '';
+            return `<option value="${r.id}">${label}${kind} • ${pts} т.</option>`;
         }).join('');
         const chosen = selectedId || logRuns[0].id;
         sel.value = String(chosen);
@@ -1133,7 +1137,7 @@ class GeoLogApp {
     }
 
     async _fetchCurveRange(curves, start, stop, { decimated = false } = {}) {
-        const mode = decimated ? `decimated-${this.maxPoints}` : 'full';
+        const mode = (decimated ? `decimated-${this.maxPoints}` : 'full') + ':' + (this.depthMode || 'MD');
         const key = this._curveRangeKey(start, stop, mode);
         if (this.curveRangeCache.has(key)) return this.curveRangeCache.get(key);
 
@@ -1153,6 +1157,40 @@ class GeoLogApp {
         return data;
     }
 
+    /**
+     * Догрузить настройки треков для мнемоник, которых нет во встроенной
+     * таблице (GK_500, GZ1, МПЗ…). Без этого кривая не привязана ни к одному
+     * треку и на планшете не рисуется.
+     */
+    async _ensureCurveConfig(mnemonics) {
+        const missing = [...new Set((mnemonics || [])
+            .map(m => String(m || ''))
+            .filter(m => m && !this.curveConfig[m]
+                && !['DEPTH', 'DEPT', 'MD', 'TVD'].includes(m.toUpperCase())))];
+        if (!missing.length) return;
+        try {
+            const cfg = await this._api('/curve-config?mnemonics=' + encodeURIComponent(missing.join(',')));
+            for (const m of missing) if (cfg[m]) this.curveConfig[m] = cfg[m];
+        } catch (e) { console.warn('curve-config resolve failed:', e?.message || e); }
+        if (this.renderer) this.renderer.curveConfig = this.curveConfig;
+    }
+
+    /** Кривая из соседнего рейса берёт трек и шкалу базовой, но другой оттенок. */
+    _applyExtraRunStyles(extra) {
+        const SHADES = ['#f0a30a', '#00b8d9', '#ff7ab6', '#8bc34a', '#b39ddb'];
+        (extra || []).forEach((e, i) => {
+            const base = this.curveConfig[e.base];
+            if (!base) return;
+            this.curveConfig[e.mnemonic] = {
+                ...base,
+                color: SHADES[i % SHADES.length],
+                name: e.mnemonic,
+                dashed: true,
+            };
+        });
+        if (this.renderer) this.renderer.curveConfig = this.curveConfig;
+    }
+
     _applyCurveDataToRenderer(data, curves) {
         const depth = data.DEPTH || [];
         const curveData = {};
@@ -1160,7 +1198,17 @@ class GeoLogApp {
             if (data[c.mnemonic]) curveData[c.mnemonic] = data[c.mnemonic];
         }
         this._autoFitCurveScales(curveData);
-        this.renderer.setData(depth, curveData, this.formationTops, this.curveConfig);
+        // Отбивки заданы по MD — на оси TVD/абс. отметки их тоже надо пересчитать,
+        // иначе горизонты «поедут» относительно кривых.
+        const tops = (this.depthMode || 'MD') === 'MD'
+            ? this.formationTops
+            : (this.formationTops || []).map(t => ({
+                ...t,
+                depth: this._mdToAxis(Number(t.depth)),
+                top_depth: t.top_depth == null ? null : this._mdToAxis(Number(t.top_depth)),
+                base_depth: t.base_depth == null ? null : this._mdToAxis(Number(t.base_depth)),
+            }));
+        this.renderer.setData(depth, curveData, tops, this.curveConfig);
         this.renderer.setBadHoleIntervals([]);
         const scale = parseInt(document.getElementById('scaleSelect')?.value || '100', 10);
         this.renderer.scale = scale;
@@ -1176,6 +1224,166 @@ class GeoLogApp {
         if (!this.currentLogRun || this._suppressViewportLoad) return;
         clearTimeout(this._curveLoadDebounceTimer);
         this._curveLoadDebounceTimer = setTimeout(() => this._loadCurveData({ viewportStart: start, viewportStop: stop, preserveInputs: true }), 300);
+    }
+
+    // ─── Ось глубин: MD / TVD / абсолютная отметка ───────────────────
+    // Кривые всегда хранятся и запрашиваются по MD; TVD и абс. отметка —
+    // это пересчёт для показа, общий для всех рейсов скважины, чтобы рейсы
+    // сопоставлялись по одной вертикали.
+
+    async _loadTvdTable(wellId) {
+        this._tvd = null;
+        if (!wellId) return;
+        try {
+            const t = await this._api(`/wells/${wellId}/tvd`);
+            if (t && Array.isArray(t.md) && t.md.length > 1) {
+                this._tvd = { md: t.md, tvd: t.tvd, elevation: t.elevation };
+            } else {
+                this._tvd = { md: [], tvd: [], elevation: t?.elevation ?? null };
+            }
+        } catch { this._tvd = null; }
+    }
+
+    setDepthMode(mode) {
+        const m = ['MD', 'TVD', 'ABS'].includes(mode) ? mode : 'MD';
+        if (m !== 'MD' && (!this._tvd || !this._tvd.md.length)) {
+            if (m === 'ABS' && this._tvd?.elevation == null) {
+                GeoToast.warn('Нет альтитуды — абсолютную отметку посчитать не из чего');
+                document.getElementById('depthModeSelect').value = this.depthMode || 'MD';
+                return;
+            }
+            GeoToast.info('Инклинометрии нет — скважина считается вертикальной, TVD = MD');
+        }
+        // Поля «Top/Bottom» заданы в прежней оси — переводим их в новую через MD,
+        // иначе после переключения окно уезжает в пустоту.
+        const topIn = document.getElementById('depthTop');
+        const botIn = document.getElementById('depthBottom');
+        const mdTop = this._axisToMD(parseFloat(topIn?.value));
+        const mdBot = this._axisToMD(parseFloat(botIn?.value));
+
+        this.depthMode = m;
+        if (topIn && Number.isFinite(mdTop)) topIn.value = this._mdToAxis(mdTop).toFixed(1);
+        if (botIn && Number.isFinite(mdBot)) botIn.value = this._mdToAxis(mdBot).toFixed(1);
+
+        this.curveRangeCache?.clear?.();
+        this._loadCurveData();
+    }
+
+    /** MD → значение выбранной оси. */
+    _mdToAxis(md) {
+        if (!Number.isFinite(md)) return md;
+        const mode = this.depthMode || 'MD';
+        if (mode === 'MD') return md;
+        const t = this._tvd;
+        let tvd = md;
+        if (t && t.md.length > 1) tvd = this._interp(t.md, t.tvd, md);
+        if (mode === 'TVD') return tvd;
+        // Внутри ось должна расти вниз, поэтому храним глубину ниже уровня моря
+        // (tvd − альтитуда); на подписях она печатается со знаком минус, как
+        // и принято для абсолютной отметки.
+        const alt = t?.elevation;
+        return (alt == null) ? tvd : tvd - alt;
+    }
+
+    /** Значение выбранной оси → MD (для запроса данных). */
+    _axisToMD(v) {
+        if (!Number.isFinite(v)) return v;
+        const mode = this.depthMode || 'MD';
+        if (mode === 'MD') return v;
+        const t = this._tvd;
+        let tvd = v;
+        if (mode === 'ABS') {
+            const alt = t?.elevation;
+            if (alt == null) return v;
+            tvd = v + alt;
+        }
+        if (!t || t.md.length < 2) return tvd;
+        return this._interp(t.tvd, t.md, tvd);
+    }
+
+    /** Линейная интерполяция по возрастающей таблице xs → ys. */
+    _interp(xs, ys, x) {
+        const n = xs.length;
+        if (!n) return x;
+        if (x <= xs[0]) return ys[0] + (x - xs[0]);
+        if (x >= xs[n - 1]) return ys[n - 1] + (x - xs[n - 1]);
+        let lo = 0, hi = n - 1;
+        while (hi - lo > 1) {
+            const mid = (lo + hi) >> 1;
+            if (xs[mid] <= x) lo = mid; else hi = mid;
+        }
+        const dx = xs[hi] - xs[lo];
+        return dx === 0 ? ys[lo] : ys[lo] + (ys[hi] - ys[lo]) * ((x - xs[lo]) / dx);
+    }
+
+    /** Рейсы, отмеченные галочкой в дереве кривых (кроме активного). */
+    _extraRunIds() {
+        if (typeof CurveTree === 'undefined' || !CurveTree.data) return [];
+        const active = Number(this.currentLogRun?.id || 0);
+        return CurveTree.shownRunIds().map(Number).filter(id => id && id !== active);
+    }
+
+    /**
+     * Наложить кривые других рейсов на общую ось глубин активного рейса.
+     * Имена получают суффикс «·имя рейса», чтобы ГК из С1 и ГК из С2 были
+     * видны одновременно и различались в легенде.
+     */
+    async _mergeExtraRuns(baseDepth, curveData, start, stop) {
+        const extra = this._extraRunIds();
+        if (!extra.length || !baseDepth || !baseDepth.length) return [];
+        const added = [];
+        for (const runId of extra) {
+            let defs, data;
+            try {
+                defs = await this._api(`/log-runs/${runId}/curves`, { dedupe: false });
+                data = await this._api(`/log-runs/${runId}/data`, {
+                    method: 'POST', dedupe: false,
+                    body: JSON.stringify({
+                        curve_mnemonics: defs.map(c => c.mnemonic),
+                        start_depth: start, stop_depth: stop,
+                    }),
+                });
+            } catch (e) { console.warn('run', runId, 'skipped:', e?.message || e); continue; }
+
+            const runName = (CurveTree.data.runs.find(r => r.id === runId) || {}).name || ('run' + runId);
+            const srcDepth = data.DEPTH || data.DEPT || [];
+            if (!srcDepth.length) continue;
+            for (const def of defs) {
+                const mn = def.mnemonic;
+                if (['DEPTH', 'DEPT', 'MD', 'TVD'].includes(String(mn).toUpperCase())) continue;
+                const src = data[mn];
+                if (!src || !src.length) continue;
+                const label = `${mn}·${runName}`;
+                curveData[label] = this._resampleOnto(srcDepth, src, baseDepth);
+                added.push({ mnemonic: label, base: mn });
+            }
+        }
+        return added;
+    }
+
+    /** Линейная интерполяция значений src(srcDepth) на сетку dstDepth. */
+    _resampleOnto(srcDepth, src, dstDepth) {
+        const out = new Array(dstDepth.length).fill(null);
+        let i = 0;
+        const n = srcDepth.length;
+        for (let k = 0; k < dstDepth.length; k++) {
+            const d = dstDepth[k];
+            if (!isFinite(d)) continue;
+            while (i < n - 2 && srcDepth[i + 1] < d) i++;
+            const d0 = srcDepth[i], d1 = srcDepth[i + 1];
+            if (d < Math.min(d0, d1) || d > Math.max(d0, d1)) continue;
+            const v0 = src[i], v1 = src[i + 1];
+            if (v0 == null || !isFinite(v0)) continue;
+            if (v1 == null || !isFinite(v1) || d1 === d0) { out[k] = v0; continue; }
+            out[k] = v0 + (v1 - v0) * ((d - d0) / (d1 - d0));
+        }
+        return out;
+    }
+
+    /** Перерисовать планшет после смены набора отображаемых рейсов. */
+    async renderShownRuns() {
+        this.curveRangeCache?.clear?.();
+        await this._loadCurveData({ preserveInputs: true });
     }
 
     async _loadCurveData({ viewportStart = null, viewportStop = null, preserveInputs = false } = {}) {
@@ -1205,8 +1413,20 @@ class GeoLogApp {
                     })
                     .catch((e) => console.warn('Background full-resolution load failed:', e?.message || e));
             } else {
-                const data = await this._fetchCurveRange(curves, start, stop, { decimated: false });
-                this._applyCurveDataToRenderer(data, curves);
+                // Данные всегда тянем по MD; ось TVD/абс. отметки — пересчёт при показе.
+                const mdStart = this._axisToMD(start);
+                const mdStop = this._axisToMD(stop);
+                const data = await this._fetchCurveRange(curves, mdStart, mdStop, { decimated: false });
+                const extra = await this._mergeExtraRuns(data.DEPTH || data.DEPT, data, mdStart, mdStop);
+                if ((this.depthMode || 'MD') !== 'MD' && Array.isArray(data.DEPTH)) {
+                    data.DEPTH = data.DEPTH.map(v => this._mdToAxis(v));
+                }
+                const allCurves = curves.concat(extra.map(e => ({
+                    mnemonic: e.mnemonic, unit: '', description: 'из другого рейса',
+                })));
+                await this._ensureCurveConfig(allCurves.map(c => c.mnemonic));
+                this._applyExtraRunStyles(extra);
+                this._applyCurveDataToRenderer(data, allCurves);
             }
             if (this._showLithTrack) await this.toggleLithTrack(true);
 

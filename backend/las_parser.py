@@ -113,10 +113,11 @@ DEPTH_CANDIDATES = ('DEPT', 'DEPTH', 'MD', 'TVD')
 @dataclass
 class LASCurve:
     """Curve definition from ~C section."""
-    mnemonic: str       # e.g. "GR", "RHOB", "NPHI"
+    mnemonic: str       # как в файле: "GK", "GZ1", "МПЗ" — имя не переписываем
     unit: str           # e.g. "GAPI", "G/C3", "V/V"
     value: str          # API code or description
     description: str    # full description
+    canonical: str = "" # нормализованное имя для подбора трека/метода
 
     def __repr__(self):
         return f"LASCurve({self.mnemonic}, {self.unit})"
@@ -148,6 +149,10 @@ class LASWell:
     service_company: str = ""
     date: str = ""
     api: str = ""
+    x: Optional[float] = None          # X устья из шапки (~W X)
+    y: Optional[float] = None          # Y устья из шапки (~W Y)
+    rkb: Optional[float] = None        # альтитуда стола ротора (RKB / KB / EREF / ALT)
+    depth_unit: str = ""               # единица индекса из STRT/STOP (M или FT)
 
     def __repr__(self):
         return f"LASWell({self.well_name}, {self.uwi})"
@@ -194,12 +199,17 @@ class LASFile:
                 "stop": self.well.stop,
                 "step": self.well.step,
                 "null": self.well.null,
+                "x": self.well.x,
+                "y": self.well.y,
+                "rkb": self.well.rkb,
+                "depth_unit": self.well.depth_unit,
             },
             "curves": [
                 {
                     "mnemonic": c.mnemonic,
                     "unit": c.unit,
                     "description": c.description,
+                    "canonical": c.canonical or c.mnemonic,
                 }
                 for c in self.curves
             ],
@@ -387,7 +397,7 @@ class LASParser:
                                 delimiter = '\t'
 
                     elif current_section == 'well':
-                        LASParser._parse_well_field(result.well, mnemonic, value)
+                        LASParser._parse_well_field(result.well, mnemonic, value, unit)
 
                     elif current_section == 'curves' and in_curve_section:
                         # Only accept valid curve mnemonics (must start with a
@@ -396,12 +406,11 @@ class LASParser:
                         canonical = mnemonic.upper()
                         if raw_mnem and raw_mnem[0].isalpha():
                             existing = {c.mnemonic for c in result.curves}
-                            # Canonicalise the first member of a family for
-                            # display; on collision KEEP the curve under its raw
-                            # name so members of a family (e.g. KS/BK/GZ1..GZ5 all
-                            # → RT) are never dropped — dropping would also
-                            # misalign the positional data columns.
-                            name = canonical if canonical not in existing else raw_mnem
+                            # Имя кривой оставляем как в файле — геолог ищет на
+                            # планшете GZ1..GZ5 и МПЗ, а не переименованные
+                            # канонические имена. Нормализованное имя хранится
+                            # отдельно и используется для подбора трека/метода.
+                            name = raw_mnem
                             if name in existing:
                                 i = 2
                                 while f"{name}_{i}" in existing:
@@ -412,6 +421,7 @@ class LASParser:
                                 unit=unit,
                                 value=value,
                                 description=description,
+                                canonical=canonical,
                             ))
 
                     elif current_section == 'parameters':
@@ -433,8 +443,32 @@ class LASParser:
         return result
 
     @staticmethod
-    def _parse_well_field(well: LASWell, mnemonic: str, value: str):
+    def _parse_well_field(well: LASWell, mnemonic: str, value: str, unit: str = ""):
         """Map ~W fields to LASWell attributes."""
+        up = mnemonic.upper()
+
+        # Единица глубины берётся из STRT/STOP/STEP — по ней определяем метры/футы.
+        if up in ('STRT', 'STOP', 'STEP') and unit and not well.depth_unit:
+            u = unit.strip().upper().lstrip('.')
+            if u.startswith('M'):
+                well.depth_unit = 'M'
+            elif u.startswith('F'):
+                well.depth_unit = 'FT'
+
+        # Координаты устья и альтитуда — часто есть прямо в шапке (RMS-экспорт).
+        _geo = {'X': 'x', 'XCOORD': 'x', 'X_COORD': 'x', 'XWELL': 'x',
+                'Y': 'y', 'YCOORD': 'y', 'Y_COORD': 'y', 'YWELL': 'y',
+                'RKB': 'rkb', 'KB': 'rkb', 'EKB': 'rkb', 'EREF': 'rkb',
+                'ELEV': 'rkb', 'ALT': 'rkb', 'APD': 'rkb', 'GL': 'rkb'}
+        if up in _geo:
+            try:
+                num = float(str(value).replace(',', '.'))
+            except (TypeError, ValueError):
+                num = None
+            if num is not None and getattr(well, _geo[up]) is None:
+                setattr(well, _geo[up], num)
+            return
+
         mapping = {
             'STRT': 'start',
             'STOP': 'stop',
@@ -452,7 +486,7 @@ class LASParser:
             'DATE': 'date',
             'API': 'api',
         }
-        attr = mapping.get(mnemonic.upper())
+        attr = mapping.get(up)
         if attr:
             if attr in ('start', 'stop', 'step', 'null'):
                 try:

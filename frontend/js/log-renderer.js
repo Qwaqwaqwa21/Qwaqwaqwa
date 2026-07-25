@@ -10,11 +10,14 @@ class LogRenderer {
         this.dpr = window.devicePixelRatio || 1;
 
         // Display config
+        // Базовые треки. Список кривых — только «затравка»: реальные мнемоники
+        // (GK_500, GZ1, МПЗ…) добавляются автоматически по curveConfig.track,
+        // иначе промысловый LAS рисуется пустым планшетом.
         this.tracks = [
-            { name: 'GR / SP / CAL', curves: ['GR', 'SGR', 'CGR', 'SP', 'CAL', 'CALI', 'HCAL', 'BS'], width: 180 },
-            { name: 'Resistivity', curves: ['RT', 'RESD', 'RXO', 'RILD', 'RILM', 'RLL3', 'RLLS', 'ILD', 'ILM', 'MSFL'], width: 180, log: true },
-            { name: 'Porosity', curves: ['NPHI', 'NPHI_LS', 'RHOB', 'RHOZ', 'DT', 'DTC', 'DTS', 'PEF', 'DRHO'], width: 180 },
-            { name: 'Saturation', curves: ['SW', 'VSH', 'PHIE', 'PHIT', 'BVW', 'PERM', 'KP', 'KGL', 'KNG', 'KPR'], width: 180 },
+            { name: 'ГК / ПС / ДС', curves: ['GR', 'SGR', 'CGR', 'SP', 'CAL', 'CALI', 'HCAL', 'BS', 'GK', 'PS', 'DS'], width: 180 },
+            { name: 'Сопротивление', curves: ['RT', 'RESD', 'RXO', 'RILD', 'RILM', 'RLL3', 'RLLS', 'ILD', 'ILM', 'MSFL', 'KS', 'BK', 'IK', 'BKZ', 'MKZ'], width: 180, log: true },
+            { name: 'Пористость / НГК', curves: ['NPHI', 'NPHI_LS', 'RHOB', 'RHOZ', 'DT', 'DTC', 'DTS', 'PEF', 'DRHO', 'NGK', 'GGKP', 'AK'], width: 180 },
+            { name: 'Насыщение / прочее', curves: ['SW', 'VSH', 'PHIE', 'PHIT', 'BVW', 'PERM', 'KP', 'KGL', 'KNG', 'KPR', 'GAZ', 'YMK'], width: 180 },
             { name: 'РИГИС', curves: ['LITH', 'COLL', 'SAT'], width: 132, categorical: true },
         ];
 
@@ -126,8 +129,37 @@ class LogRenderer {
                 this.tracks.forEach((t, i) => { t.width = saved[i]; });
             }
         } catch {}
+        this._autoAssignTracks();
         this._autoFitView();
         this.render();
+    }
+
+    /**
+     * Разложить загруженные кривые по трекам согласно curveConfig[mn].track.
+     * Без этого на планшет попадают только мнемоники из «затравочных» списков,
+     * а промысловые имена (GK_500, GZ1, МПЗ, ГК·C1) остаются невидимыми.
+     */
+    _autoAssignTracks() {
+        const cfg = this.curveConfig || {};
+        // Сначала убираем ранее добавленные автоматически, чтобы при смене
+        // скважины треки не копили кривые прошлых рейсов.
+        for (const t of this.tracks) {
+            if (t._auto) for (const m of t._auto) {
+                const i = t.curves.indexOf(m);
+                if (i >= 0) t.curves.splice(i, 1);
+            }
+            t._auto = [];
+        }
+        for (const mn of Object.keys(this.curveData || {})) {
+            const U = String(mn).toUpperCase();
+            if (['DEPTH', 'DEPT', 'MD', 'TVD'].includes(U)) continue;
+            if (this.tracks.some(t => t.curves.includes(mn))) continue;
+            const c = cfg[mn];
+            let idx = Number.isFinite(Number(c?.track)) ? Number(c.track) - 1 : -1;
+            if (!(idx >= 0 && idx < this.tracks.length)) idx = 0;
+            this.tracks[idx].curves.push(mn);
+            this.tracks[idx]._auto.push(mn);
+        }
     }
 
     setLithologyData(lithologyData) {
@@ -216,6 +248,19 @@ class LogRenderer {
             return;
         }
 
+        // Протяжка планшета по глубине (кнопка мыши зажата на пустом месте)
+        if (this._dragStart) {
+            const rect2 = this.canvas.getBoundingClientRect();
+            const plotH = rect2.height - this.margin.top - this.margin.bottom;
+            const span = this._dragStart.viewStop - this._dragStart.viewStart;
+            if (plotH > 0 && span > 0) {
+                const dDepth = ((this._dragStart.y - e.clientY) / plotH) * span;
+                this._setView(this._dragStart.viewStart + dDepth, this._dragStart.viewStop + dDepth);
+            }
+            this.canvas.style.cursor = 'grabbing';
+            return;
+        }
+
         // Feature 4: Curve drag ghost
         if (this._dragCurve) {
             this.render();
@@ -245,6 +290,8 @@ class LogRenderer {
     }
 
     _onMouseLeave() {
+        this._dragStart = null;
+        this.canvas.style.cursor = 'default';
         this.mouseY = -1;
         this.mouseX = -1;
         this.hoverDepth = -1;
@@ -252,19 +299,58 @@ class LogRenderer {
         this._hideTooltip();
     }
 
+    /** Границы данных планшета; пустой массив глубин не должен ломать зум. */
+    _dataBounds() {
+        const d = this.depthData;
+        if (!d || !d.length) return null;
+        let lo = Infinity, hi = -Infinity;
+        for (let i = 0; i < d.length; i++) {
+            const v = d[i];
+            if (Number.isFinite(v)) { if (v < lo) lo = v; if (v > hi) hi = v; }
+        }
+        return (lo < hi) ? { lo, hi } : null;
+    }
+
+    /** Применить новое окно с ограничением по данным и минимальным размером. */
+    _setView(start, stop) {
+        const b = this._dataBounds();
+        let s = start, e = stop;
+        if (!(e - s > 0)) return;
+        if (b) {
+            const span = Math.min(e - s, b.hi - b.lo);
+            if (s < b.lo) { s = b.lo; e = s + span; }
+            if (e > b.hi) { e = b.hi; s = e - span; }
+            if (s < b.lo) s = b.lo;
+        }
+        if (e - s < 0.5) return;
+        this.viewStart = s;
+        this.viewStop = e;
+        this.requestRender();
+        this._updateDepthInputs();
+        if (typeof this.onViewChanged === 'function') this.onViewChanged(this.viewStart, this.viewStop);
+    }
+
     _onWheel(e) {
         e.preventDefault();
         const range = this.viewStop - this.viewStart;
-        const delta = e.deltaY > 0 ? range * 0.1 : -range * 0.1;
-        const newStart = this.viewStart + delta;
-        const newStop = this.viewStop + delta;
-        if (newStart >= this.depthData[0] && newStop <= this.depthData[this.depthData.length - 1]) {
-            this.viewStart = newStart;
-            this.viewStop = newStop;
-            this.requestRender();
-            this._updateDepthInputs();
-            if (typeof this.onViewChanged === 'function') this.onViewChanged(this.viewStart, this.viewStop);
+        if (!(range > 0)) return;
+
+        // Shift + колесо — прокрутка по глубине, обычное колесо — масштаб
+        // относительно точки под курсором (как в отраслевых просмотрщиках).
+        if (e.shiftKey) {
+            const step = range * 0.15 * (e.deltaY > 0 ? 1 : -1);
+            this._setView(this.viewStart + step, this.viewStop + step);
+            return;
         }
+
+        const rect = this.canvas.getBoundingClientRect();
+        const y = e.clientY - rect.top;
+        let anchor = this._yToDepth(y);
+        if (!Number.isFinite(anchor) || anchor <= 0) anchor = (this.viewStart + this.viewStop) / 2;
+        const frac = Math.max(0, Math.min(1, (anchor - this.viewStart) / range));
+        const factor = e.deltaY > 0 ? 1.2 : 1 / 1.2;   // вниз — отдалить
+        const newRange = range * factor;
+        this._setView(anchor - newRange * frac, anchor + newRange * (1 - frac));
     }
 
     _dragStart = null;
@@ -348,21 +434,10 @@ class LogRenderer {
             return;
         }
 
+        // Протяжка применяется вживую в _onMouseMove — здесь только завершаем.
         if (this._dragStart) {
-            const dy = e.clientY - this._dragStart.y;
-            const feetPerPixel = (this._dragStart.viewStop - this._dragStart.viewStart) / (this.height - this.margin.top - this.margin.bottom);
-            const depthDelta = -dy * feetPerPixel;
-            const range = this._dragStart.viewStop - this._dragStart.viewStart;
-            this.viewStart = this._dragStart.viewStart + depthDelta;
-            this.viewStop = this.viewStart + range;
-            const dataStart = this.depthData[0];
-            const dataEnd = this.depthData[this.depthData.length - 1];
-            if (this.viewStart < dataStart) { this.viewStart = dataStart; this.viewStop = dataStart + range; }
-            if (this.viewStop > dataEnd) { this.viewStop = dataEnd; this.viewStart = dataEnd - range; }
             this._dragStart = null;
-            this.requestRender();
-            this._updateDepthInputs();
-            if (typeof this.onViewChanged === 'function') this.onViewChanged(this.viewStart, this.viewStop);
+            this.canvas.style.cursor = 'default';
         }
     }
     
@@ -672,9 +747,31 @@ class LogRenderer {
         if (tooltip) tooltip.style.display = 'none';
     }
 
+    /** Название оси в шапке линейки глубин. */
+    _depthAxisName() {
+        const m = window.app?.depthMode || 'MD';
+        return m === 'TVD' ? 'TVD' : (m === 'ABS' ? 'АБС.ОТМ' : 'MD');
+    }
+
+    /**
+     * Подпись глубины. По оси абсолютных отметок внутри хранится «глубина ниже
+     * уровня моря» (растёт вниз), а геолог читает отметку со знаком минус — её и
+     * печатаем.
+     */
+    _depthLabel(v, digits) {
+        const m = window.app?.depthMode || 'MD';
+        const shown = (m === 'ABS') ? -v : v;
+        return shown.toFixed(digits);
+    }
+
     _depthUnit() {
-        const wells = document.getElementById('depthUnit');
-        return wells?.textContent || 'FT';
+        // Единицу берём у активной скважины: российские LAS почти всегда в метрах,
+        // и подпись «FT» на метровом планшете вводит в заблуждение.
+        const app = window.app;
+        const u = app?.currentLogRun?.depth_unit || app?.currentWell?.depth_unit;
+        if (u) return String(u).toUpperCase() === 'FT' ? 'FT' : 'м';
+        const el = document.getElementById('depthUnit');
+        return el?.textContent || 'м';
     }
 
     requestRender() {
@@ -788,7 +885,7 @@ class LogRenderer {
                 ctx.fillStyle = this.colors.cursorLine;
                 ctx.font = 'bold 11px IBM Plex Mono';
                 ctx.textAlign = 'right';
-                ctx.fillText(this.hoverDepth.toFixed(1), this.margin.left + this.depthTrackWidth - 5, this.mouseY - 4);
+                ctx.fillText(this._depthLabel(this.hoverDepth, 1), this.margin.left + this.depthTrackWidth - 5, this.mouseY - 4);
             }
             
             // Formation top snap indicator
@@ -1078,7 +1175,7 @@ class LogRenderer {
                 ctx.fillStyle = this.colors.depthText;
                 ctx.font = '10px IBM Plex Mono';
                 ctx.textAlign = 'center';
-                ctx.fillText(d.toFixed(0), x + width / 2, y + 3.5);
+                ctx.fillText(this._depthLabel(d, 0), x + width / 2, y + 3.5);
             }
         }
 
@@ -1086,7 +1183,7 @@ class LogRenderer {
         ctx.fillStyle = this.colors.headerText;
         ctx.font = '10px IBM Plex Mono';
         ctx.textAlign = 'center';
-        ctx.fillText('DEPTH', x + width / 2, plotTop - 5);
+        ctx.fillText(this._depthAxisName(), x + width / 2, plotTop - 5);
     }
 
     _drawTrack(ctx, track, trackIndex, x, plotTop, plotBottom, width) {

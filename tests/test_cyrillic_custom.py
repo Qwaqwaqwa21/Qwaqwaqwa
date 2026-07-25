@@ -70,7 +70,10 @@ def test_parse_cyrillic_las_cp1251():
     parsed = LASParser.parse_bytes(las_txt.encode("cp1251"))
     assert parsed.well.well_name == "Скважина-7"
     mnems = [c.mnemonic for c in parsed.curves]
-    assert "GK" in mnems and "PS" in mnems      # ГК/ПС normalized
+    canon = {c.mnemonic: c.canonical for c in parsed.curves}
+    # Кириллические имена остаются как в файле, нормализация — в canonical.
+    assert "ГК" in mnems and "ПС" in mnems
+    assert canon["ГК"] == "GK" and canon["ПС"] == "PS"
     assert "НЕЧТО" in mnems                       # unknown Cyrillic preserved
     assert len(parsed.depth) == 3
 

@@ -50,5 +50,7 @@ def test_phase2_regression_datasets_parse_with_expected_shape():
             f"Curve count too low for {ds['id']}: {len(parsed.curves)}"
         )
 
-        assert "DEPT" in parsed.data, f"Missing DEPT curve data in {ds['id']}"
-        assert len(parsed.data["DEPT"]) == len(parsed.depth)
+        # Индексная кривая называется так, как в файле (DEPT/DEPTH/MD),
+        # поэтому сверяемся с определённым парсером depth_key.
+        assert parsed.depth_key in parsed.data, f"Missing depth curve in {ds['id']}"
+        assert len(parsed.data[parsed.depth_key]) == len(parsed.depth)
