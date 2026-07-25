@@ -153,6 +153,13 @@
         <div class="sidebar-content" id="projectTree">
             <!-- Projects and wells rendered here -->
         </div>
+        <div class="clipboard-panel">
+            <div class="clipboard-header">
+                <span>CLIPBOARD</span>
+                <button class="btn-icon" onclick="ClipboardPanel.load()" title="Обновить"><i data-lucide="refresh-cw"></i></button>
+            </div>
+            <div id="clipboardContent" class="clipboard-content"></div>
+        </div>
         <div class="sidebar-actions">
             <button class="btn-sidebar" onclick="app.addWell()">
                 <i data-lucide="plus"></i> Add Well
@@ -1316,7 +1323,10 @@
                 <div class="toolbar-group"><label>Степень IDW</label><input id="mapPower" class="depth-input" type="number" value="2" min="0.5" max="6" step="0.5" onchange="MapsView.load()"></div>
                 <label style="display:flex;align-items:center;gap:6px"><input id="mapReverse" type="checkbox" onchange="MapsView.render()"> physics reverse</label>
                 <button class="btn-sm" onclick="MapsView.load()"><i data-lucide="refresh-cw"></i> Построить</button>
-                <button class="btn-sm" onclick="MapsView.importDemoCoords()"><i data-lucide="map-pin"></i> Вымышленные координаты</button>
+                <button class="btn-sm" onclick="document.getElementById('coordFileInput').click()"><i data-lucide="map-pin"></i> Импорт координат</button>
+                <input type="file" id="coordFileInput" accept=".xlsx,.xlsm,.csv,.txt" style="display:none" onchange="MapsView.importCoordFile(this.files[0])">
+                <button class="btn-sm" onclick="ClipboardPanel.addCurrent()"><i data-lucide="clipboard-plus"></i> В clipboard</button>
+                <button class="btn-sm" onclick="MapsView.showInventory()"><i data-lucide="table"></i> Что есть в скважинах</button>
                 <span id="mapInfo" class="toolbar-hint"></span>
             </div>
             <div id="mapsContent" class="stats-container"></div>
@@ -1535,6 +1545,7 @@
     <script src="/static/js/rigis-tracks.js"></script>
     <script src="/static/js/inclinometry.js"></script>
     <script src="/static/js/maps.js"></script>
+    <script src="/static/js/clipboard.js"></script>
     <script src="/static/js/research-coverage.js"></script>
     <script src="/static/js/mnemonics.js"></script>
     <script src="/static/js/app.js"></script>

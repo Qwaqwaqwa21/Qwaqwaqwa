@@ -36,6 +36,29 @@
 
   window.MapsView = {
     data: null, wellheads: null, shapes: null, horizons: [],
+    excluded: {},          // {wellId: true} — исключены из интерполяции
+
+    isExcluded: function (id) { return !!this.excluded[id]; },
+
+    toggleWell: async function (id) {
+      if (this.excluded[id]) delete this.excluded[id]; else this.excluded[id] = true;
+      this._markWellList();
+      await this.load();
+    },
+
+    _markWellList: function () {
+      var self = this;
+      document.querySelectorAll('.well-item').forEach(function (el) {
+        var id = parseInt(el.getAttribute('data-id'), 10);
+        el.classList.toggle('map-off', self.isExcluded(id));
+      });
+    },
+
+    _excludeParam: function () {
+      var ids = Object.keys(this.excluded);
+      return ids.length ? '&exclude=' + ids.join(',') : '';
+    },
+
 
     load: async function () {
       var host = document.getElementById('mapsContent');
@@ -64,7 +87,8 @@
           var h = (document.getElementById('mapHorizon') || {}).value || '';
           var pw = (document.getElementById('mapPower') || {}).value || '2';
           this.data = await app._api('/projects/' + p + '/map/grid?param=' + param
-            + '&horizon=' + encodeURIComponent(h) + '&power=' + pw + '&nx=150&ny=150');
+            + '&horizon=' + encodeURIComponent(h) + '&power=' + pw + '&nx=150&ny=150'
+            + this._excludeParam());
           this.wellheads = null;
         }
       } catch (e) {
@@ -75,12 +99,72 @@
       if (window.lucide) lucide.createIcons();
     },
 
-    importDemoCoords: async function () {
+    importCoordFile: async function (file) {
+      if (!file) return;
+      var p = pid();
+      if (!p) { GeoToast.warn('Откройте проект'); return; }
       try {
-        var r = await app._api('/projects/' + pid() + '/wells/demo-coords', { method: 'POST' });
-        GeoToast.success('Вымышленные координаты заданы для ' + r.wells + ' скв.');
+        var fd = new FormData();
+        fd.append('file', file);
+        var resp = await fetch('/api/projects/' + p + '/wells/coordinates/import', {
+          method: 'POST', headers: { 'X-User-Role': app.currentRole || 'viewer' }, body: fd
+        });
+        var j = await resp.json();
+        if (!resp.ok) throw new Error(j.detail || ('HTTP ' + resp.status));
+        GeoToast.success('Координаты: обновлено ' + j.updated + ' скв.'
+          + (j.missing && j.missing.length ? ', не найдено: ' + j.missing.join(', ') : ''));
         await this.load();
-      } catch (e) { GeoToast.error('Ошибка: ' + (e.message || e)); }
+      } catch (e) { GeoToast.error('Импорт не удался: ' + (e.message || e)); }
+    },
+
+    showInventory: async function () {
+      var p = pid();
+      if (!p) { GeoToast.warn('Откройте проект'); return; }
+      var host = document.getElementById('mapsContent');
+      host.innerHTML = '<p style=\"color:#8b949e\">Сбор сведений…</p>';
+      var inv;
+      try { inv = await app._api('/projects/' + p + '/inventory'); }
+      catch (e) { host.innerHTML = '<p style=\"color:#f85149\">' + esc(e.message || e) + '</p>'; return; }
+      var s = inv.summary;
+      var yes = function (v) { return v ? '<span style=\"color:#3fb950\">✔</span>' : '<span style=\"color:#f85149\">—</span>'; };
+      var h = '<h3 style=\"color:#c9d1d9;margin:0 0 10px\">Что есть в скважинах</h3>';
+      h += '<div style=\"display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px\">';
+      [['Скважин', s.wells, '#c9d1d9'], ['С координатами', s.with_coords + ' (' + s.coords_pct + '%)', '#58a6ff'],
+       ['С альтитудой', s.with_altitude, '#58a6ff'], ['С инклинометрией', s.with_inkl + ' (' + s.inkl_pct + '%)', '#58a6ff'],
+       ['С ГИС', s.with_gis, '#3fb950'], ['С РИГИС', s.with_rigis, '#3fb950'],
+       ['С отбивками', s.with_tops, '#d29922']].forEach(function (b) {
+        h += '<div style=\"background:#161b22;border:1px solid #30363d;border-radius:8px;padding:8px 12px;min-width:110px\">'
+          + '<div style=\"color:#8b949e;font-size:11px\">' + b[0] + '</div>'
+          + '<div style=\"color:' + b[2] + ';font-size:17px;font-weight:600\">' + b[1] + '</div></div>';
+      });
+      h += '</div><div style=\"overflow-x:auto\"><table style=\"border-collapse:collapse;font-size:12px;white-space:nowrap\">';
+      h += '<tr style=\"color:#8b949e;border-bottom:1px solid #30363d\">'
+        + '<th style=\"text-align:left;padding:6px 8px\">Скважина</th>'
+        + '<th style=\"padding:6px 8px\">Коорд.</th><th style=\"padding:6px 8px\">X</th><th style=\"padding:6px 8px\">Y</th>'
+        + '<th style=\"padding:6px 8px\">Альтитуда</th><th style=\"padding:6px 8px\">ИНКЛ</th>'
+        + '<th style=\"padding:6px 8px\">ГИС</th><th style=\"text-align:left;padding:6px 8px\">Методы</th>'
+        + '<th style=\"padding:6px 8px\">РИГИС</th><th style=\"padding:6px 8px\">Отбивки</th>'
+        + '<th style=\"padding:6px 8px\">Интервал, м</th><th style=\"padding:6px 8px\">Заметки</th></tr>';
+      inv.rows.forEach(function (r) {
+        h += '<tr style=\"border-bottom:1px solid #21262d\">'
+          + '<td style=\"padding:5px 8px;color:#c9d1d9;font-weight:600\">' + esc(r.well_name) + '</td>'
+          + '<td style=\"text-align:center\">' + yes(r.coords) + '</td>'
+          + '<td style=\"padding:5px 8px;text-align:right;color:#8b949e\">' + (r.x != null ? r.x.toFixed(1) : '—') + '</td>'
+          + '<td style=\"padding:5px 8px;text-align:right;color:#8b949e\">' + (r.y != null ? r.y.toFixed(1) : '—') + '</td>'
+          + '<td style=\"padding:5px 8px;text-align:right;color:#8b949e\">' + (r.altitude != null ? r.altitude.toFixed(1) : '—') + '</td>'
+          + '<td style=\"text-align:center\">' + yes(r.inkl) + '</td>'
+          + '<td style=\"text-align:center;color:#3fb950\">' + (r.gis_count || '—') + '</td>'
+          + '<td style=\"padding:5px 8px;color:#8b949e\">' + esc(r.gis.join(' ')) + '</td>'
+          + '<td style=\"text-align:center;color:#3fb950\">' + (r.rigis_count || '—') + '</td>'
+          + '<td style=\"text-align:center;color:#d29922\">' + (r.tops || '—') + '</td>'
+          + '<td style=\"padding:5px 8px;text-align:center;color:#8b949e\">'
+          + (r.depth_from != null ? r.depth_from + '–' + r.depth_to : '—') + '</td>'
+          + '<td style=\"text-align:center;color:#8b949e\">' + (r.notes || '—') + '</td></tr>';
+      });
+      h += '</table></div>';
+      host.innerHTML = h;
+      var info = document.getElementById('mapInfo');
+      if (info) info.textContent = 'Инвентаризация · ' + s.wells + ' скв.';
     },
 
     render: function () {
@@ -165,10 +249,17 @@
         var px = X(p.x), py = Y(p.y);
         var noData = d && (p.value == null);
         var zero = d && (p.value != null && p.value <= 1e-9);
+        var off = p.excluded || (typeof MapsView !== 'undefined' && MapsView.isExcluded(p.id));
+        g.save();
+        if (off) g.globalAlpha = 0.4;
         g.beginPath(); g.arc(px, py, 4.5, 0, 6.283);
         g.fillStyle = noData ? '#484f58' : (zero ? '#0d1117' : '#ffffff');
         g.fill();
-        g.lineWidth = 1.4; g.strokeStyle = zero ? '#f85149' : '#0d1117'; g.stroke();
+        g.lineWidth = 1.4;
+        g.strokeStyle = off ? '#f0b429' : (zero ? '#f85149' : '#0d1117');
+        if (off) { g.setLineDash([2, 2]); g.lineWidth = 1.8; }
+        g.stroke();
+        g.restore();
         g.fillStyle = '#ffffff'; g.font = '11px system-ui,sans-serif'; g.textAlign = 'left';
         g.fillText(p.name, px + 7, py - 5);
         if (d && p.value != null) {
@@ -259,7 +350,20 @@
 
     _legend: function (d, rev) {
       if (!d) {
-        return '<div style="color:#8b949e;font-size:12px">Карта устьев.<br>Точки — скважины с координатами.</div>';
+        var wh = this.wellheads;
+        var n = wh ? wh.count : 0;
+        var h0 = '<div style="color:#c9d1d9;font-weight:600;margin-bottom:6px">Карта устьев скважин</div>'
+          + '<div style="color:#8b949e;font-size:12px;margin-bottom:10px">Скважин с координатами: <b>' + n + '</b></div>'
+          + '<div style="font-size:12px;color:#c9d1d9">'
+          + '<div style="display:flex;align-items:center;gap:7px;margin:4px 0">'
+          + '<span style="width:11px;height:11px;border-radius:50%;background:#fff;border:1px solid #0d1117"></span> устье скважины</div>'
+          + '<div style="display:flex;align-items:center;gap:7px;margin:4px 0">'
+          + '<span style="width:11px;height:11px;border-radius:50%;background:#484f58"></span> исключена из сетки</div>'
+          + '</div>'
+          + '<div style="margin-top:10px;font-size:11px;color:#8b949e">'
+          + 'Подпись у точки — номер скважины.<br>Клик по скважине в списке слева исключает её из интерполяции.<br>'
+          + 'Оси — X/Y в СК-63, м. Масштабная линейка внизу слева.</div>';
+        return h0;
       }
       var h = '<div style="color:#c9d1d9;font-weight:600;margin-bottom:6px">' + esc(d.title) + '</div>';
       if (d.horizon) h += '<div style="color:#8b949e;font-size:12px;margin-bottom:8px">Горизонт: ' + esc(d.horizon) + '</div>';
@@ -276,6 +380,7 @@
         + '<div>● белая — скважина с данными</div>'
         + '<div>● красный контур — нулевая толщина</div>'
         + '<div>● серая — нет данных по горизонту</div>'
+        + '<div>◌ полупрозрачная — исключена из интерполяции</div>'
         + '<div style="margin-top:6px">Пустые области — выклинивание коллектора (на половине расстояния до «пустых» скважин).</div>'
         + '</div>';
       return h;

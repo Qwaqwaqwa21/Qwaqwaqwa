@@ -3,7 +3,7 @@
 
   * GET  /api/crs/presets                     — системы координат (СК-63, Татарстан)
   * POST /api/projects/{pid}/wells/coordinates — импорт координат (Excel/CSV/JSON)
-  * POST /api/projects/{pid}/wells/demo-coords — вымышленные координаты (демо)
+  * POST /api/projects/{pid}/wells/coordinates/import — импорт координат из Excel/CSV
   * GET  /api/projects/{pid}/map/wellheads    — карта устьев
   * GET  /api/projects/{pid}/map/grid         — сеточная карта параметра по горизонту
   * POST /api/projects/{pid}/shapes           — импорт контуров из SHP
@@ -121,25 +121,101 @@ def import_coordinates(pid: int, rows: List[CoordRow], db: Session = Depends(get
     return {"ok": True, "updated": updated, "missing": missing}
 
 
-@router.post("/api/projects/{pid}/wells/demo-coords")
-def demo_coordinates(pid: int, spacing: float = Query(900.0), db: Session = Depends(get_db)) -> Dict[str, Any]:
-    """Вымышленные координаты (условная сетка) — для проверки картопостроения."""
-    wells = db.query(Well).filter(Well.project_id == pid).order_by(Well.id).all()
-    if not wells:
-        raise HTTPException(404, "В проекте нет скважин")
-    rng = np.random.default_rng(42)
-    n = len(wells)
-    cols = max(1, int(round(math.sqrt(n) * 1.3)))
-    x0, y0 = 2_320_000.0, 6_060_000.0     # условный центр в зоне СК-63
-    for i, w in enumerate(wells):
-        r, c = divmod(i, cols)
-        w.x_coord = x0 + c * spacing + float(rng.normal(0, spacing * 0.18))
-        w.y_coord = y0 + r * spacing + float(rng.normal(0, spacing * 0.18))
-        if w.elevation is None:
-            w.elevation = 120.0 + float(rng.normal(0, 12))
+@router.post("/api/projects/{pid}/wells/coordinates/import")
+async def import_coordinates_file(
+    pid: int,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    """Импорт координат из Excel (.xlsx) или CSV.
+
+    Колонки распознаются по заголовку: скважина / X / Y / альтитуда.
+    Поддерживаются русские и английские названия; если заголовок не найден,
+    берутся первые 3–4 колонки (скважина, X, Y, [альтитуда]).
+    """
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "Пустой файл")
+    name = (file.filename or "").lower()
+    rows: List[List[str]] = []
+
+    if name.endswith((".xlsx", ".xlsm", ".xltx")):
+        try:
+            import openpyxl
+        except ImportError:
+            raise HTTPException(400, "На сервере нет openpyxl")
+        try:
+            wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+        except Exception as e:
+            raise HTTPException(400, f"Не удалось прочитать книгу: {e}")
+        for r in wb.active.iter_rows(values_only=True):
+            rows.append(["" if c is None else str(c) for c in r])
+    else:
+        text = None
+        for enc in ("utf-8-sig", "utf-8", "cp1251", "cp866", "latin-1"):
+            try:
+                text = data.decode(enc)
+                break
+            except (UnicodeDecodeError, LookupError):
+                continue
+        if text is None:
+            text = data.decode("latin-1", errors="replace")
+        first = text.splitlines()[0] if text.splitlines() else ""
+        delim = ";" if first.count(";") > first.count(",") else ","
+        rows = [list(r) for r in csv.reader(io.StringIO(text), delimiter=delim)]
+
+    if not rows:
+        raise HTTPException(400, "В файле нет строк")
+
+    NAME_H = {"скважина", "скв", "well", "name", "имя"}
+    X_H = {"x", "х", "x, м", "координата x", "east", "easting"}
+    Y_H = {"y", "у", "y, м", "координата y", "north", "northing"}
+    ALT_H = {"альтитуда", "alt", "altitude", "kb", "rkb", "elevation", "абс.отм"}
+
+    hdr = [str(c).strip().lower().rstrip(",.") for c in rows[0]]
+    ci = {"name": 0, "x": 1, "y": 2, "alt": 3 if len(hdr) > 3 else None}
+    start = 0
+    if any(h in NAME_H for h in hdr) or any(h in X_H for h in hdr):
+        start = 1
+        for i, h in enumerate(hdr):
+            if h in NAME_H:
+                ci["name"] = i
+            elif h in X_H:
+                ci["x"] = i
+            elif h in Y_H:
+                ci["y"] = i
+            elif h in ALT_H:
+                ci["alt"] = i
+
+    wells = {w.name.strip().lower(): w for w in db.query(Well).filter(Well.project_id == pid).all()}
+    updated, missing, bad = 0, [], 0
+    for r in rows[start:]:
+        need = max(v for v in (ci["name"], ci["x"], ci["y"]) if v is not None)
+        if len(r) <= need:
+            continue
+        wname = str(r[ci["name"]]).strip()
+        if not wname:
+            continue
+        try:
+            x = float(str(r[ci["x"]]).replace(",", ".").strip())
+            y = float(str(r[ci["y"]]).replace(",", ".").strip())
+        except (TypeError, ValueError):
+            bad += 1
+            continue
+        w = wells.get(wname.lower())
+        if not w:
+            missing.append(wname)
+            continue
+        w.x_coord, w.y_coord = x, y
+        if ci["alt"] is not None and len(r) > ci["alt"]:
+            try:
+                w.elevation = float(str(r[ci["alt"]]).replace(",", ".").strip())
+            except (TypeError, ValueError):
+                pass
+        updated += 1
     db.commit()
-    return {"ok": True, "wells": n, "spacing": spacing,
-            "note": "координаты вымышленные, СК-63 (условно)"}
+    return {"ok": True, "updated": updated, "missing": missing,
+            "unparsed_rows": bad, "total_rows": len(rows) - start}
 
 
 # ── Расчёт параметров по горизонтам ─────────────────────────────────────────
@@ -318,8 +394,14 @@ def map_grid(
     ny: int = Query(140, ge=30, le=400),
     power: float = Query(2.0, ge=0.5, le=6.0),
     pinch: bool = Query(True),
+    exclude: str = Query("", description="ID скважин через запятую — исключить из интерполяции"),
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
+    excluded = set()
+    for part in (exclude or "").split(","):
+        part = part.strip()
+        if part.isdigit():
+            excluded.add(int(part))
     wells = db.query(Well).filter(Well.project_id == pid).all()
     wells = [w for w in wells if w.x_coord is not None and w.y_coord is not None]
     if len(wells) < 3:
@@ -333,9 +415,10 @@ def map_grid(
             if not horizon:
                 raise HTTPException(400, "Укажите горизонт")
             v = horizon_value(w, horizon, param)
-        pts.append({"name": w.name, "x": w.x_coord, "y": w.y_coord, "value": v})
+        pts.append({"id": w.id, "name": w.name, "x": w.x_coord, "y": w.y_coord,
+                    "value": v, "excluded": w.id in excluded})
 
-    used = [p for p in pts if p["value"] is not None]
+    used = [p for p in pts if p["value"] is not None and not p["excluded"]]
     if len(used) < 3:
         raise HTTPException(400, f"Недостаточно скважин с данными по «{horizon}» ({len(used)})")
 
@@ -364,6 +447,7 @@ def map_grid(
         "grid": [[None if not np.isfinite(v) else round(float(v), 4) for v in row] for row in Z],
         "wells": pts,
         "used": len(used),
+        "excluded": sorted(excluded),
     }
 
 
@@ -450,3 +534,133 @@ def get_shapes(pid: int, db: Session = Depends(get_db)) -> Dict[str, Any]:
     except (ValueError, TypeError):
         layers = []
     return {"layers": layers}
+
+
+# ── Инвентаризация: что есть в скважине ─────────────────────────────────────
+@router.get("/api/projects/{pid}/inventory")
+def project_inventory(pid: int, db: Session = Depends(get_db)) -> Dict[str, Any]:
+    """Сводка наличия данных по каждой скважине: координаты, альтитуда,
+    инклинометрия, ГИС (методы), РИГИС, отбивки."""
+    try:
+        from methods import method_for_mnemonic
+    except ImportError:  # pragma: no cover
+        from backend.methods import method_for_mnemonic
+
+    INKL_M = {"INKL", "INCL", "AZ", "AZIM", "ZENIT"}
+    RIGIS_M = {"KP", "KGL", "KNG", "KPR", "LITH", "COLL", "SAT"}
+
+    wells = db.query(Well).filter(Well.project_id == pid).order_by(Well.name).all()
+    rows: List[dict] = []
+    for w in wells:
+        gis, rigis, inkl_pts = set(), set(), 0
+        pts_total, depth_min, depth_max = 0, None, None
+        for run in w.log_runs:
+            pts_total += run.num_points or 0
+            if run.start_depth is not None:
+                depth_min = run.start_depth if depth_min is None else min(depth_min, run.start_depth)
+            if run.stop_depth is not None:
+                depth_max = run.stop_depth if depth_max is None else max(depth_max, run.stop_depth)
+            for cd in run.curve_data:
+                m = (cd.mnemonic or "").strip().upper()
+                if m in _DEPTH:
+                    continue
+                if m in INKL_M:
+                    inkl_pts = max(inkl_pts, cd.num_points or 0)
+                    continue
+                if m in RIGIS_M:
+                    rigis.add(m)
+                    continue
+                meth = method_for_mnemonic(m)
+                if meth is not None:
+                    gis.add(meth.canonical)
+
+        rows.append({
+            "well_id": w.id, "well_name": w.name,
+            "coords": (w.x_coord is not None and w.y_coord is not None),
+            "x": w.x_coord, "y": w.y_coord,
+            "altitude": w.elevation,
+            "inkl": inkl_pts > 0, "inkl_points": inkl_pts,
+            "gis": sorted(gis), "gis_count": len(gis),
+            "rigis": sorted(rigis), "rigis_count": len(rigis),
+            "tops": len(w.formation_tops),
+            "runs": len(w.log_runs),
+            "points": pts_total,
+            "depth_from": round(depth_min, 1) if depth_min is not None else None,
+            "depth_to": round(depth_max, 1) if depth_max is not None else None,
+            "notes": len(json.loads(w.notes or "[]")) if (w.notes or "").strip() else 0,
+        })
+
+    def pct(key):
+        return round(100 * sum(1 for r in rows if r[key]) / len(rows)) if rows else 0
+    summary = {
+        "wells": len(rows),
+        "with_coords": sum(1 for r in rows if r["coords"]),
+        "with_altitude": sum(1 for r in rows if r["altitude"] is not None),
+        "with_inkl": sum(1 for r in rows if r["inkl"]),
+        "with_gis": sum(1 for r in rows if r["gis_count"]),
+        "with_rigis": sum(1 for r in rows if r["rigis_count"]),
+        "with_tops": sum(1 for r in rows if r["tops"]),
+        "coords_pct": pct("coords"), "inkl_pct": pct("inkl"),
+    }
+    return {"project_id": pid, "summary": summary, "rows": rows}
+
+
+# ── Clipboard: библиотека построенных карт ──────────────────────────────────
+class ClipItem(BaseModel):
+    param: str
+    horizon: str = ""
+    power: float = 2.0
+    levels: int = 8
+    reverse: bool = False
+    title: str = ""
+    frozen: bool = False
+
+
+def _proj_store(db: Session, pid: int):
+    proj = db.query(Project).filter(Project.id == pid).first()
+    if not proj:
+        raise HTTPException(404, "Проект не найден")
+    try:
+        store = json.loads(proj.description or "{}")
+        if not isinstance(store, dict):
+            store = {}
+    except (ValueError, TypeError):
+        store = {}
+    return proj, store
+
+
+@router.get("/api/projects/{pid}/clipboard")
+def clipboard_list(pid: int, db: Session = Depends(get_db)) -> Dict[str, Any]:
+    _, store = _proj_store(db, pid)
+    return {"items": store.get("clipboard", [])}
+
+
+@router.post("/api/projects/{pid}/clipboard")
+def clipboard_add(pid: int, item: ClipItem, db: Session = Depends(get_db)) -> Dict[str, Any]:
+    import datetime
+    proj, store = _proj_store(db, pid)
+    items = store.setdefault("clipboard", [])
+    rec = item.model_dump() if hasattr(item, "model_dump") else item.dict()
+    # без дублей: тот же параметр+горизонт обновляется
+    for ex in items:
+        if ex.get("param") == rec["param"] and ex.get("horizon") == rec["horizon"]:
+            ex.update(rec)
+            proj.description = json.dumps(store, ensure_ascii=False)
+            db.commit()
+            return {"ok": True, "updated": True, "count": len(items)}
+    rec["id"] = (max([i.get("id", 0) for i in items]) + 1) if items else 1
+    rec["created_at"] = datetime.datetime.utcnow().isoformat(timespec="seconds")
+    items.append(rec)
+    proj.description = json.dumps(store, ensure_ascii=False)
+    db.commit()
+    return {"ok": True, "item": rec, "count": len(items)}
+
+
+@router.delete("/api/projects/{pid}/clipboard/{item_id}")
+def clipboard_delete(pid: int, item_id: int, db: Session = Depends(get_db)) -> Dict[str, Any]:
+    proj, store = _proj_store(db, pid)
+    items = [i for i in store.get("clipboard", []) if i.get("id") != item_id]
+    store["clipboard"] = items
+    proj.description = json.dumps(store, ensure_ascii=False)
+    db.commit()
+    return {"ok": True, "count": len(items)}

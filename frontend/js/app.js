@@ -1380,11 +1380,21 @@ class GeoLogApp {
         const container = document.querySelector('.well-list');
         if (!container) return;
         container.innerHTML = this.wells.map(w => `
-            <div class="well-item" data-id="${w.id}" onclick="app.selectWell(${w.id})">
+            <div class="well-item" data-id="${w.id}" onclick="app.onWellClick(${w.id})">
                 <div class="well-name">${w.name}</div>
                 <div class="well-meta">${w.uwi || '—'} • ${w.log_run_count || 0} logs</div>
             </div>
         `).join('');
+    }
+
+    // В режиме карт клик по скважине исключает/возвращает её в интерполяцию,
+    // в остальных режимах — обычный выбор скважины.
+    onWellClick(wellId) {
+        const view = localStorage.getItem('geolog_last_view');
+        if (view === 'maps' && typeof MapsView !== 'undefined') {
+            return MapsView.toggleWell(wellId);
+        }
+        return this.selectWell(wellId);
     }
 
     _filterWells(query) {
