@@ -615,7 +615,7 @@ class GeoLogApp {
         if (view === 'dipplot') this.runDipPlot();
         if (view === 'buckles') this.runBuckles();
         if (view === 'hingle') this.runHingle();
-        if (view === 'calculator') { /* user fills form */ }
+        if (view === 'calculator') this._renderCalcCurveList();
         if (view === 'datatable') this.loadDataTable();
         if (view === 'topsmgmt') this._renderTopsManagement();
         if (view === 'formation') this.loadFormationMatrix();
@@ -939,6 +939,8 @@ class GeoLogApp {
         catch { this._defaultCurveConfig = {}; }
         // справочники кодов РИГИС (литология/коллектор/насыщение)
         if (typeof RigisTracks !== 'undefined') { try { await RigisTracks.ensureCodes(); } catch (e) {} }
+        // указатель «мнемоника → метод»: по нему модули анализа находят кривые
+        await this._ensureMethodIndex();
     }
 
     // Fit each curve's display scale to its actual data when the default scale
@@ -1245,8 +1247,10 @@ class GeoLogApp {
         this.renderer.scale = scale;
         this._renderCurvePanel(curves);
         this._populateCurveSelectors(curves);
+        this._populateAllCurveSelectors(curves);
         this._populateEditCurveSelector(curves);
-        const overlayCurves = [...new Set(curves.map(c => (c.mnemonic || '').toUpperCase()).filter(Boolean))];
+        const overlayCurves = [...new Set(curves.map(c => c.mnemonic).filter(Boolean))]
+            .filter(m => !['DEPT', 'DEPTH', 'MD', 'TVD'].includes(String(m).toUpperCase()));
         this._populateOverlayControls(overlayCurves);
         if (this.overlayState.enabled) this.applyOverlay();
     }
@@ -1336,6 +1340,14 @@ class GeoLogApp {
         if (typeof CurveTree === 'undefined' || !CurveTree.data) return [];
         const active = Number(this.currentLogRun?.id || 0);
         return CurveTree.shownRunIds().map(Number).filter(id => id && id !== active);
+    }
+
+    /** Снята ли галочка показа с активного рейса. */
+    _activeRunHidden() {
+        if (typeof CurveTree === 'undefined' || !CurveTree.data) return false;
+        const active = Number(this.currentLogRun?.id || 0);
+        if (!active) return false;
+        return !CurveTree.shownRunIds().map(Number).includes(active);
     }
 
     /**
@@ -1446,11 +1458,23 @@ class GeoLogApp {
                 const mdStart = this._axisToMD(start);
                 const mdStop = this._axisToMD(stop);
                 const data = await this._fetchCurveRange(curves, mdStart, mdStop, { decimated: false });
+                // Галочка показа действует и на активный рейс: иначе снять его
+                // с планшета было нечем и «отключить всё» не получалось.
+                let activeCurves = curves;
+                if (this._activeRunHidden()) {
+                    for (const c of curves) {
+                        if (!['DEPTH', 'DEPT', 'MD', 'TVD'].includes(String(c.mnemonic).toUpperCase())) {
+                            delete data[c.mnemonic];
+                        }
+                    }
+                    activeCurves = curves.filter(c =>
+                        ['DEPTH', 'DEPT', 'MD', 'TVD'].includes(String(c.mnemonic).toUpperCase()));
+                }
                 const extra = await this._mergeExtraRuns(data.DEPTH || data.DEPT, data, mdStart, mdStop);
                 if ((this.depthMode || 'MD') !== 'MD' && Array.isArray(data.DEPTH)) {
                     data.DEPTH = data.DEPTH.map(v => this._mdToAxis(v));
                 }
-                const allCurves = curves.concat(extra.map(e => ({
+                const allCurves = activeCurves.concat(extra.map(e => ({
                     mnemonic: e.mnemonic, unit: '', description: 'из другого рейса',
                 })));
                 // Настройки нужны и для базовых имён наложенных кривых —
@@ -1772,7 +1796,10 @@ class GeoLogApp {
         const corr = document.getElementById('corrCurve');
         if (!cpX || !cpY || !corr) return;
 
-        const uniqueMnemonics = [...new Set(curves.map(c => (c.mnemonic || '').toUpperCase()).filter(Boolean))];
+        // Глубина в списках осей не нужна — иначе она подставляется как
+        // значение по умолчанию и график строится «глубина к глубине».
+        const uniqueMnemonics = [...new Set(curves.map(c => c.mnemonic).filter(Boolean))]
+            .filter(m => !['DEPT', 'DEPTH', 'MD', 'TVD'].includes(String(m).toUpperCase()));
         if (!uniqueMnemonics.length) return;
 
         const toOpt = (mn) => `<option value="${mn}">${mn} (${this._curveFamilyLabel(mn)})</option>`;
@@ -1785,15 +1812,53 @@ class GeoLogApp {
         cpY.innerHTML = options;
         corr.innerHTML = options;
 
-        cpX.value = uniqueMnemonics.includes(keepX) ? keepX : (uniqueMnemonics.includes('RHOB') ? 'RHOB' : uniqueMnemonics[0]);
-        cpY.value = uniqueMnemonics.includes(keepY) ? keepY : (uniqueMnemonics.includes('NPHI') ? 'NPHI' : uniqueMnemonics[0]);
-        corr.value = uniqueMnemonics.includes(keepC) ? keepC : (uniqueMnemonics.includes('GR') ? 'GR' : uniqueMnemonics[0]);
+        const byFamily = (fam) => {
+            const pack = this._getCurveByFamily(fam);
+            return (pack && uniqueMnemonics.includes(pack.mnemonic)) ? pack.mnemonic : uniqueMnemonics[0];
+        };
+        cpX.value = uniqueMnemonics.includes(keepX) ? keepX : byFamily('RHOB');
+        cpY.value = uniqueMnemonics.includes(keepY) ? keepY : byFamily('NPHI');
+        corr.value = uniqueMnemonics.includes(keepC) ? keepC : byFamily('GR');
+    }
+
+    /**
+     * Заполнить ВСЕ выпадающие списки кривых фактическими мнемониками скважины.
+     *
+     * В разметке они были захардкожены западными именами (GR/RT/NPHI/RHOB), и
+     * на промысловых данных любой такой модуль искал несуществующую кривую и
+     * сообщал, что данных нет. Значение по умолчанию подбирается по семейству
+     * через справочник методов: RT → ИК/БК/КС, NPHI → НГК/Кп и т.д.
+     */
+    _populateAllCurveSelectors(curves = []) {
+        const names = [...new Set(curves.map(c => c.mnemonic).filter(Boolean))]
+            .filter(m => !['DEPT', 'DEPTH', 'MD', 'TVD'].includes(String(m).toUpperCase()));
+        if (!names.length) return;
+
+        // список: id селектора → семейство для значения по умолчанию
+        const TARGETS = {
+            autoPickCurve: 'GR', buckPhie: 'PHIE', buckSw: 'SW', coreCalCurve: 'NPHI',
+            crossSectionCurve: 'GR', hinglePhie: 'PHIE', hingleRt: 'RT',
+            matrixCurveX: 'GR', matrixCurveY: 'RT', moiRt: 'RT', moiRxo: 'RXO',
+            multiWellCurve: 'GR', overlayCurve: 'GR', probCurve: 'RT',
+            spliceCurve: 'GR', stripCurve: 'GR', lqcCurveSelect: 'GR',
+        };
+        const esc = (v) => String(v).replace(/"/g, '&quot;');
+
+        for (const [id, family] of Object.entries(TARGETS)) {
+            const sel = document.getElementById(id);
+            if (!sel) continue;
+            const keep = sel.value;
+            sel.innerHTML = names.map(m => `<option value="${esc(m)}">${esc(m)}</option>`).join('');
+            if (names.includes(keep)) { sel.value = keep; continue; }
+            const pack = this._getCurveByFamily(family);
+            sel.value = (pack && names.includes(pack.mnemonic)) ? pack.mnemonic : names[0];
+        }
     }
 
     _populateEditCurveSelector(curves = []) {
         const sel = document.getElementById('editCurveSelect');
         if (!sel) return;
-        const mns = [...new Set(curves.map(c => (c.mnemonic || '').toUpperCase()).filter(m => m && m !== 'DEPT' && m !== 'DEPTH'))];
+        const mns = [...new Set(curves.map(c => c.mnemonic).filter(m => m && !['DEPT', 'DEPTH', 'MD', 'TVD'].includes(String(m).toUpperCase())))];
         sel.innerHTML = mns.map(m => `<option value="${m}">${m}</option>`).join('');
         if (!this.curveEditState.mnemonic || !mns.includes(this.curveEditState.mnemonic)) {
             this.curveEditState.mnemonic = mns[0] || null;
@@ -1889,22 +1954,46 @@ class GeoLogApp {
         return v0 + (v1 - v0) * t;
     }
 
+    /**
+     * Кривая метода в конкретном рейсе. Имя ищем по МЕТОДУ: в разных рейсах
+     * один и тот же каротаж записан по-разному (GK, GK_500, ГК), и сравнение
+     * по буквальному совпадению имени не находило ничего.
+     */
+    async _resolveRunCurveName(runId, wanted) {
+        try {
+            const defs = await this._api(`/log-runs/${runId}/curves`, { dedupe: false });
+            const names = defs.map(d => d.mnemonic);
+            if (names.includes(wanted)) return wanted;
+            const key = this._methodOf(wanted);
+            if (key) {
+                const hit = names.find(n => this._methodOf(n) === key);
+                if (hit) return hit;
+            }
+            const up = String(wanted).toUpperCase();
+            return names.find(n => String(n).toUpperCase() === up) || null;
+        } catch { return null; }
+    }
+
     async _fetchOverlayRunCurve(runId, curveMnemonic) {
         const key = `${runId}:${curveMnemonic}`;
         if (this.overlayRunCache.has(key)) return this.overlayRunCache.get(key);
         const run = (this.currentWell?.log_runs || []).find(r => r.id === runId);
         if (!run) return null;
+        const name = await this._resolveRunCurveName(runId, curveMnemonic);
+        if (!name) return { depth: [], curve: [], resolved: null };
         const data = await this._api(`/log-runs/${runId}/data`, {
             method: 'POST',
+            dedupe: false,
             body: JSON.stringify({
-                curve_mnemonics: [curveMnemonic],
+                curve_mnemonics: [name],
                 start_depth: run.start_depth,
                 stop_depth: run.stop_depth,
             }),
         });
         const cached = {
             depth: data.DEPTH || data.DEPT || [],
-            curve: data[curveMnemonic] || [],
+            curve: data[name] || [],
+            resolved: name,
         };
         this.overlayRunCache.set(key, cached);
         return cached;
@@ -1915,7 +2004,7 @@ class GeoLogApp {
         this._populateOverlayControls();
         const runAId = Number(this.overlayState.runAId || this.currentLogRun?.id || 0);
         const runBId = Number(this.overlayState.runBId || 0);
-        const curve = (this.overlayState.curve || '').toUpperCase();
+        const curve = this.overlayState.curve || '';
         if (!runAId || !runBId || !curve) {
             this.renderer.setOverlayData(null);
             this._renderOverlayLegend();
@@ -1927,6 +2016,12 @@ class GeoLogApp {
                 this._fetchOverlayRunCurve(runAId, curve),
                 this._fetchOverlayRunCurve(runBId, curve),
             ]);
+            if (!a?.curve?.length || !b?.curve?.length) {
+                this.renderer.setOverlayData(null);
+                this._renderOverlayLegend();
+                GeoToast.warn(`Кривая ${curve} есть не в обоих рейсах — сравнивать нечего`);
+                return;
+            }
             const renderDepth = this.renderer.depthData || [];
             const runAAligned = [];
             const runBAligned = [];
@@ -1950,6 +2045,33 @@ class GeoLogApp {
             console.error('Failed to apply overlay:', e);
             GeoToast.error('Overlay load failed: ' + (e.message || e));
         }
+    }
+
+    /**
+     * «Run Diff» — сравнение одной кривой в двух рейсах с показом разности.
+     * Кнопка в тулбаре была, а обработчика не существовало.
+     */
+    runLogRunDiff() {
+        const runs = this.currentWell?.log_runs || [];
+        if (runs.length < 2) {
+            GeoToast.warn('Нужно минимум два рейса в скважине');
+            return;
+        }
+        if (!this.overlayState.enabled) this.toggleOverlayPanel();
+        this.overlayState.runAId = this.overlayState.runAId || this.currentLogRun?.id || runs[0].id;
+        if (!this.overlayState.runBId || this.overlayState.runBId === this.overlayState.runAId) {
+            const other = runs.find(r => r.id !== this.overlayState.runAId);
+            this.overlayState.runBId = other ? other.id : null;
+        }
+        if (!this.overlayState.curve) {
+            const pack = this._getCurveByFamily('GR');
+            this.overlayState.curve = pack ? pack.mnemonic : null;
+        }
+        this.overlayState.showDifference = true;
+        const diff = document.getElementById('overlayShowDiff');
+        if (diff) diff.checked = true;
+        this.applyOverlay();
+        GeoToast.info('Сравнение рейсов включено — выберите кривую и рейсы в панели Overlay');
     }
 
     _renderOverlayLegend() {
@@ -2441,7 +2563,8 @@ class GeoLogApp {
 
         const rows = this.corrMarkers.map((m, idx) => {
             const d = m.aDepth - m.bDepth;
-            return `<div class="stats-row"><span>M${idx + 1}</span><span>A ${m.aDepth.toFixed(1)} ft</span><span>B ${m.bDepth.toFixed(1)} ft</span><span>Δ ${d.toFixed(1)} ft</span></div>`;
+            const u = this._depthUnitLabel();
+            return `<div class="stats-row"><span>M${idx + 1}</span><span>A ${m.aDepth.toFixed(1)} ${u}</span><span>B ${m.bDepth.toFixed(1)} ${u}</span><span>Δ ${d.toFixed(1)} ${u}</span></div>`;
         }).join('');
         const median = this._calcMarkerShift('median');
         const mean = this._calcMarkerShift('mean');
@@ -2449,8 +2572,8 @@ class GeoLogApp {
             <div class="stats-card">
                 <h4>Manual Marker Ties (${this.corrMarkers.length})</h4>
                 ${rows}
-                <div class="stats-row"><strong>Median Δ</strong><strong>${median.toFixed(1)} ft</strong></div>
-                <div class="stats-row"><strong>Mean Δ</strong><strong>${mean.toFixed(1)} ft</strong></div>
+                <div class="stats-row"><strong>Медиана Δ</strong><strong>${median.toFixed(1)} ${this._depthUnitLabel()}</strong></div>
+                <div class="stats-row"><strong>Среднее Δ</strong><strong>${mean.toFixed(1)} ${this._depthUnitLabel()}</strong></div>
             </div>
         `;
     }
@@ -2490,7 +2613,7 @@ class GeoLogApp {
 
         if (this._corrPickTemp == null) {
             this._corrPickTemp = depth;
-            if (info) info.textContent = `Marker A picked @ ${depth.toFixed(1)} ft. Now click marker B depth.`;
+            if (info) info.textContent = `Маркер A на ${depth.toFixed(1)} ${this._depthUnitLabel()}. Теперь укажите маркер B.`;
         } else {
             const aDepth = this._corrPickTemp;
             const bDepth = ((depth - shift - midB) / (stretch || 1)) + midB;
@@ -2720,7 +2843,7 @@ class GeoLogApp {
         if (!top) return;
         const r = await GeoModal.show({ title: 'Edit Formation Top', fields: [
             { id: 'formation_name', label: 'Formation Name', value: top.formation_name },
-            { id: 'depth', label: 'Depth (ft)', type: 'number', step: '0.1', value: top.depth },
+            { id: 'depth', label: `Глубина, ${this._depthUnitLabel()}`, type: 'number', step: '0.1', value: top.depth },
             { id: 'color', label: 'Color', type: 'color', value: top.color || '#f0883e' },
             { id: 'lithology', label: 'Lithology (optional)', value: top.lithology || '' },
         ]});
@@ -2744,7 +2867,7 @@ class GeoLogApp {
         if (!this.currentWell) return;
         const r = await GeoModal.show({ title: 'Add Formation Top', fields: [
             { id: 'name', label: 'Formation Name', placeholder: 'e.g. Top Reservoir' },
-            { id: 'depth', label: 'Depth (ft)', type: 'number', step: '0.1', placeholder: '5000.0' },
+            { id: 'depth', label: `Глубина, ${this._depthUnitLabel()}`, type: 'number', step: '0.1', placeholder: '1200.0' },
             { id: 'base_depth', label: 'Base Depth (ft, optional)', type: 'number', step: '0.1', placeholder: '' },
             { id: 'color', label: 'Color', type: 'color', value: '#f0883e' },
             { id: 'lithology', label: 'Lithology (optional)', placeholder: 'e.g. Sandstone' },
@@ -2774,7 +2897,7 @@ class GeoLogApp {
     async addFormationTopAtDepth(depth) {
         if (!this.currentWell || !Number.isFinite(depth) || depth < 0) return;
         const result = await GeoModal.show({
-            title: `Add Formation Top at ${depth.toFixed(1)} ft`,
+            title: `Отбивка на ${depth.toFixed(1)} ${this._depthUnitLabel()}`,
             fields: [
                 { id: 'name', label: 'Formation Name', type: 'text', value: '', placeholder: 'e.g. SAND-A' },
                 { id: 'color', label: 'Color', type: 'color', value: '#3fb950' },
@@ -2796,7 +2919,7 @@ class GeoLogApp {
             });
             await this._loadFormationTops();
             this._pushUndo('add_top', { top_id: created?.id, well_id: this.currentWell.id, payload });
-            GeoToast.success(`Top '${result.name}' added at ${depth.toFixed(1)} ft`);
+            GeoToast.success(`Отбивка «${result.name}» на ${depth.toFixed(1)} ${this._depthUnitLabel()}`);
         } catch (e) { GeoToast.error(e.message); }
     }
 
@@ -3364,9 +3487,52 @@ class GeoLogApp {
         GeoToast.success('Zones merged');
     }
 
+    /**
+     * Указатель «мнемоника → метод ГИС», построенный по справочнику с сервера.
+     * Нужен, чтобы модули анализа находили кривые под промысловыми именами
+     * (ГК, GK_500, ИК, КП_W), а не только под западными GR/RT/NPHI.
+     */
+    async _ensureMethodIndex() {
+        if (this._methodIndex) return this._methodIndex;
+        const idx = { byMnemonic: {}, byKey: {} };
+        try {
+            const r = await this._api('/methods');
+            for (const m of (r.methods || [])) {
+                idx.byKey[m.key] = m;
+                for (const c of (m.curves || [])) idx.byMnemonic[String(c).toUpperCase()] = m.key;
+            }
+        } catch (e) { console.warn('методы не загрузились:', e?.message || e); }
+        this._methodIndex = idx;
+        return idx;
+    }
+
+    /** Метод для мнемоники с учётом суффиксов рейса и варианта (GK_500·C1 → GK). */
+    _methodOf(mnemonic) {
+        const idx = this._methodIndex;
+        if (!idx) return null;
+        let up = String(mnemonic || '').split('·')[0].toUpperCase();
+        if (idx.byMnemonic[up]) return idx.byMnemonic[up];
+        // отбрасываем хвосты вида _500, _2, _500_2
+        for (let i = 0; i < 3; i++) {
+            const cut = up.replace(/_[A-Z0-9]+$/, '');
+            if (cut === up) break;
+            up = cut;
+            if (idx.byMnemonic[up]) return idx.byMnemonic[up];
+        }
+        return null;
+    }
+
+    /**
+     * Семейство кривых → фактическая кривая, загруженная на планшет.
+     *
+     * Сначала пробуем точные имена (западные файлы), затем — любой каротаж
+     * подходящего МЕТОДА. Для российских данных это и даёт совпадение:
+     * сопротивление — ИК/БК/КС/БКЗ, «NPHI-семейство» — НГК и Кп, плотность —
+     * ГГКп, акустика — АК, каверномер — ДС.
+     */
     _getCurveByFamily(family) {
         if (!this.renderer?.curveData) return null;
-        const families = {
+        const EXACT = {
             RT: ['RT', 'RESD', 'RILD', 'ILD', 'ILM', 'RILM', 'RLL3', 'RLLS', 'MSFL', 'RXO', 'SFLU', 'SFLA'],
             NPHI: ['NPHI', 'NPHI_LS'],
             RHOB: ['RHOB', 'RHOZ'],
@@ -3375,11 +3541,48 @@ class GeoLogApp {
             CAL: ['CAL', 'CALI', 'HCAL'],
             DEPT: ['DEPT', 'DEPTH', 'MD', 'TVD'],
             PHIE: ['PHIE', 'NPHI'],
+            SP: ['SP'],
+            SW: ['SW'],
         };
-        const keys = families[family] || [family];
-        for (const k of keys) {
-            const arr = this.renderer.curveData[k];
-            if (Array.isArray(arr) && arr.length > 0) return { mnemonic: k, data: arr };
+        // какие методы ГИС закрывают это семейство
+        const METHODS = {
+            RT: ['IK', 'BK', 'KS', 'BKZ'],
+            RXO: ['MKZ'],
+            NPHI: ['NGK', 'KP'],
+            PHIE: ['KP', 'NGK'],
+            RHOB: ['GGKP'],
+            DT: ['AK', 'AKS'],
+            GR: ['GK'],
+            CAL: ['DS'],
+            SP: ['PS'],
+            SW: ['KNG'],
+            VSH: ['KGL'],
+            PERM: ['KPR'],
+        };
+
+        const data = this.renderer.curveData;
+        const finite = (arr) => {
+            let n = 0;
+            for (const v of arr) if (v != null && isFinite(v)) n++;
+            return n;
+        };
+
+        for (const k of (EXACT[family] || [family])) {
+            const arr = data[k];
+            if (Array.isArray(arr) && finite(arr) > 0) return { mnemonic: k, data: arr };
+        }
+
+        const wanted = METHODS[family];
+        if (wanted) {
+            let best = null;
+            for (const [mn, arr] of Object.entries(data)) {
+                if (!Array.isArray(arr) || !arr.length) continue;
+                const key = this._methodOf(mn);
+                if (!key || !wanted.includes(key)) continue;
+                const n = finite(arr);
+                if (n > 0 && (!best || n > best.n)) best = { mnemonic: mn, data: arr, n };
+            }
+            if (best) return { mnemonic: best.mnemonic, data: best.data };
         }
         return null;
     }
@@ -5361,7 +5564,7 @@ class GeoLogApp {
 
     async addAnnotation() {
         const r = await GeoModal.show({ title: 'Add Annotation', fields: [
-            { id: 'depth', label: 'Depth (ft)', type: 'number', step: '0.1', placeholder: '5000.0' },
+            { id: 'depth', label: `Глубина, ${this._depthUnitLabel()}`, type: 'number', step: '0.1', placeholder: '1200.0' },
             { id: 'text', label: 'Note', placeholder: 'Enter annotation text...' },
             { id: 'type', label: 'Type', type: 'select', options: [
                 { value: 'note', label: 'Note' }, { value: 'flag', label: 'Flag' }, { value: 'pay', label: 'Pay Zone' }, { value: 'issue', label: 'Issue' },
@@ -7266,12 +7469,27 @@ class GeoLogApp {
         ctx.fillText('1/Rt (1/ohm.m)', 0, 0); ctx.restore();
     }
 
+    /** Показать, какие кривые доступны в выражении калькулятора. */
+    _renderCalcCurveList() {
+        const host = document.getElementById('calcCurveList');
+        if (!host) return;
+        const names = Object.keys(this.renderer?.curveData || {})
+            .filter(m => !m.includes('·'));      // наложенные рейсы в расчёт не идут
+        if (!names.length) {
+            host.innerHTML = '<span style="color:#d29922">Откройте скважину — список кривых появится здесь.</span>';
+            return;
+        }
+        const chip = (m) => `<code style="background:#161b22;border:1px solid #30363d;border-radius:4px;padding:1px 5px;margin:2px;display:inline-block">${m}</code>`;
+        host.innerHTML = '<b>Кривые этого рейса:</b><br>' + names.map(chip).join(' ')
+            + '<br><span style="color:#6e7681">Функции: sqrt, log10, ln, abs, min, max, where(условие, a, b)</span>';
+    }
+
     // ─── Sprint 22: Curve Calculator ─────────────────────────────
     async runCurveCalc() {
         if (!this.currentWell) return;
         const expr = document.getElementById('calcExpr')?.value;
         const name = (document.getElementById('calcName')?.value || 'NEW_CURVE').toUpperCase();
-        if (!expr) { GeoToast.warning('Enter an expression'); return; }
+        if (!expr) { GeoToast.warn('Введите выражение'); return; }
         try {
             const data = await this._api(`/wells/${this.currentWell.id}/curve-calc`, {
                 method: 'POST', body: JSON.stringify({ expression: expr, output_name: name })
@@ -7351,7 +7569,7 @@ class GeoLogApp {
     }
 
     exportDataTableCSV() {
-        if (!this._lastDataTable) { GeoToast.warning('Load data first'); return; }
+        if (!this._lastDataTable) { GeoToast.warn('Load data first'); return; }
         const data = this._lastDataTable;
         let csv = data.columns.join(',') + '\n';
         for (const row of data.rows) csv += row.map(v => v === null ? '' : v).join(',') + '\n';
@@ -7421,7 +7639,7 @@ class GeoLogApp {
     }
 
     async importTopsCSV() {
-        if (!this.currentWell) { GeoToast.warning('Select a well first'); return; }
+        if (!this.currentWell) { GeoToast.warn('Select a well first'); return; }
         const input = document.createElement('input');
         input.type = 'file'; input.accept = '.csv';
         input.onchange = async () => {
@@ -7483,8 +7701,24 @@ class GeoLogApp {
 
         try {
             const pid = this.projects[0].id;
-            const rows = await this._api(`/projects/${pid}/well-locations`);
-            const wells = (rows || []).filter(w => Number.isFinite(Number(w.latitude)) && Number.isFinite(Number(w.longitude)));
+            // Ответ приходит объектом {wells:[…]}, а код ждал массив — отсюда
+            // и падало «(rows || []).filter is not a function».
+            const resp = await this._api(`/projects/${pid}/well-locations`);
+            const rows = Array.isArray(resp) ? resp : (resp?.wells || []);
+            // Координаты могут быть географические (lat/lon) либо прямоугольные
+            // (X/Y из шапки LAS) — нормализуем к паре чисел для рисования.
+            const wells = rows.map(w => {
+                const lat = Number(w.lat ?? w.latitude);
+                const lon = Number(w.lon ?? w.longitude);
+                if (Number.isFinite(lat) && Number.isFinite(lon)) {
+                    return { ...w, latitude: lat, longitude: lon, _crs: 'град.' };
+                }
+                const x = Number(w.x_coord), y = Number(w.y_coord);
+                if (Number.isFinite(x) && Number.isFinite(y)) {
+                    return { ...w, latitude: y, longitude: x, _crs: 'м' };
+                }
+                return null;
+            }).filter(Boolean);
 
             if (!wells.length) {
                 drawPlaceholder('No well coordinates available. Edit wells to add lat/lon.');
@@ -9738,6 +9972,12 @@ class GeoLogApp {
                 GeoToast.info(`Настройки применены: ${mnemonic}`);
             });
         };
+    }
+
+    /** Единица глубины активной скважины для подписей интерфейса. */
+    _depthUnitLabel() {
+        const u = this.currentLogRun?.depth_unit || this.currentWell?.depth_unit || 'M';
+        return String(u).toUpperCase() === 'FT' ? 'ft' : 'м';
     }
 
     /** Свернуть/развернуть панель сайдбара; состояние запоминается. */

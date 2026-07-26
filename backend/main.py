@@ -5202,28 +5202,39 @@ def get_data_table(
     if not lr:
         raise HTTPException(404, "No log run")
 
-    selected = [c.strip().upper() for c in str(curves or "").split(",") if c.strip()]
-    if not selected:
-        selected = ["DEPT"]
+    rows_all = db.query(CurveData).filter(CurveData.log_run_id == lr.id).all()
+    by_name = {(c.mnemonic or "").strip(): c for c in rows_all}
+    depth_names = {"DEPT", "DEPTH", "MD", "TVD"}
 
-    depth_cd = db.query(CurveData).filter(
-        CurveData.log_run_id == lr.id,
-        CurveData.mnemonic.in_(["DEPT", "DEPTH", "MD", "TVD"]),
-    ).first()
+    # Без явного списка показываем ВСЕ кривые рейса: раньше по умолчанию
+    # оставалась одна колонка глубины и таблица выглядела пустой.
+    selected = [c.strip() for c in str(curves or "").split(",") if c.strip()]
+    if not selected:
+        selected = [n for n in by_name if n.upper() not in depth_names]
+
+    depth_cd = _find_depth(db, lr.id)
     if not depth_cd:
-        raise HTTPException(404, "Depth curve not found")
+        raise HTTPException(404, "В рейсе нет кривой глубины")
 
     depth = np.frombuffer(depth_cd.data_binary, dtype=np.float64).copy()
     curve_arrays = {"DEPT": depth}
 
+    missing = []
     for mnem in selected:
-        if mnem in ("DEPT", "DEPTH", "MD", "TVD"):
+        if mnem.upper() in depth_names:
             curve_arrays[mnem] = depth
             continue
-        cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic == mnem).first()
-        if not cd:
-            raise HTTPException(404, f"Curve not found: {mnem}")
+        cd = by_name.get(mnem)
+        if cd is None:                       # регистронезависимый поиск
+            for n, c in by_name.items():
+                if n.upper() == mnem.upper():
+                    cd = c
+                    break
+        if cd is None or not cd.data_binary:
+            missing.append(mnem)
+            continue
         curve_arrays[mnem] = np.frombuffer(cd.data_binary, dtype=np.float64).copy()
+    selected = [m for m in selected if m in curve_arrays]
 
     columns = selected
     if not any(c in ("DEPT", "DEPTH", "MD", "TVD") for c in columns):
@@ -5502,26 +5513,33 @@ def project_well_locations(pid: int, db: Session = Depends(get_db)):
     if not project:
         raise HTTPException(404, "Project not found")
 
+    # Промысловые данные приходят в прямоугольных координатах (X/Y из шапки
+    # LAS или импорта), широты/долготы у них нет — отдаём и то, и другое.
     wells = (
         db.query(Well)
         .filter(Well.project_id == pid)
-        .filter(Well.latitude.isnot(None), Well.longitude.isnot(None))
         .order_by(Well.name.asc())
         .all()
     )
-
-    return {
-        "wells": [
-            {
-                "id": w.id,
-                "name": w.name,
-                "uwi": w.uwi,
-                "lat": float(w.latitude),
-                "lon": float(w.longitude),
-            }
-            for w in wells
-        ]
-    }
+    rows = []
+    for w in wells:
+        has_geo = w.latitude is not None and w.longitude is not None
+        has_xy = w.x_coord is not None and w.y_coord is not None
+        if not (has_geo or has_xy):
+            continue
+        rows.append({
+            "id": w.id,
+            "name": w.name,
+            "uwi": w.uwi,
+            "lat": float(w.latitude) if has_geo else None,
+            "lon": float(w.longitude) if has_geo else None,
+            "latitude": float(w.latitude) if has_geo else None,
+            "longitude": float(w.longitude) if has_geo else None,
+            "x_coord": float(w.x_coord) if has_xy else None,
+            "y_coord": float(w.y_coord) if has_xy else None,
+            "elevation": float(w.elevation) if w.elevation is not None else None,
+        })
+    return {"wells": rows, "count": len(rows)}
 
 
 @app.get("/api/wells/{wid}/tops-petrel")

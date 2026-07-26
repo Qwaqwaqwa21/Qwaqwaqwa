@@ -623,7 +623,8 @@ CURVE_TRACKS.update(EXTRA_CURVE_TRACKS)
 CURVE_TRACKS.update({
     'DS':   {'track': 1, 'color': '#2ecc71', 'scale': (100, 400), 'unit': 'мм',  'name': 'ДС'},
     'BS':   {'track': 1, 'color': '#7f8c8d', 'scale': (100, 400), 'unit': 'мм',  'name': 'Долото'},
-    'KS':   {'track': 1, 'color': '#000000', 'scale': (0.2, 2000), 'log': True, 'unit': 'Ом·м', 'name': 'КС'},
+    # КС стоит в стандартном треке — шкала линейная (лог остаётся у ИК/БК/БКЗ)
+    'KS':   {'track': 1, 'color': '#000000', 'scale': (0, 50), 'unit': 'Ом·м', 'name': 'КС'},
     'PS':   {'track': 1, 'color': '#e74c3c', 'scale': (-100, 100), 'unit': 'мВ', 'name': 'ПС'},
     'RS':   {'track': 1, 'color': '#16a085', 'scale': (0, 10),   'unit': 'Ом·м', 'name': 'РС'},
     'TEMP': {'track': 1, 'color': '#fd79a8', 'scale': (0, 100),  'unit': '°C',   'name': 'Термометрия'},

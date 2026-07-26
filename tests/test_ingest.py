@@ -184,3 +184,31 @@ def test_lithology_falls_back_to_other_runs_for_gamma():
     src = inspect.getsource(main.classify_lithology)
     assert "_find_curve_in_well" in src
     assert "ни в одном рейсе" in src
+
+
+def test_data_table_defaults_to_all_curves():
+    """Без явного списка таблица данных показывает все кривые рейса."""
+    import inspect
+    from backend import main
+
+    src = inspect.getsource(main.get_data_table)
+    assert "selected = [n for n in by_name if n.upper() not in depth_names]" in src
+
+
+def test_well_locations_include_rectangular_coordinates():
+    """Промысловые X/Y отдаются вместе с широтой/долготой."""
+    import inspect
+    from backend import main
+
+    src = inspect.getsource(main.project_well_locations)
+    assert "x_coord" in src and "y_coord" in src
+
+
+def test_standard_track_is_linear():
+    """КС стоит в стандартном треке — там линейная шкала."""
+    from backend.las_parser import CURVE_TRACKS as C
+
+    assert C["KS"]["track"] == 1
+    assert not C["KS"].get("log")
+    # логарифм остаётся у бокового и индукционного
+    assert C["BK"].get("log") and C["IK"].get("log") and C["BKZ"].get("log")

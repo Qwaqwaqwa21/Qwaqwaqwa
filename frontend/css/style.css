@@ -1607,3 +1607,4 @@ tr:hover td {
 .clipboard-panel.collapsed .panel-caret { transform: rotate(-90deg); }
 .clipboard-panel.collapsed .clipboard-content { display: none; }
 .clipboard-panel.collapsed { max-height: none; flex: 0 0 auto; }
+.ct-hint { color: #6e7681; font-size: 10px; line-height: 1.4; margin-top: 3px; }
