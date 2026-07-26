@@ -947,6 +947,7 @@ class GeoLogApp {
         if (typeof RigisTracks !== 'undefined') { try { await RigisTracks.ensureCodes(); } catch (e) {} }
         // указатель «мнемоника → метод»: по нему модули анализа находят кривые
         await this._ensureMethodIndex();
+        this._showBuildInfo();
     }
 
     // Fit each curve's display scale to its actual data when the default scale
@@ -1554,6 +1555,16 @@ class GeoLogApp {
             out[k] = v0 + (v1 - v0) * ((d - d0) / (d1 - d0));
         }
         return out;
+    }
+
+    /** Версия сборки в строке состояния — видно, не запущена ли старая копия. */
+    async _showBuildInfo() {
+        const el = document.getElementById('statusBuild');
+        if (!el) return;
+        try {
+            const b = await this._api('/build-info');
+            el.textContent = 'сборка ' + (b.commit ? b.commit + ' · ' : '') + (b.built || '');
+        } catch { el.textContent = ''; }
     }
 
     /** Показать фактический масштаб планшета рядом с селектором. */
@@ -2574,7 +2585,7 @@ class GeoLogApp {
         if (!n) return;
         const extraShift = sumDelta / n;
         if (shiftInput) shiftInput.value = (shift + extraShift).toFixed(1);
-        if (info) info.textContent = `Top Snap applied from ${n} top pairs: Δshift ${extraShift.toFixed(1)} ft`;
+        if (info) info.textContent = `Top Snap applied from ${n} top pairs: Δshift ${extraShift.toFixed(1)} ${this._depthUnitLabel()}`;
         this.renderCorrelation();
     }
 
@@ -2661,7 +2672,7 @@ class GeoLogApp {
             const mid = Math.floor(deltas.length/2);
             const med = deltas.length % 2 ? deltas[mid] : (deltas[mid-1] + deltas[mid]) / 2;
             if (shiftInput) shiftInput.value = med.toFixed(1);
-            if (info) info.textContent = `Name Tie: ${deltas.length} matches (exact ${exact}, fuzzy ${fuzzy}), median shift ${med.toFixed(1)} ft`;
+            if (info) info.textContent = `Name Tie: ${deltas.length} matches (exact ${exact}, fuzzy ${fuzzy}), median shift ${med.toFixed(1)} ${this._depthUnitLabel()}`;
             this.renderCorrelation();
         }).catch(err => {
             if (info) info.textContent = `Name Tie error: ${err.message || err}`;
@@ -2708,7 +2719,7 @@ class GeoLogApp {
         }
         const shiftInput = document.getElementById('corrShift');
         if (shiftInput) shiftInput.value = shift.toFixed(1);
-        if (info) info.textContent = `Applied ${method} marker shift: ${shift.toFixed(1)} ft`;
+        if (info) info.textContent = `Applied ${method} marker shift: ${shift.toFixed(1)} ${this._depthUnitLabel()}`;
         this.renderCorrelation();
     }
 
@@ -2779,7 +2790,7 @@ class GeoLogApp {
             this.corrMarkers.push({ aDepth, bDepth });
             this._corrPickTemp = null;
             const localShift = aDepth - bDepth;
-            if (info) info.textContent = `Marker tie added. Local shift Δ=${localShift.toFixed(1)} ft`;
+            if (info) info.textContent = `Marker tie added. Local shift Δ=${localShift.toFixed(1)} ${this._depthUnitLabel()}`;
             this._saveCorrelationMarkers().catch(() => {});
             this.renderCorrelation();
         }
@@ -4439,13 +4450,13 @@ class GeoLogApp {
                 if (miss && s < 0) s = i;
                 if (!miss && s >= 0) {
                     if (i - s >= 20) {
-                        gapDetails.push(`${mn}: ${depth[s]?.toFixed?.(1) ?? s} - ${depth[i - 1]?.toFixed?.(1) ?? (i - 1)} ft`);
+                        gapDetails.push(`${mn}: ${depth[s]?.toFixed?.(1) ?? s} - ${depth[i - 1]?.toFixed?.(1) ?? (i - 1)} ${this._depthUnitLabel()}`);
                     }
                     s = -1;
                 }
             }
             if (s >= 0 && (data.length - s) >= 20) {
-                gapDetails.push(`${mn}: ${depth[s]?.toFixed?.(1) ?? s} - ${depth[data.length - 1]?.toFixed?.(1) ?? (data.length - 1)} ft`);
+                gapDetails.push(`${mn}: ${depth[s]?.toFixed?.(1) ?? s} - ${depth[data.length - 1]?.toFixed?.(1) ?? (data.length - 1)} ${this._depthUnitLabel()}`);
             }
         }
 
@@ -6000,7 +6011,7 @@ class GeoLogApp {
                 ctx.setLineDash([]);
                 ctx.fillStyle = '#ffffff';
                 ctx.font = '10px DM Sans';
-                ctx.fillText(`Contact ${c.type} @ ${Number(c.depth).toFixed(1)} ft`, m.left + 6, y - 4);
+                ctx.fillText(`Contact ${c.type} @ ${Number(c.depth).toFixed(1)} ${this._depthUnitLabel()}`, m.left + 6, y - 4);
             }
         } catch {}
 
@@ -8294,18 +8305,18 @@ class GeoLogApp {
         }
         if (this.renderer) {
             const el3 = document.getElementById('statusDepth');
-            if (el3) el3.textContent = `${this.renderer.viewStart?.toFixed(1) || '—'} – ${this.renderer.viewStop?.toFixed(1) || '—'} ft`;
+            if (el3) el3.textContent = `${this.renderer.viewStart?.toFixed(1) || '—'} – ${this.renderer.viewStop?.toFixed(1) || '—'} ${this._depthUnitLabel()}`;
         }
     }
 
     _updateStatusDepth(start, stop) {
         const el = document.getElementById('statusDepth');
-        if (el) el.textContent = `${start.toFixed(1)} – ${stop.toFixed(1)} ft`;
+        if (el) el.textContent = `${start.toFixed(1)} – ${stop.toFixed(1)} ${this._depthUnitLabel()}`;
     }
 
     _updateStatusPoints(count) {
         const el = document.getElementById('statusPoints');
-        if (el) el.textContent = `${count.toLocaleString()} pts`;
+        if (el) el.textContent = `${count.toLocaleString()} т.`;
     }
 
     // ─── Sprint 26: Context Menu ────────────────────────────────
@@ -9032,7 +9043,7 @@ class GeoLogApp {
         ctx.fillStyle = '#ff4d4f';
         ctx.font = '11px JetBrains Mono';
         ctx.textAlign = 'left';
-        ctx.fillText(`${depth.toFixed(1)} ft`, pad.left + 6, y - 6);
+        ctx.fillText(`${depth.toFixed(1)} ${this._depthUnitLabel()}`, pad.left + 6, y - 6);
         ctx.restore();
     }
 
@@ -9057,7 +9068,7 @@ class GeoLogApp {
         ctx.fillStyle = '#ff4d4f';
         ctx.font = '11px JetBrains Mono';
         ctx.textAlign = 'left';
-        ctx.fillText(`${depth.toFixed(1)} ft`, startX + 6, y - 6);
+        ctx.fillText(`${depth.toFixed(1)} ${this._depthUnitLabel()}`, startX + 6, y - 6);
         ctx.restore();
     }
 
@@ -10430,7 +10441,7 @@ class GeoLogApp {
                 method: 'POST',
                 body: JSON.stringify({ depth, name, formation_name: name }),
             });
-            GeoToast.info(`Top added: ${name} at ${depth.toFixed(1)} ft`);
+            GeoToast.info(`Отбивка добавлена: ${name} на ${depth.toFixed(1)} ${this._depthUnitLabel()}`);
             if (typeof this._loadTops === 'function') await this._loadTops();
             if (this.renderer) this.renderer.render();
         } catch (e) {

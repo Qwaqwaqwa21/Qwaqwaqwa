@@ -279,3 +279,22 @@ def test_categorical_curves_resampled_by_nearest_value():
     js = open("frontend/js/app.js", encoding="utf-8").read()
     assert "_resampleOnto(srcDepth, src, dstDepth, nearest = false)" in js
     assert "RigisTracks.isCategorical(mn)" in js
+
+
+def test_build_info_endpoint_reports_version():
+    """Строка состояния показывает версию сборки — так видно старую копию."""
+    from backend.main import build_info
+
+    info = build_info()
+    assert "commit" in info and "built" in info
+    js = open("frontend/js/app.js", encoding="utf-8").read()
+    assert "_showBuildInfo" in js
+    html = open("frontend/index.html", encoding="utf-8").read()
+    assert 'id="statusBuild"' in html
+
+
+def test_no_hardcoded_feet_labels_left():
+    """Подписи глубин берут единицу у скважины, а не «ft» намертво."""
+    js = open("frontend/js/app.js", encoding="utf-8").read()
+    assert " ft`" not in js
+    assert "_depthUnitLabel" in js

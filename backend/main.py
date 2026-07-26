@@ -2303,6 +2303,30 @@ def delivery_bundle(wid: int, db: Session = Depends(get_db)):
 
 
 # ─── Curve Metadata ───────────────────────────────────────────
+@app.get("/api/build-info")
+def build_info():
+    """Версия запущенной сборки — чтобы отличать её от старой распакованной."""
+    import subprocess
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    commit, when = "", ""
+    try:
+        commit = subprocess.check_output(
+            ["git", "-C", root, "rev-parse", "--short", "HEAD"],
+            stderr=subprocess.DEVNULL, timeout=3).decode().strip()
+        when = subprocess.check_output(
+            ["git", "-C", root, "log", "-1", "--format=%cd", "--date=format:%d.%m.%Y %H:%M"],
+            stderr=subprocess.DEVNULL, timeout=3).decode().strip()
+    except Exception:
+        # архив без .git — берём дату файла
+        try:
+            import datetime
+            ts = os.path.getmtime(os.path.abspath(__file__))
+            when = datetime.datetime.fromtimestamp(ts).strftime("%d.%m.%Y %H:%M")
+        except Exception:
+            pass
+    return {"commit": commit, "built": when, "version": app.version}
+
+
 @app.get("/api/curve-config")
 def get_curve_config(mnemonics: str = ""):
     """Настройки треков для кривых.
