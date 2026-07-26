@@ -1464,9 +1464,18 @@ class GeoLogApp {
         const depth = this._buildUnionAxis(runs.map(r => r.depth));
 
         // 3. Перенос кривых на общую ось.
+        //
+        // Один и тот же метод из разных рейсов склеивается в ОДНУ кривую, если
+        // интервалы рейсов не пересекаются: три РИГИС по разным пластам — это
+        // один разрез, и держать три колонки литологии незачем. Там, где
+        // интервалы перекрываются, кривые остаются раздельными (их и надо
+        // сравнивать), и различаются пунктиром.
         const curves = {};
         const defs = [];
         const DEPTH_NAMES = ['DEPTH', 'DEPT', 'MD', 'TVD'];
+        const overlapping = this._mergeRuns === false ? null : this._overlappingMethods();
+        const mergedBy = {};        // ключ метода → метка склеенной кривой
+
         for (const run of runs) {
             if (!run.depth || !run.depth.length) continue;
             for (const mn of run.names) {
@@ -1474,18 +1483,46 @@ class GeoLogApp {
                 const src = run.data[mn];
                 if (!src || !src.length) continue;
 
+                // Коды РИГИС нельзя интерполировать линейно: между 94 и 5
+                // появились бы несуществующие «промежуточные» литотипы.
+                const categorical = (typeof RigisTracks !== 'undefined') && RigisTracks.isCategorical(mn);
+                const values = (run.depth === depth)
+                    ? src
+                    : this._resampleOnto(run.depth, src, depth, categorical);
+
+                const method = this._methodOf(mn);
+                const mergeable = overlapping && method && !overlapping.has(method);
+
+                if (mergeable) {
+                    const key = method;
+                    if (mergedBy[key] === undefined) {
+                        // первая кривая метода задаёт имя склейки
+                        const label = String(mn).split('·')[0];
+                        mergedBy[key] = label;
+                        curves[label] = values.slice ? values.slice() : Array.from(values);
+                        defs.push({ mnemonic: label, base: mn, runId: run.id, suffix: '',
+                                    merged: [run.suffix || 'активный'] });
+                    } else {
+                        const label = mergedBy[key];
+                        const dst = curves[label];
+                        for (let i = 0; i < dst.length; i++) {
+                            if ((dst[i] == null || !isFinite(dst[i])) && values[i] != null && isFinite(values[i])) {
+                                dst[i] = values[i];
+                            }
+                        }
+                        const d = defs.find(x => x.mnemonic === label);
+                        if (d) d.merged.push(run.suffix || 'активный');
+                    }
+                    continue;
+                }
+
                 let label = run.suffix ? `${mn}·${run.suffix}` : mn;
                 if (curves[label]) {
                     let k = 2;
                     while (curves[`${label}_${k}`]) k++;
                     label = `${label}_${k}`;
                 }
-                // Коды РИГИС нельзя интерполировать линейно: между 94 и 5
-                // появились бы несуществующие «промежуточные» литотипы.
-                const categorical = (typeof RigisTracks !== 'undefined') && RigisTracks.isCategorical(mn);
-                curves[label] = (run.depth === depth)
-                    ? src
-                    : this._resampleOnto(run.depth, src, depth, categorical);
+                curves[label] = values;
                 defs.push({ mnemonic: label, base: mn, runId: run.id, suffix: run.suffix });
             }
         }
@@ -1567,6 +1604,26 @@ class GeoLogApp {
         } catch { el.textContent = ''; }
     }
 
+    /** Пометить в легенде кривые, собранные из нескольких рейсов. */
+    _labelMergedCurves(defs) {
+        for (const d of (defs || [])) {
+            const cfg = this.curveConfig[d.mnemonic] || this.curveConfig[d.base];
+            if (!cfg) continue;
+            // Базовое имя берём из нетронутой копии настроек: иначе пометка
+            // «(склейка N рейсов)» дописывалась к самой себе при каждой отрисовке.
+            const pristine = (this._defaultCurveConfig || {})[d.base]
+                || (this._defaultCurveConfig || {})[d.mnemonic];
+            const baseName = (pristine && pristine.name) || d.mnemonic;
+            this.curveConfig[d.mnemonic] = {
+                ...cfg,
+                name: (d.merged && d.merged.length > 1)
+                    ? `${baseName} (склейка ${d.merged.length} рейсов)`
+                    : baseName,
+            };
+        }
+        if (this.renderer) this.renderer.curveConfig = this.curveConfig;
+    }
+
     /** Показать фактический масштаб планшета рядом с селектором. */
     _updateScaleHint() {
         const el = document.getElementById('scaleActual');
@@ -1635,6 +1692,7 @@ class GeoLogApp {
                 await this._ensureCurveConfig(
                     allCurves.map(c => c.mnemonic).concat(merged.defs.map(d => d.base)));
                 this._applyExtraRunStyles(merged.defs.filter(d => d.suffix));
+                this._labelMergedCurves(merged.defs);
                 this._applyCurveDataToRenderer(data, allCurves);
             }
             if (this._showLithTrack) await this.toggleLithTrack(true);

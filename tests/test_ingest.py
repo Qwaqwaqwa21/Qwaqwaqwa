@@ -298,3 +298,25 @@ def test_no_hardcoded_feet_labels_left():
     js = open("frontend/js/app.js", encoding="utf-8").read()
     assert " ft`" not in js
     assert "_depthUnitLabel" in js
+
+
+def test_non_overlapping_runs_merge_into_one_curve():
+    """Метод из рейсов с непересекающимися интервалами склеивается в одну кривую.
+
+    Три РИГИС по разным пластам — это один разрез, и держать три колонки
+    литологии незачем. Там, где интервалы перекрываются, кривые остаются
+    раздельными: их нужно сравнивать.
+    """
+    js = open("frontend/js/app.js", encoding="utf-8").read()
+    assert "const mergeable = overlapping && method && !overlapping.has(method);" in js
+    assert "mergedBy[key]" in js
+    # переключатель склейки
+    tree = open("frontend/js/curve-tree.js", encoding="utf-8").read()
+    assert "geolog_merge_runs" in tree
+    assert "склеивать рейсы в одну колонку" in tree
+
+
+def test_merged_curve_label_is_not_duplicated():
+    """Пометка о склейке берётся от нетронутого имени, а не дописывается к себе."""
+    js = open("frontend/js/app.js", encoding="utf-8").read()
+    assert "const pristine = (this._defaultCurveConfig || {})[d.base]" in js

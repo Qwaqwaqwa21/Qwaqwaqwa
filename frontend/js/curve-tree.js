@@ -50,6 +50,15 @@
       this.render();
     },
 
+    /** Склеивать одинаковые методы соседних рейсов в одну кривую. */
+    mergeRuns: function () {
+      var v = localStorage.getItem('geolog_merge_runs');
+      var on = (v === null) ? true : (v === '1');
+      var a = app();
+      if (a) a._mergeRuns = on;
+      return on;
+    },
+
     shownRunIds: function () {
       var self = this;
       if (!this.data) return [];
@@ -80,8 +89,12 @@
         h += '<div class="ct-bulk"><a href="#" data-dups="1">Найти дубли данных</a></div>';
         h += '<div class="ct-bulk">На планшет: '
           + '<a href="#" data-all="1">все</a> · <a href="#" data-none="1">ни одного</a>'
-          + '<div class="ct-hint">Активный рейс рисуется сплошной линией, остальные — '
-          + 'пунктиром (у каждого свой рисунок штриха). Цвет всегда цвет метода.</div></div>';
+          + '<div class="ct-hint">Один метод из рейсов с непересекающимися интервалами '
+          + 'склеивается в одну кривую. Где интервалы перекрываются, кривые остаются '
+          + 'раздельными и различаются пунктиром.</div>'
+          + '<label class="ct-hint" style="display:flex;align-items:center;gap:5px;cursor:pointer">'
+          + '<input type="checkbox" id="ctMergeRuns"' + (self.mergeRuns() ? ' checked' : '') + '>'
+          + ' склеивать рейсы в одну колонку</label></div>';
       }
       d.runs.forEach(function (r) {
         var isOpen = !!self.open[r.id];
@@ -130,6 +143,13 @@
           if (app() && app().renderShownRuns) app().renderShownRuns();
         };
       };
+      var mergeEl = host.querySelector('#ctMergeRuns');
+      if (mergeEl) mergeEl.onchange = function () {
+        localStorage.setItem('geolog_merge_runs', mergeEl.checked ? '1' : '0');
+        var a = app();
+        if (a) { a._mergeRuns = mergeEl.checked; if (a.renderShownRuns) a.renderShownRuns(); }
+      };
+
       var dupEl = host.querySelector('[data-dups]');
       if (dupEl) dupEl.onclick = function (e) { e.preventDefault(); self.findDuplicates(); };
 
