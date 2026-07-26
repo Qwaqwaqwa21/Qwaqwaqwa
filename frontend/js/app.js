@@ -1600,7 +1600,19 @@ class GeoLogApp {
         if (!el) return;
         try {
             const b = await this._api('/build-info');
-            el.textContent = 'сборка ' + (b.commit ? b.commit + ' · ' : '') + (b.built || '');
+            // Версия фактически загруженного app.js: сервер подставляет ?v=… в index.html.
+            const src = (document.querySelector('script[src*="js/app.js"]') || {}).src || '';
+            const loaded = (src.match(/[?&]v=([^&]+)/) || [])[1] || '';
+            const stale = b.assets && loaded && loaded !== b.assets;
+            el.textContent = 'сборка ' + (b.commit ? b.commit + ' · ' : '') + (b.built || '')
+                + (loaded ? ' · fe:' + loaded : '');
+            el.style.color = stale ? '#e74c3c' : '';
+            el.title = stale
+                ? `Браузер выполняет старый app.js (${loaded}), на сервере ${b.assets}. Нажмите Ctrl+F5.`
+                : 'Версия запущенной сборки';
+            if (stale && window.GeoToast) {
+                GeoToast.warn('Браузер держит в кэше старую версию интерфейса — нажмите Ctrl+F5');
+            }
         } catch { el.textContent = ''; }
     }
 

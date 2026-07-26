@@ -1,5 +1,6 @@
 """GeoLog — Oil & Gas Well Log Viewer."""
 import logging
+import re
 import traceback
 from fastapi import FastAPI, Request, UploadFile, File, Depends, HTTPException, Header, WebSocket, WebSocketDisconnect, Query
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -7,7 +8,7 @@ from starlette.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 import numpy as np
@@ -2324,7 +2325,11 @@ def build_info():
             when = datetime.datetime.fromtimestamp(ts).strftime("%d.%m.%Y %H:%M")
         except Exception:
             pass
-    return {"commit": commit, "built": when, "version": app.version}
+    try:
+        assets = _asset_version()
+    except Exception:
+        assets = ""
+    return {"commit": commit, "built": when, "version": app.version, "assets": assets}
 
 
 @app.get("/api/curve-config")
@@ -9799,6 +9804,51 @@ if os.path.isdir(frontend_dir):
     app.mount("/static", StaticFiles(directory=frontend_dir), name="static")
 
 
+def _asset_version() -> str:
+    """Отпечаток фронтенда: меняется при любой правке JS/CSS.
+
+    Подставляется в адреса скриптов как ?v=…, иначе браузер продолжает
+    выполнять закэшированный app.js от прежней сборки, и правки «не работают».
+    """
+    import hashlib
+
+    h = hashlib.sha1()
+    for sub in ("js", "css"):
+        d = os.path.join(frontend_dir, sub)
+        if not os.path.isdir(d):
+            continue
+        for name in sorted(os.listdir(d)):
+            path = os.path.join(d, name)
+            try:
+                h.update(name.encode())
+                h.update(str(int(os.path.getmtime(path))).encode())
+                h.update(str(os.path.getsize(path)).encode())
+            except OSError:
+                continue
+    return h.hexdigest()[:10]
+
+
+_ASSET_RE = re.compile(r'(src|href)="(/static/(?:js|css)/[^"?]+)"')
+
+
+def _index_html() -> HTMLResponse:
+    """index.html со свежими версиями скриптов и запретом кэширования."""
+    index = os.path.join(frontend_dir, "index.html")
+    with open(index, encoding="utf-8") as fh:
+        html = fh.read()
+    ver = _asset_version()
+    html = _ASSET_RE.sub(lambda m: f'{m.group(1)}="{m.group(2)}?v={ver}"', html)
+    return HTMLResponse(html, headers={
+        "Cache-Control": "no-store, must-revalidate",
+        "Pragma": "no-cache",
+    })
+
+
+@app.get("/", include_in_schema=False)
+def serve_index():
+    return _index_html()
+
+
 @app.middleware("http")
 async def spa_fallback(request: Request, call_next):
     response = await call_next(request)
@@ -9810,5 +9860,5 @@ async def spa_fallback(request: Request, call_next):
     ):
         index = os.path.join(frontend_dir, "index.html")
         if os.path.isfile(index):
-            return FileResponse(index)
+            return _index_html()
     return response

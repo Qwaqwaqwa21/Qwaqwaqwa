@@ -293,6 +293,39 @@ def test_build_info_endpoint_reports_version():
     assert 'id="statusBuild"' in html
 
 
+def test_index_html_busts_static_cache():
+    """index.html отдаётся с ?v=… у скриптов — иначе браузер крутит старый app.js."""
+    from fastapi.testclient import TestClient
+    from backend.main import app, _asset_version
+
+    ver = _asset_version()
+    assert ver
+    with TestClient(app) as client:
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert "no-store" in resp.headers.get("cache-control", "")
+        assert f'/static/js/app.js?v={ver}' in resp.text
+        assert '/static/js/app.js"' not in resp.text  # без версии не осталось
+    # фронтенд сравнивает свою версию с серверной и предупреждает о кэше
+    js = open("frontend/js/app.js", encoding="utf-8").read()
+    assert "b.assets" in js and "Ctrl+F5" in js
+
+
+def test_asset_version_changes_with_frontend(tmp_path, monkeypatch):
+    """Отпечаток меняется при правке JS — иначе версия не обновится у клиента."""
+    import backend.main as m
+
+    before = m._asset_version()
+    target = os.path.join(m.frontend_dir, "js", "app.js")
+    stat = os.stat(target)
+    try:
+        os.utime(target, (stat.st_atime, stat.st_mtime + 60))
+        assert m._asset_version() != before
+    finally:
+        os.utime(target, (stat.st_atime, stat.st_mtime))
+    assert m._asset_version() == before
+
+
 def test_no_hardcoded_feet_labels_left():
     """Подписи глубин берут единицу у скважины, а не «ft» намертво."""
     js = open("frontend/js/app.js", encoding="utf-8").read()
