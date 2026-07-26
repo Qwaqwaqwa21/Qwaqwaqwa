@@ -29,7 +29,11 @@ try:
     from routers.inclinometry import router as inkl_router
     from routers.maps import router as maps_router
     from routers.ingest import router as ingest_router
-    from curve_lookup import find_curve as _find_curve, find_depth as _find_depth, find_curve_in_well as _find_curve_in_well
+    from curve_lookup import (find_curve as _find_curve, find_depth as _find_depth,
+                              find_curve_in_well as _find_curve_in_well,
+                              water_saturation as _water_saturation)
+    from methods import method_for_mnemonic as _method_for_mnemonic
+    from curve_lookup import as_porosity as _as_porosity
 except ImportError:
     from backend.routers.qc import router as qc_router
     from backend.routers.correlation import router as corr_router
@@ -41,7 +45,11 @@ except ImportError:
     from backend.routers.inclinometry import router as inkl_router
     from backend.routers.maps import router as maps_router
     from backend.routers.ingest import router as ingest_router
-    from backend.curve_lookup import find_curve as _find_curve, find_depth as _find_depth, find_curve_in_well as _find_curve_in_well
+    from backend.curve_lookup import (find_curve as _find_curve, find_depth as _find_depth,
+                                      find_curve_in_well as _find_curve_in_well,
+                                      water_saturation as _water_saturation)
+    from backend.methods import method_for_mnemonic as _method_for_mnemonic
+    from backend.curve_lookup import as_porosity as _as_porosity
 
 
 class SafeJSONResponse(JSONResponse):
@@ -1465,15 +1473,20 @@ def list_curves(lr_id: int, db: Session = Depends(get_db)):
     if not lr:
         raise HTTPException(404, "Log run not found")
     curves = db.query(CurveData).filter(CurveData.log_run_id == lr_id).all()
-    return [
-        {
+    out = []
+    for c in curves:
+        # Имя колонки оставляем как в файле, но показываем и распознанный метод:
+        # без этого не видно, что «КП_W» — это Кп, а «ГК_500» — гамма-каротаж.
+        meth = _method_for_mnemonic(c.mnemonic or "")
+        out.append({
             "id": c.id, "mnemonic": c.mnemonic, "unit": c.unit,
             "description": c.description, "num_points": c.num_points,
             "min_value": c.min_value, "max_value": c.max_value,
+            "method": meth.key if meth else None,
+            "method_name": meth.name if meth else None,
             "track_config": CURVE_TRACKS.get(c.mnemonic, {}),
-        }
-        for c in curves
-    ]
+        })
+    return out
 
 
 @app.post("/api/log-runs/{lr_id}/data")
@@ -3658,6 +3671,8 @@ def list_log_runs(wid: int, db: Session = Depends(get_db)):
         curves = db.query(CurveData).filter(CurveData.log_run_id == lr.id).all()
         result.append({
             "id": lr.id, "run_number": lr.run_number, "filename": lr.filename,
+            # имя и тип рейса нужны на планшете: «ГИС_С1», «РИГИС», «ИНКЛ»
+            "name": lr.name or lr.filename, "kind": lr.kind,
             "las_version": lr.las_version, "start_depth": lr.start_depth,
             "stop_depth": lr.stop_depth, "step": lr.step, "num_points": lr.num_points,
             "curves": [c.mnemonic for c in curves],
@@ -4502,12 +4517,18 @@ def compute_permeability(wid: int, data: dict, db: Session = Depends(get_db)):
     timur_a = float(data.get("timur_a", 0.136))
     sdr_a = float(data.get("sdr_a", 4.0))
 
-    depth_cd = _find_depth(db, lr.id)
+    # Пористость может лежать в рейсе РИГИС, а не в последнем рейсе ГИС,
+    # поэтому ищем по методу и по всей скважине.
+    phie_cd = _find_curve(db, lr.id, str(phie_curve).upper(), "KP", "PHIE")
+    lr_phie = lr.id
+    if phie_cd is None:
+        phie_cd, lr_phie = _find_curve_in_well(db, well, str(phie_curve).upper(), "KP", "PHIE")
+
+    depth_cd = _find_depth(db, lr_phie) if lr_phie else None
+    if depth_cd is None:
+        depth_cd = _find_depth(db, lr.id)
     if not depth_cd:
         raise HTTPException(404, "Depth curve not found")
-
-    phie_cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic == phie_curve).first()
-    sw_cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic == sw_curve).first()
 
     depth = np.frombuffer(depth_cd.data_binary, dtype=np.float64).copy()
 
@@ -4515,7 +4536,9 @@ def compute_permeability(wid: int, data: dict, db: Session = Depends(get_db)):
     if phie_cd:
         phie = np.frombuffer(phie_cd.data_binary, dtype=np.float64).copy()
     else:
-        rho_cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic == rhob_curve).first()
+        rho_cd = _find_curve(db, lr.id, str(rhob_curve).upper(), "GGKP")
+        if rho_cd is None:
+            rho_cd, _ = _find_curve_in_well(db, well, str(rhob_curve).upper(), "GGKP")
         if not rho_cd:
             raise HTTPException(404, f"Curve {phie_curve} not found and no {rhob_curve} for fallback")
         rho_arr = np.frombuffer(rho_cd.data_binary, dtype=np.float64).copy()
@@ -4524,11 +4547,20 @@ def compute_permeability(wid: int, data: dict, db: Session = Depends(get_db)):
         phie = np.clip((rho_ma - rho_arr) / max(1e-9, (rho_ma - rho_f)), 0.0, 0.6)
         phie[np.isnan(rho_arr)] = np.nan
 
-    # Sw / Swir handling
-    if sw_cd:
-        sw = np.frombuffer(sw_cd.data_binary, dtype=np.float64).copy()
+    # Sw / Swir handling: Кв берём напрямую либо как 1 − Кнг
+    sw_vals, _sw_src, _sw_run = _water_saturation(db, well, lr_phie)
+    if sw_vals is not None:
+        sw = np.asarray(sw_vals, dtype=np.float64)
+        if len(sw) < len(phie):
+            sw = np.concatenate([sw, np.full(len(phie) - len(sw), np.nan)])
+        else:
+            sw = sw[:len(phie)]
     else:
-        sw = np.full_like(phie, np.nan)
+        sw_cd = _find_curve(db, lr.id, str(sw_curve).upper(), "KV")
+        if sw_cd is not None:
+            sw = np.frombuffer(sw_cd.data_binary, dtype=np.float64).copy()
+        else:
+            sw = np.full_like(phie, np.nan)
 
     # User Swir takes priority. Else estimate Swir = Sw * (1 - water_cut)
     user_swir = data.get("swir")
@@ -4947,24 +4979,32 @@ def buckles_plot(wid: int, data: dict, db: Session = Depends(get_db)):
     if not lr:
         raise HTTPException(404, "No log run")
 
-    phie_curve = str(data.get("phie_curve", "NPHI")).upper()
-    sw_curve = str(data.get("sw_curve", "SW")).upper()
+    phie_curve = str(data.get("phie_curve") or "KP").upper()
+    sw_curve = str(data.get("sw_curve") or "KV").upper()
 
-    phie_cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic == phie_curve).first()
-    depth_cd = _find_depth(db, lr.id)
+    # У заказчика пористость лежит в рейсе РИГИС, а глубина — в рейсе ГИС,
+    # поэтому ищем и по рейсу, и по всей скважине.
+    phie_cd = _find_curve(db, lr.id, phie_curve, "KP", "PHIE")
+    lr_phie = lr.id
+    if phie_cd is None:
+        phie_cd, lr_phie = _find_curve_in_well(db, well, phie_curve, "KP", "PHIE")
+    depth_cd = _find_depth(db, lr_phie) if lr_phie else None
+    if depth_cd is None:
+        depth_cd = _find_depth(db, lr.id)
     if not phie_cd or not depth_cd:
         raise HTTPException(404, f"Required curves not found (need {phie_curve} and depth)")
-
-    sw_cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic == sw_curve).first()
 
     phie = np.frombuffer(phie_cd.data_binary, dtype=np.float64).copy()
     depth = np.frombuffer(depth_cd.data_binary, dtype=np.float64).copy()
 
-    if sw_cd:
-        sw = np.frombuffer(sw_cd.data_binary, dtype=np.float64).copy()
+    sw, sw_src, _sw_run = _water_saturation(db, well, lr_phie)
+    if sw is not None:
+        sw = np.asarray(sw, dtype=np.float64)
     else:
         # Compute Sw via Archie if SW curve missing
         rt_cd = _find_curve(db, lr.id, "RT")
+        if rt_cd is None:
+            rt_cd, _ = _find_curve_in_well(db, well, "RT", "BK", "IK")
         if not rt_cd:
             raise HTTPException(404, "SW curve not found and no RT curve available for Archie")
         rt = np.frombuffer(rt_cd.data_binary, dtype=np.float64).copy()
@@ -6337,32 +6377,112 @@ def compute_saturation(wid: int, data: dict, db: Session = Depends(get_db)):
     if not lr:
         raise HTTPException(404, "No log run")
 
+    well_obj = db.query(Well).filter(Well.id == wid).first()
+
     # Load curves with flexible names
     def _get_curve(names):
-        for name in names:
-            cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic == name).first()
-            if cd:
-                return cd
-        return None
+        # ищем по МЕТОДУ и по всей скважине: у заказчика ГИС и РИГИС — разные
+        # рейсы, и точного имени («PHIE», «RT») в файле обычно нет вовсе
+        cd = _find_curve(db, lr.id, *names)
+        if cd is not None:
+            return cd, lr.id
+        if well_obj is None:
+            return None, None
+        return _find_curve_in_well(db, well_obj, *names)
 
-    rt_cd = _get_curve(["RT", "RESD", "RILD", "ILD"])
-    gr_cd = _get_curve(["GR", "SGR", "CGR"])
-    nphi_cd = _get_curve(["NPHI", "NPHI_LS"])
-    rhob_cd = _get_curve(["RHOB", "RHOZ", "DEN"])
-    dt_cd = _get_curve(["DT", "DTC", "DTCO"])
-    dept_cd = _get_curve(["DEPT", "DEPTH"])
+    rt_cd, rt_run = _get_curve(["RT", "RESD", "RILD", "ILD"])
+    gr_cd, gr_run = _get_curve(["GR", "SGR", "CGR"])
+    nphi_cd, nphi_run = _get_curve(["NPHI", "NPHI_LS"])
+    rhob_cd, rhob_run = _get_curve(["RHOB", "RHOZ", "DEN"])
+    dt_cd, dt_run = _get_curve(["DT", "DTC", "DTCO"])
+    dept_cd = _find_depth(db, lr.id)
+    # Готовые результаты интерпретации (РИГИС) приоритетнее пересчёта из ГИС
+    kgl_cd, kgl_run = _get_curve(["KGL", "VSH"])
 
     if not rt_cd:
         raise HTTPException(400, "RT curve required")
-    if not gr_cd:
+    if not gr_cd and not kgl_cd:
         raise HTTPException(400, "GR curve required for Vclay")
 
-    rt = np.frombuffer(rt_cd.data_binary, dtype=np.float64).copy()
-    gr = np.frombuffer(gr_cd.data_binary, dtype=np.float64).copy()
-    nphi = np.frombuffer(nphi_cd.data_binary, dtype=np.float64).copy() if nphi_cd else np.full_like(rt, np.nan)
-    rhob = np.frombuffer(rhob_cd.data_binary, dtype=np.float64).copy() if rhob_cd else np.full_like(rt, np.nan)
-    dt = np.frombuffer(dt_cd.data_binary, dtype=np.float64).copy() if dt_cd else np.full_like(rt, np.nan)
-    dept = np.frombuffer(dept_cd.data_binary, dtype=np.float64).copy() if dept_cd else np.arange(len(rt)) * 0.5
+    dept = (np.frombuffer(dept_cd.data_binary, dtype=np.float64).copy()
+            if dept_cd else None)
+
+    def _arr(cd, run_id, like=None):
+        """Массив кривой, приведённый к сетке глубин основного рейса."""
+        if cd is None:
+            return np.full(len(like), np.nan) if like is not None else None
+        a = np.frombuffer(cd.data_binary, dtype=np.float64).copy()
+        if dept is None or run_id in (None, lr.id):
+            return a
+        src_depth_cd = _find_depth(db, run_id)
+        if src_depth_cd is None:
+            return a
+        sd = np.frombuffer(src_depth_cd.data_binary, dtype=np.float64).copy()
+        m = min(len(sd), len(a))
+        sd, a = sd[:m], a[:m]
+        ok = ~np.isnan(sd) & ~np.isnan(a)
+        if ok.sum() < 2:
+            return np.full(len(dept), np.nan)
+        return np.interp(dept, sd[ok], a[ok], left=np.nan, right=np.nan)
+
+    rt = _arr(rt_cd, rt_run)
+    if dept is None:
+        dept = np.arange(len(rt)) * 0.5
+    gr = _arr(gr_cd, gr_run, like=rt)
+    nphi = _arr(nphi_cd, nphi_run, like=rt)
+    rhob = _arr(rhob_cd, rhob_run, like=rt)
+    dt = _arr(dt_cd, dt_run, like=rt)
+    def _merged(*keys):
+        """Кривая метода со ВСЕХ рейсов, склеенная на сетку основного рейса.
+
+        РИГИС С1/С2/D — разные объекты одной скважины на разных интервалах:
+        брать только «самый длинный» рейс значит потерять остальные пласты, а
+        заодно промахнуться мимо интервала, где записано сопротивление.
+        """
+        acc, unit, names = None, "", []
+        for run in (well_obj.log_runs if well_obj is not None else []):
+            cd = _find_curve(db, run.id, *keys)
+            if cd is None:
+                continue
+            a = _arr(cd, run.id)
+            if len(a) < len(rt):
+                a = np.concatenate([a, np.full(len(rt) - len(a), np.nan)])
+            a = a[:len(rt)]
+            if acc is None:
+                acc, unit = a.copy(), cd.unit or ""
+            else:
+                gap = np.isnan(acc) & ~np.isnan(a)
+                acc[gap] = a[gap]
+            names.append(cd.mnemonic)
+        return acc, unit, names
+
+    kp_ready, kp_unit, kp_names = _merged("KP", "PHIE")
+    kgl_ready, kgl_unit, _kgl_names = _merged("KGL", "VSH")
+
+    _n0 = len(rt)
+    gr = gr[:_n0] if len(gr) >= _n0 else np.concatenate([gr, np.full(_n0 - len(gr), np.nan)])
+    nphi = nphi[:_n0] if len(nphi) >= _n0 else np.concatenate([nphi, np.full(_n0 - len(nphi), np.nan)])
+    rhob = rhob[:_n0] if len(rhob) >= _n0 else np.concatenate([rhob, np.full(_n0 - len(rhob), np.nan)])
+    dt = dt[:_n0] if len(dt) >= _n0 else np.concatenate([dt, np.full(_n0 - len(dt), np.nan)])
+    dept = dept[:_n0] if len(dept) >= _n0 else np.concatenate([dept, np.full(_n0 - len(dept), np.nan)])
+    if kp_ready is not None:
+        kp_ready = (kp_ready[:_n0] if len(kp_ready) >= _n0
+                    else np.concatenate([kp_ready, np.full(_n0 - len(kp_ready), np.nan)]))
+    if kgl_ready is not None:
+        kgl_ready = (kgl_ready[:_n0] if len(kgl_ready) >= _n0
+                     else np.concatenate([kgl_ready, np.full(_n0 - len(kgl_ready), np.nan)]))
+
+    # РИГИС встречается и в долях, и в процентах — приводим к долям единицы
+    kp_note = kgl_note = None
+    if kp_ready is not None:
+        kp_ready, kp_note = _as_porosity(kp_ready, kp_unit)
+    if kgl_ready is not None:
+        kgl_ready, kgl_note = _as_porosity(kgl_ready, kgl_unit)
+
+    # НГК в усл. ед. — не пористость: подставлять его в формулы нельзя
+    nphi, nphi_note = _as_porosity(nphi, getattr(nphi_cd, "unit", "")) if nphi_cd else (None, None)
+    if nphi is None:
+        nphi = np.full(_n0, np.nan)
 
     # Parameters
     model = str(data.get("model", "archie")).lower()
@@ -6400,8 +6520,20 @@ def compute_saturation(wid: int, data: dict, db: Session = Depends(get_db)):
 
         vsh_arr[i] = np.clip(vsh_v, 0, 1)
 
+    # Готовая Кгл из РИГИС точнее оценки по ГК — перекрываем ею расчёт
+    if kgl_ready is not None:
+        _ok = ~np.isnan(kgl_ready)
+        vsh_arr[_ok] = np.clip(kgl_ready[_ok], 0, 1)
+        vsh_source = "Кгл (РИГИС)"
+    else:
+        vsh_source = vsh_method
+
     # --- Porosity computation ---
     for i in range(n):
+        if kp_ready is not None and not np.isnan(kp_ready[i]):
+            # Кп из РИГИС уже эффективная и приведена к долям единицы
+            phie_arr[i] = float(np.clip(kp_ready[i], 0.0, 0.60))
+            continue
         phi_n = nphi[i] if not np.isnan(nphi[i]) else np.nan
         phi_d = np.nan
         if not np.isnan(rhob[i]):
@@ -6496,6 +6628,11 @@ def compute_saturation(wid: int, data: dict, db: Session = Depends(get_db)):
         "model": model,
         "params": {"a": a_v, "m": m_v, "n": n_v, "rw": rw, "rwb": rwb, "qv": qv,
                    "vsh_method": vsh_method, "gr_clean": gr_clean, "gr_shale": gr_shale},
+        "sources": {"vsh": vsh_source,
+                    "phie": (f"{'+'.join(sorted(set(kp_names)))} ({kp_note})"
+                             if kp_ready is not None else "расчёт по ГИС"),
+                    "nphi": nphi_note,
+                    "rt": rt_cd.mnemonic if rt_cd is not None else None},
         "stats": {
             "sw_mean": round(float(np.nanmean(valid_sw)), 4) if len(valid_sw) else None,
             "sw_min": round(float(np.nanmin(valid_sw)), 4) if len(valid_sw) else None,
@@ -6521,11 +6658,14 @@ def multimineral_solver(wid: int, data: dict, db: Session = Depends(get_db)):
         raise HTTPException(404, "No log run")
 
     def _get_curve(names):
-        for name in names:
-            cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic == name).first()
-            if cd:
-                return cd
-        return None
+        # ищем по МЕТОДУ и по всей скважине: у заказчика ГИС и РИГИС — разные
+        # рейсы, и точного имени («PHIE», «RT») в файле обычно нет вовсе
+        cd = _find_curve(db, lr.id, *names)
+        if cd is not None:
+            return cd
+        well_obj = db.query(Well).filter(Well.id == wid).first()
+        cd, _rid = _find_curve_in_well(db, well_obj, *names) if well_obj else (None, None)
+        return cd
 
     rhob_cd = _get_curve(["RHOB", "RHOZ", "DEN"])
     nphi_cd = _get_curve(["NPHI", "NPHI_LS"])
@@ -6661,11 +6801,14 @@ def compute_permeability_multi(wid: int, data: dict, db: Session = Depends(get_d
         raise HTTPException(404, "No log run")
 
     def _get_curve(names):
-        for name in names:
-            cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic == name).first()
-            if cd:
-                return cd
-        return None
+        # ищем по МЕТОДУ и по всей скважине: у заказчика ГИС и РИГИС — разные
+        # рейсы, и точного имени («PHIE», «RT») в файле обычно нет вовсе
+        cd = _find_curve(db, lr.id, *names)
+        if cd is not None:
+            return cd
+        well_obj = db.query(Well).filter(Well.id == wid).first()
+        cd, _rid = _find_curve_in_well(db, well_obj, *names) if well_obj else (None, None)
+        return cd
 
     rt_cd = _get_curve(["RT", "RESD", "RILD"])
     gr_cd = _get_curve(["GR", "SGR", "CGR"])
@@ -6921,9 +7064,11 @@ def core_calibration(wid: int, data: dict, db: Session = Depends(get_db)):
         # overlaps the core samples (a well may carry the same curve on several
         # runs covering different intervals). Fall back to curve-only, then the
         # largest run.
-        candidates = (db.query(LogRun).join(CurveData)
-                      .filter(LogRun.well_id == wid, CurveData.mnemonic == log_curve)
-                      .order_by(LogRun.num_points.desc()).all())
+        # Подбираем рейс по МЕТОДУ: у заказчика колонка называется КП_W, а не KP
+        candidates = [r for r in (db.query(LogRun)
+                                  .filter(LogRun.well_id == wid)
+                                  .order_by(LogRun.num_points.desc()).all())
+                      if _find_curve(db, r.id, str(log_curve).upper()) is not None]
         lr = None
         if candidates and core_depth:
             try:
@@ -6944,8 +7089,15 @@ def core_calibration(wid: int, data: dict, db: Session = Depends(get_db)):
     if not lr:
         raise HTTPException(404, "No log run")
 
-    log_cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic == log_curve).first()
-    dept_cd = _find_depth(db, lr.id)
+    log_cd = _find_curve(db, lr.id, str(log_curve).upper())
+    lr_log = lr.id
+    if log_cd is None:
+        well_obj = db.query(Well).filter(Well.id == wid).first()
+        if well_obj is not None:
+            log_cd, lr_log = _find_curve_in_well(db, well_obj, str(log_curve).upper())
+    dept_cd = _find_depth(db, lr_log) if lr_log else None
+    if dept_cd is None:
+        dept_cd = _find_depth(db, lr.id)
     if not log_cd or not dept_cd:
         raise HTTPException(400, f"Curve {log_curve} or DEPTH not found")
 
@@ -9688,16 +9840,18 @@ def export_client_bundle(wid: int, db: Session = Depends(get_db)):
 
         # 2. Tops CSV
         if tops:
-            tops_csv = "depth,name,formation_name,color\n"
+            tops_csv = "depth,top_depth,formation_name,color\n"
             for t in tops:
-                tops_csv += f"{t.depth},{t.name or ''},{t.formation_name or ''},{t.color or ''}\n"
+                tops_csv += (f"{t.depth},{t.top_depth if t.top_depth is not None else ''},"
+                             f"{t.formation_name or ''},{t.color or ''}\n")
             zf.writestr("tops.csv", tops_csv)
 
-        # 3. Zones CSV
+        # 3. Zones CSV — в модели Zone хранятся только границы и оформление,
+        # средние по пласту считаются на лету в /auto-zone и сюда не попадают
         if zones:
-            zones_csv = "name,top_depth,bottom_depth,sw_avg,vsh_avg,phie_avg,ntg\n"
+            zones_csv = "name,top_depth_m,bottom_depth_m,color\n"
             for z in zones:
-                zones_csv += f"{z.zone_name or ''},{z.top_depth},{z.bottom_depth},{z.sw_avg or ''},{z.vsh_avg or ''},{z.phie_avg or ''},{z.net_to_gross or ''}\n"
+                zones_csv += f"{z.name or ''},{z.top_depth},{z.bottom_depth},{z.color or ''}\n"
             zf.writestr("zones.csv", zones_csv)
 
         # 4. Petro params JSON
@@ -9707,14 +9861,14 @@ def export_client_bundle(wid: int, db: Session = Depends(get_db)):
             zf.writestr("petro_params.json", json.dumps(p, indent=2))
 
         # 5. Summary report
-        report = f"# GeoLog Export Report\nWell: {well.name}\nDate: {__import__('datetime').datetime.now().isoformat()}\n\n"
-        report += f"## Log Runs\n- Depth range: {lr.start_depth} - {lr.stop_depth} ft\n- Points: {lr.num_points}\n\n" if lr else ""
-        report += f"## Formation Tops ({len(tops)} entries)\n"
+        report = f"# GeoLog: выгрузка по скважине\nСкважина: {well.name}\nДата: {__import__('datetime').datetime.now().isoformat()}\n\n"
+        report += f"## Рейсы\n- Интервал: {lr.start_depth} - {lr.stop_depth} м\n- Точек: {lr.num_points}\n\n" if lr else ""
+        report += f"## Отбивки ({len(tops)})\n"
         for t in tops:
-            report += f"- {t.depth:.1f} ft: {t.name or t.formation_name}\n"
-        report += f"\n## Zones ({len(zones)} entries)\n"
+            report += f"- {t.depth:.1f} м: {t.formation_name or ''}\n"
+        report += f"\n## Пласты ({len(zones)})\n"
         for z in zones:
-            report += f"- {z.zone_name}: {z.top_depth:.1f} - {z.bottom_depth:.1f} ft (NTG: {z.net_to_gross or 'N/A'})\n"
+            report += f"- {z.name}: {z.top_depth:.1f} - {z.bottom_depth:.1f} м\n"
         zf.writestr("report.md", report)
 
     buf.seek(0)

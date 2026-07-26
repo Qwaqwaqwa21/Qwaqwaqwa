@@ -32,9 +32,11 @@ from sqlalchemy.orm import Session
 try:
     from database import get_db
     from models import Well, LogRun, CurveData, FormationTop, Project
+    from curve_lookup import method_key as _method_key
 except ImportError:  # pragma: no cover
     from backend.database import get_db
     from backend.models import Well, LogRun, CurveData, FormationTop, Project
+    from backend.curve_lookup import method_key as _method_key
 
 router = APIRouter(tags=["maps"])
 
@@ -231,6 +233,9 @@ def _decode(cd) -> Optional[np.ndarray]:
 def _well_curves(well: Well) -> Dict[str, List[Tuple[np.ndarray, np.ndarray]]]:
     """{мнемоника: [(глубины, значения), …]} — все рейсы, т.к. РИГИС С1/С2
     покрывают РАЗНЫЕ интервалы и нужный выбирается по горизонту."""
+    # Ключ — МЕТОД, а не имя колонки: в промысловых РИГИС кривые называются
+    # КОЛЛЕКТОР / НАСЫЩЕНИЕ / КП_W / КГЛ / КНГ_W, а не COLL / SAT / KP.
+    wanted = {"COLL", "SAT", "KP", "KGL", "KNG"}
     out: Dict[str, List[Tuple[np.ndarray, np.ndarray]]] = {}
     for run in well.log_runs:
         depth = None
@@ -242,12 +247,15 @@ def _well_curves(well: Well) -> Dict[str, List[Tuple[np.ndarray, np.ndarray]]]:
             continue
         for cd in run.curve_data:
             m = (cd.mnemonic or "").strip().upper()
-            if m in _DEPTH or m not in ("COLL", "SAT", "KP", "KGL", "KNG"):
+            if m in _DEPTH:
+                continue
+            key = m if m in wanted else _method_key(m)
+            if key not in wanted:
                 continue
             arr = _decode(cd)
             if arr is None or arr.size != depth.size:
                 continue
-            out.setdefault(m, []).append((depth, arr))
+            out.setdefault(key, []).append((depth, arr))
     return out
 
 

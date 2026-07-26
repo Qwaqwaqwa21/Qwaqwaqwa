@@ -38,6 +38,16 @@ EQUIVALENT = {
     "KS": ("RT",),
     "BK": ("RT",),
     "IK": ("RT",),
+    # Результаты интерпретации: расчёты просят западные обозначения величин,
+    # а в РИГИС они записаны как Кп/Кгл/Кнг/Кпр. Без этих пар петрофизика на
+    # промысловых файлах отвечала «PHIE not found» при наличии Кп в рейсе.
+    # Кв (SW) НЕ приравнивается к Кнг: это дополняющие величины, пересчёт
+    # делается явно (см. water_saturation).
+    "PHIE": ("KP",), "PHIT": ("KP",), "KP": ("PHIE",),
+    "VSH": ("KGL",), "VCL": ("KGL",), "KGL": ("VSH",),
+    "PERM": ("KPR",), "KPR": ("PERM",),
+    "SW": ("KV",), "KV": ("SW",),
+    "LITH": ("LITH",), "COLL": ("COLL",), "SAT": ("SAT",),
     "RXO": ("MKZ",),
     "MKZ": ("RXO",),
 }
@@ -111,3 +121,80 @@ def find_depth(db, log_run_id: int) -> Optional[CurveData]:
             if (cd.mnemonic or "").strip().upper() == name:
                 return cd
     return None
+
+
+def water_saturation(db, well, log_run_id=None):
+    """Кв для расчётов: своя кривая либо явный пересчёт из Кнг (Кв = 1 − Кнг).
+
+    РИГИС отдаёт нефтегазонасыщенность, а формулы просят водонасыщенность.
+    Пересчёт именно ЯВНЫЙ и подписывается в ответе: молчаливая подстановка Кнг
+    вместо Кв инвертирует отбор коллектора (в пласт попадают обводнённые
+    интервалы). Возвращает ``(значения, подпись, log_run_id)``.
+    """
+    import numpy as np
+
+    def _vals(cd):
+        if cd is None or not cd.data_binary:
+            return None
+        return np.frombuffer(cd.data_binary, dtype=np.float64).copy()
+
+    if log_run_id is not None:
+        cd = find_curve(db, log_run_id, "SW")
+        if cd is not None:
+            return _vals(cd), cd.mnemonic, log_run_id
+        cd = find_curve(db, log_run_id, "KNG")
+        if cd is not None:
+            v = _vals(cd)
+            return (np.clip(1.0 - v, 0.0, 1.0) if v is not None else None,
+                    f"1 - {cd.mnemonic}", log_run_id)
+        return None, None, None
+
+    cd, rid = find_curve_in_well(db, well, "SW")
+    if cd is not None:
+        return _vals(cd), cd.mnemonic, rid
+    cd, rid = find_curve_in_well(db, well, "KNG")
+    if cd is not None:
+        v = _vals(cd)
+        return (np.clip(1.0 - v, 0.0, 1.0) if v is not None else None,
+                f"1 - {cd.mnemonic}", rid)
+    return None, None, None
+
+
+# Единицы, в которых значение действительно является пористостью.
+_POROSITY_FRACTION_UNITS = {"V/V", "VV", "DEC", "FRAC", "Д.ЕД", "Д.ЕД.", "ДЕК",
+                            "ДОЛ.ЕД", "ДОЛ.ЕД.", "ДОЛИ", "M3/M3", "М3/М3"}
+_POROSITY_PERCENT_UNITS = {"%", "PU", "P.U.", "PERC", "PCT", "PERCENT", "%V/V", "ПРОЦ"}
+
+
+def as_porosity(values, unit=""):
+    """Привести кривую к пористости в долях единицы или отказаться.
+
+    НГК в усл. ед. (значения 1–5) — это НЕ пористость: если подставить его в
+    формулы напрямую, Кп упирается в верхнюю отсечку 0.6 и Sw считается по
+    мусору. Поэтому кривая принимается, только когда единицы прямо говорят о
+    пористости либо диапазон значений сам по себе допустим.
+
+    Возвращает ``(массив|None, подпись)``.
+    """
+    import numpy as np
+
+    if values is None:
+        return None, "нет кривой"
+    arr = np.asarray(values, dtype=float)
+    if not np.any(np.isfinite(arr)):
+        return None, "пусто"
+    u = (unit or "").strip().upper().replace(" ", "")
+    hi = float(np.nanmax(arr[np.isfinite(arr)]))
+
+    if u in _POROSITY_PERCENT_UNITS:
+        return arr / 100.0, f"{unit} → д.ед."
+    if u in _POROSITY_FRACTION_UNITS:
+        return arr, unit or "д.ед."
+    # Единицы не указаны (обычное дело в промысловых LAS) — решаем по диапазону
+    if hi <= 1.0:
+        return arr, "д.ед. (по диапазону)"
+    if 1.0 < hi <= 100.0 and float(np.nanmedian(arr[np.isfinite(arr)])) > 1.0:
+        # 1–100 без единиц: проценты только если и медиана выше единицы
+        if hi > 5.0:
+            return arr / 100.0, "% (по диапазону) → д.ед."
+    return None, f"единицы «{unit or 'не заданы'}», диапазон до {hi:g} — не пористость"

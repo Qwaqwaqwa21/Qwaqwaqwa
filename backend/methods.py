@@ -131,10 +131,17 @@ METHODS: List[LogMethod] = [
               ("KGL", "КГЛ", "КГЛ_ГК", "KGL_GK", "VSH", "VCL", "VSHALE"),
               unit="д.ед.", color="#7f8c8d", track=3, derived=True,
               keywords=("КГЛ", "VSH", "VCL")),
+    # Кнг и Кв — ДОПОЛНЯЮЩИЕ величины (Кв = 1 − Кнг), поэтому это разные
+    # методы: пока SW/SWE лежали в семействе КНГ, водонасыщенность
+    # подменялась нефтегазонасыщенностью и отбор коллектора инвертировался.
     LogMethod("KNG", "Кнг — нефтегазонасыщенность", "interpretation", "KNG",
-              ("KNG", "КНГ", "КНГ_W", "KNG_W", "КН", "SW", "SWT", "SWE", "КВ_W"),
+              ("KNG", "КНГ", "КНГ_W", "KNG_W", "КН", "SO", "SOIL", "SHC"),
               unit="д.ед.", color="#2980b9", track=3, derived=True,
-              keywords=("КНГ", "SATUR")),
+              keywords=("КНГ", "НЕФТЕНАС", "ГАЗОНАС")),
+    LogMethod("KV", "Кв — водонасыщенность", "interpretation", "SW",
+              ("SW", "SWT", "SWE", "КВ_W", "KV_W", "SW_W", "SWA"),
+              unit="д.ед.", color="#3498db", track=3, derived=True,
+              keywords=("КВ", "ВОДОНАС", "WATER SAT")),
     LogMethod("KPR", "Кпр — проницаемость", "interpretation", "KPR",
               ("KPR", "КПР", "ПРОН", "PERM", "KINT", "KLOGH"), unit="мД",
               color="#af7ac5", track=3, log_scale=True, derived=True,
