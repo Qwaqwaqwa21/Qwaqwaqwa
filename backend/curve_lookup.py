@@ -123,6 +123,12 @@ def find_depth(db, log_run_id: int) -> Optional[CurveData]:
     return None
 
 
+# Единицы, в которых значение действительно является пористостью.
+_POROSITY_FRACTION_UNITS = {"V/V", "VV", "DEC", "FRAC", "Д.ЕД", "Д.ЕД.", "ДЕК",
+                            "ДОЛ.ЕД", "ДОЛ.ЕД.", "ДОЛИ", "M3/M3", "М3/М3"}
+_POROSITY_PERCENT_UNITS = {"%", "PU", "P.U.", "PERC", "PCT", "PERCENT", "%V/V", "ПРОЦ"}
+
+
 def water_saturation(db, well, log_run_id=None):
     """Кв для расчётов: своя кривая либо явный пересчёт из Кнг (Кв = 1 − Кнг).
 
@@ -134,9 +140,21 @@ def water_saturation(db, well, log_run_id=None):
     import numpy as np
 
     def _vals(cd):
+        """Значения кривой в ДОЛЯХ единицы.
+
+        Насыщенность в РИГИС пишут и в долях, и в процентах. Без приведения
+        Кв = 1 − Кнг при Кнг = 45 % давало −44 и после clip — ноль, то есть
+        полностью обводнённый пласт вместо нефтенасыщенного.
+        """
         if cd is None or not cd.data_binary:
             return None
-        return np.frombuffer(cd.data_binary, dtype=np.float64).copy()
+        v = np.frombuffer(cd.data_binary, dtype=np.float64).copy()
+        u = (cd.unit or "").strip().upper().replace(" ", "")
+        fin = v[np.isfinite(v)]
+        if u in _POROSITY_PERCENT_UNITS or (u not in _POROSITY_FRACTION_UNITS
+                                            and fin.size and np.nanmax(fin) > 1.5):
+            v = v / 100.0
+        return v
 
     if log_run_id is not None:
         cd = find_curve(db, log_run_id, "SW")
@@ -158,12 +176,6 @@ def water_saturation(db, well, log_run_id=None):
         return (np.clip(1.0 - v, 0.0, 1.0) if v is not None else None,
                 f"1 - {cd.mnemonic}", rid)
     return None, None, None
-
-
-# Единицы, в которых значение действительно является пористостью.
-_POROSITY_FRACTION_UNITS = {"V/V", "VV", "DEC", "FRAC", "Д.ЕД", "Д.ЕД.", "ДЕК",
-                            "ДОЛ.ЕД", "ДОЛ.ЕД.", "ДОЛИ", "M3/M3", "М3/М3"}
-_POROSITY_PERCENT_UNITS = {"%", "PU", "P.U.", "PERC", "PCT", "PERCENT", "%V/V", "ПРОЦ"}
 
 
 def as_porosity(values, unit=""):
@@ -191,10 +203,13 @@ def as_porosity(values, unit=""):
     if u in _POROSITY_FRACTION_UNITS:
         return arr, unit or "д.ед."
     # Единицы не указаны (обычное дело в промысловых LAS) — решаем по диапазону
+    med = float(np.nanmedian(arr[np.isfinite(arr)]))
     if hi <= 1.0:
         return arr, "д.ед. (по диапазону)"
-    if 1.0 < hi <= 100.0 and float(np.nanmedian(arr[np.isfinite(arr)])) > 1.0:
+    if hi <= 2.0 and med <= 1.0:
+        # доли единицы с редкими выбросами чуть выше 1 — обрезаем, а не бракуем
+        return np.clip(arr, 0.0, 1.0), "д.ед. (выбросы обрезаны)"
+    if hi <= 100.0 and med > 1.0 and hi > 5.0:
         # 1–100 без единиц: проценты только если и медиана выше единицы
-        if hi > 5.0:
-            return arr / 100.0, "% (по диапазону) → д.ед."
+        return arr / 100.0, "% (по диапазону) → д.ед."
     return None, f"единицы «{unit or 'не заданы'}», диапазон до {hi:g} — не пористость"
