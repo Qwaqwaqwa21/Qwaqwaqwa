@@ -2090,7 +2090,8 @@ class GeoLogApp {
 
         // Глубина в списках осей не нужна — иначе она подставляется как
         // значение по умолчанию и график строится «глубина к глубине».
-        const uniqueMnemonics = [...new Set(curves.map(c => c.mnemonic).filter(Boolean))]
+        const uniqueMnemonics = [...new Set(curves.map(c => String(c.mnemonic || '').split('·')[0])
+            .filter(Boolean))]
             .filter(m => !['DEPT', 'DEPTH', 'MD', 'TVD'].includes(String(m).toUpperCase()));
         if (!uniqueMnemonics.length) return;
 
@@ -2106,7 +2107,8 @@ class GeoLogApp {
 
         const byFamily = (fam) => {
             const pack = this._getCurveByFamily(fam);
-            return (pack && uniqueMnemonics.includes(pack.mnemonic)) ? pack.mnemonic : uniqueMnemonics[0];
+            const base = pack ? String(pack.mnemonic).split('·')[0] : null;
+            return (base && uniqueMnemonics.includes(base)) ? base : uniqueMnemonics[0];
         };
         cpX.value = uniqueMnemonics.includes(keepX) ? keepX : byFamily('RHOB');
         cpY.value = uniqueMnemonics.includes(keepY) ? keepY : byFamily('NPHI');
@@ -2122,7 +2124,11 @@ class GeoLogApp {
      * через справочник методов: RT → ИК/БК/КС, NPHI → НГК/Кп и т.д.
      */
     _populateAllCurveSelectors(curves = []) {
-        const names = [...new Set(curves.map(c => c.mnemonic).filter(Boolean))]
+        // В списке лежат и наложенные рейсы с меткой вида «KS_500·500».
+        // В расчёт уходит ЗНАЧЕНИЕ пункта, поэтому метку рейса отрезаем:
+        // иначе сервер получал «KS_500·500» и честно отвечал «кривая не найдена».
+        const names = [...new Set(curves.map(c => String(c.mnemonic || '').split('·')[0])
+            .filter(Boolean))]
             .filter(m => !['DEPT', 'DEPTH', 'MD', 'TVD'].includes(String(m).toUpperCase()));
         if (!names.length) return;
 
@@ -2143,7 +2149,9 @@ class GeoLogApp {
             sel.innerHTML = names.map(m => `<option value="${esc(m)}">${esc(m)}</option>`).join('');
             if (names.includes(keep)) { sel.value = keep; continue; }
             const pack = this._getCurveByFamily(family);
-            sel.value = (pack && names.includes(pack.mnemonic)) ? pack.mnemonic : names[0];
+            // у наложенного рейса мнемоника приходит с меткой — сверяем базу
+            const base = pack ? String(pack.mnemonic).split('·')[0] : null;
+            sel.value = (base && names.includes(base)) ? base : names[0];
         }
     }
 

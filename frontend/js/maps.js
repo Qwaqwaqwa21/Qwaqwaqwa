@@ -86,6 +86,15 @@
           this.data = null;
         } else {
           var h = (document.getElementById('mapHorizon') || {}).value || '';
+          if (!h) {
+            // Без горизонта карта параметра не считается: не дёргаем сервер
+            // ради заведомого 400, а сразу объясняем, чего не хватает.
+            this.data = null;
+            this.wellheads = null;
+            if (host) host.innerHTML = '<p style="color:#f85149">Укажите горизонт — '
+              + 'в проекте нет отбивок, загрузите их во вкладке «Отбивки»</p>';
+            return;
+          }
           var pw = (document.getElementById('mapPower') || {}).value || '2';
           this.data = await app._api('/projects/' + p + '/map/grid?param=' + param
             + '&horizon=' + encodeURIComponent(h) + '&power=' + pw + '&nx=150&ny=150'
