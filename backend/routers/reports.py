@@ -1,4 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
+
+try:
+    from http_files import file_headers as _file_headers
+except ImportError:  # запуск пакетом backend.*
+    from backend.http_files import file_headers as _file_headers
 from sqlalchemy.orm import Session
 
 try:
@@ -236,7 +241,7 @@ def zonation_report(wid: int, db: Session = Depends(get_db)):
     csv_text = out.getvalue()
     out.close()
     fname = f"{well.name or 'well'}_zonation_report.csv"
-    headers = {"Content-Disposition": f'attachment; filename="{fname}"'}
+    headers = _file_headers(fname)
     return StreamingResponse(iter([csv_text]), media_type="text/csv", headers=headers)
 
 
@@ -538,7 +543,7 @@ def generate_petrophysical_report_pdf(
 
     safe_name = (well.name or "well").replace("/", "_").replace("\\", "_").replace(" ", "_")
     fname = f"{safe_name}_petrophysical_report.pdf"
-    headers = {"Content-Disposition": f'attachment; filename="{fname}"'}
+    headers = _file_headers(fname)
     return StreamingResponse(buffer, media_type="application/pdf", headers=headers)
 
 

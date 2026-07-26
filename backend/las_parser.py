@@ -54,6 +54,22 @@ CURVE_ALIASES = {
     'SPCG': 'SP',       # KGS: SP corrected
     'SPRL': 'SP',       # KGS: SP
 
+    # Инклинометрия: зенит и азимут — РАЗНЫЕ величины одного метода, поэтому
+    # каждая роль канонизируется отдельно и не зависит от порядка колонок.
+    'ЗЕНИТ': 'INKL',
+    'ЗЕН': 'INKL',
+    'УГОЛ': 'INKL',
+    'ZENIT': 'INKL',
+    'ZENITH': 'INKL',
+    'INCL': 'INKL',
+    'DEVI': 'INKL',
+    'INKL': 'INKL',
+    'АЗИМУТ': 'AZ',
+    'АЗ': 'AZ',
+    'AZIM': 'AZ',
+    'AZIMUTH': 'AZ',
+    'AZ': 'AZ',
+
     # Misc
     'CLDC': 'CAL',      # KGS: Caliper
     'DCOR': 'DRHO',     # KGS: Density correction

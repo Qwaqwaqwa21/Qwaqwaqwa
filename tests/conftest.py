@@ -7,7 +7,16 @@
 и отбивками — если в базе действительно ничего нет.
 """
 from pathlib import Path
+import os
 import sys
+
+# Тесты не должны трогать боевую базу: до импорта backend.database уводим
+# подключение в отдельный файл, иначе засеянные фикстурой строки осядут
+# в данных заказчика.
+os.environ.setdefault(
+    "GEOLOG_DB_PATH",
+    str(Path(__file__).resolve().parent / "_test_geolog.db"),
+)
 
 import numpy as np
 import pytest

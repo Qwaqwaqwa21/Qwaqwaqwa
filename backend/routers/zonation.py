@@ -1,5 +1,10 @@
 """Zonation + Net Pay Report router for GeoLog."""
 from fastapi import APIRouter, Depends, HTTPException
+
+try:
+    from http_files import file_headers as _file_headers
+except ImportError:  # запуск пакетом backend.*
+    from backend.http_files import file_headers as _file_headers
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 import numpy as np
@@ -379,7 +384,7 @@ def zone_report_csv(wid: int, db: Session = Depends(get_db)):
     return StreamingResponse(
         io.BytesIO(output.getvalue().encode()),
         media_type="text/csv",
-        headers={"Content-Disposition": f"attachment; filename=zone_report_well_{wid}.csv"},
+        headers=_file_headers(f"zone_report_well_{wid}.csv"),
     )
 
 
@@ -439,5 +444,5 @@ def zone_report_pdf(wid: int, db: Session = Depends(get_db)):
     return StreamingResponse(
         buf,
         media_type="application/pdf",
-        headers={"Content-Disposition": f"attachment; filename=zone_report_well_{wid}.pdf"},
+        headers=_file_headers(f"zone_report_well_{wid}.pdf"),
     )

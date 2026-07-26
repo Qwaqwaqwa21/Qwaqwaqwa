@@ -50,7 +50,7 @@ def _to_safe_list(arr: np.ndarray) -> List[Optional[float]]:
     if arr is None:
         return []
     if not isinstance(arr, np.ndarray):
-        arr = np.asarray(arr, dtype=np.float32)
+        arr = np.asarray(arr, dtype=np.float64)
     out: List[Optional[float]] = []
     for v in arr:
         out.append(_to_safe_value(v))
@@ -72,7 +72,9 @@ def _load_curve(db: Session, well_id: int, curve: str) -> Tuple[Optional[LogRun]
     if not lr.num_points or lr.num_points <= 1 or lr.start_depth is None or lr.stop_depth is None:
         return lr, None, None, None
 
-    depth = np.linspace(float(lr.start_depth), float(lr.stop_depth), int(lr.num_points), dtype=np.float32)
+    # float64: в float32 глубина 543.1 превращается в 543.0999755859375,
+    # и такая же кривизна уезжает в отчёты о корреляции
+    depth = np.linspace(float(lr.start_depth), float(lr.stop_depth), int(lr.num_points), dtype=np.float64)
     cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic == curve).first()
     if not cd or not cd.data_binary:
         return lr, depth, None, None
@@ -86,22 +88,22 @@ def _load_curve(db: Session, well_id: int, curve: str) -> Tuple[Optional[LogRun]
 
 def _interp_at(depth_arr: np.ndarray, val_arr: np.ndarray, sample_depths: np.ndarray) -> np.ndarray:
     if depth_arr is None or val_arr is None or len(depth_arr) < 2 or len(val_arr) < 2:
-        return np.full_like(sample_depths, np.nan, dtype=np.float32)
+        return np.full_like(sample_depths, np.nan, dtype=np.float64)
     order = np.argsort(depth_arr)
     x = depth_arr[order]
     y = val_arr[order]
     finite = np.isfinite(y)
     if finite.sum() < 2:
-        return np.full_like(sample_depths, np.nan, dtype=np.float32)
+        return np.full_like(sample_depths, np.nan, dtype=np.float64)
     x = x[finite]
     y = y[finite]
-    return np.interp(sample_depths, x, y, left=np.nan, right=np.nan).astype(np.float32)
+    return np.interp(sample_depths, x, y, left=np.nan, right=np.nan).astype(np.float64)
 
 
 def _shape_score(gr_a_depth: np.ndarray, gr_a: np.ndarray, top_a: float,
                  gr_b_depth: np.ndarray, gr_b: np.ndarray, top_b: float,
                  window: float = 20.0, samples: int = 81) -> float:
-    rel = np.linspace(-window, window, samples, dtype=np.float32)
+    rel = np.linspace(-window, window, samples, dtype=np.float64)
     sa = _interp_at(gr_a_depth, gr_a, top_a + rel)
     sb = _interp_at(gr_b_depth, gr_b, top_b + rel)
     mask = np.isfinite(sa) & np.isfinite(sb)
@@ -170,8 +172,8 @@ def get_cross_section(well_ids: str, curve: str = "GR", db: Session = Depends(ge
             "well_name": well.name,
             "curve": curve,
             "unit": unit or "",
-            "depth": _to_safe_list(depth if depth is not None else np.array([], dtype=np.float32)),
-            "values": _to_safe_list(values if values is not None else np.array([], dtype=np.float32)),
+            "depth": _to_safe_list(depth if depth is not None else np.array([], dtype=np.float64)),
+            "values": _to_safe_list(values if values is not None else np.array([], dtype=np.float64)),
             "tops": tops_payload,
         })
 
@@ -323,7 +325,7 @@ def auto_correlate(payload: dict, db: Session = Depends(get_db)):
     # Optional profile hint from matched tops.
     profile_hint = None
     if matches:
-        deltas = np.array([m["depth_delta"] for m in matches if m.get("depth_delta") is not None], dtype=np.float32)
+        deltas = np.array([m["depth_delta"] for m in matches if m.get("depth_delta") is not None], dtype=np.float64)
         if len(deltas) > 0:
             shift = float(np.nanmedian(deltas))
             profile_hint = {

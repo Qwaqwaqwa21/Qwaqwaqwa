@@ -25,6 +25,11 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, UploadFile
+
+try:
+    from http_files import file_headers as _file_headers
+except ImportError:  # запуск пакетом backend.*
+    from backend.http_files import file_headers as _file_headers
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -696,7 +701,7 @@ def coverage_by_horizon_export(
         return StreamingResponse(
             buf,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            headers={"Content-Disposition": f'attachment; filename="coverage_by_horizon_{pid}.xlsx"'})
+            headers=_file_headers(f"coverage_by_horizon_{pid}.xlsx"))
 
     out = io.StringIO()
     wr = csv.writer(out, delimiter=";")
@@ -704,7 +709,7 @@ def coverage_by_horizon_export(
     wr.writerows(body)
     return StreamingResponse(
         io.BytesIO(out.getvalue().encode("utf-8-sig")), media_type="text/csv",
-        headers={"Content-Disposition": f'attachment; filename="coverage_by_horizon_{pid}.csv"'})
+        headers=_file_headers(f"coverage_by_horizon_{pid}.csv"))
 
 
 # ── Справочники кодов РИГИС ──────────────────────────────────────────────────

@@ -3,6 +3,11 @@ import logging
 import re
 import traceback
 from fastapi import FastAPI, Request, UploadFile, File, Depends, HTTPException, Header, WebSocket, WebSocketDisconnect, Query
+
+try:
+    from http_files import file_headers as _file_headers
+except ImportError:  # запуск пакетом backend.*
+    from backend.http_files import file_headers as _file_headers
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -2312,7 +2317,7 @@ def delivery_bundle(wid: int, db: Session = Depends(get_db)):
     return StreamingResponse(
         mem,
         media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{well.name}_delivery_bundle.zip"'},
+        headers=_file_headers(f"{well.name}_delivery_bundle.zip"),
     )
 
 
@@ -5388,7 +5393,7 @@ def export_project_tops(pid: int, db: Session = Depends(get_db)):
 
     csv_text = out.getvalue()
     out.close()
-    headers = {"Content-Disposition": f'attachment; filename="project_{pid}_tops.csv"'}
+    headers = _file_headers(f"project_{pid}_tops.csv")
     return StreamingResponse(iter([csv_text]), media_type="text/csv", headers=headers)
 
 
@@ -5659,7 +5664,7 @@ def export_tops_petrel(wid: int, db: Session = Depends(get_db)):
 
     csv_text = out.getvalue()
     out.close()
-    headers = {"Content-Disposition": f'attachment; filename="well_{wid}_tops_petrel.csv"'}
+    headers = _file_headers(f"well_{wid}_tops_petrel.csv")
     return StreamingResponse(iter([csv_text]), media_type="text/csv", headers=headers)
 
 
@@ -9509,7 +9514,7 @@ def export_las(wid: int, db: Session = Depends(get_db)):
                 row.append(f"{v:12.4f}")
         las += "  ".join(row) + "\n"
 
-    headers = {"Content-Disposition": f'attachment; filename="{well.name}.las"'}
+    headers = _file_headers(f"{well.name}.las")
     return StreamingResponse(iter([las]), media_type="text/plain", headers=headers)
 
 
@@ -9884,7 +9889,7 @@ def export_client_bundle(wid: int, db: Session = Depends(get_db)):
 
     buf.seek(0)
     return StreamingResponse(buf, media_type="application/zip", headers={
-        "Content-Disposition": f"attachment; filename={well.name}_bundle.zip"
+        **_file_headers(f"{well.name}_bundle.zip"),
     })
 
 

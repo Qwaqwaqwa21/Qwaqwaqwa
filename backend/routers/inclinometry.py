@@ -30,8 +30,9 @@ except ImportError:  # pragma: no cover
 router = APIRouter(tags=["inclinometry"])
 
 _DEPTH = {"DEPT", "DEPTH", "MD", "TVD"}
-_INCL = {"INKL", "INCL", "ИНКЛ", "ZENIT", "ZENITH", "DEVI", "ANGLE", "UGOL"}
-_AZIM = {"AZ", "AZIM", "AZIMUTH", "АЗИМУТ"}
+_INCL = {"INKL", "INCL", "ИНКЛ", "ZENIT", "ZENITH", "DEVI", "ANGLE", "UGOL",
+         "ЗЕНИТ", "ЗЕН", "УГОЛ"}
+_AZIM = {"AZ", "AZIM", "AZIMUTH", "АЗИМУТ", "АЗ"}
 
 DLS_DEFAULT_LIMIT = 20.0        # °/10 м
 DLS_BASE = 10.0                 # длина интервала нормировки, м
