@@ -8,7 +8,7 @@
 """
 from __future__ import annotations
 
-from typing import Iterable, Optional
+from typing import Dict, Iterable, Optional, Tuple
 
 try:
     from models import CurveData
@@ -34,7 +34,7 @@ EQUIVALENT = {
     "DS": ("CAL",),
     "SP": ("PS",),
     "PS": ("SP",),
-    "RT": ("KS", "BK", "IK"),
+    "RT": ("BK", "IK", "KS", "BKZ"),
     "KS": ("RT",),
     "BK": ("RT",),
     "IK": ("RT",),
@@ -53,10 +53,39 @@ EQUIVALENT = {
 }
 
 
+# Порядок предпочтения там, где годится несколько методов. Множество `wanted`
+# порядок теряет, поэтому для таких запросов сначала перебираем методы по
+# очереди. Для Rt это принципиально: КС — КАЖУЩЕЕСЯ сопротивление, искажённое
+# скважиной и зоной проникновения, и подстановка его вместо БК/ИК смещает Кв
+# по Архи на десятки процентов.
+PREFERRED: Dict[str, Tuple[str, ...]] = {
+    "RT": ("BK", "IK", "KS", "BKZ"),
+}
+
+# Микро- и неглубокие зонды: годятся как запасной вариант для Rxo, но не
+# должны выигрывать у глубинных зондов при поиске Rt.
+SHALLOW_PROBES = {
+    "MKZ", "МКЗ", "MPZ", "МПЗ", "MGZ", "МГЗ", "MSFL", "MINV", "MNOR", "MLL",
+    "RXO", "BMK", "БМК", "GZ", "ГЗ", "GZ1", "GZ2", "GZ3", "GZ4", "GZ5",
+    "LLS", "ILM", "RILM", "CILM", "RLA1", "RLA2", "RLA3", "AT60",
+}
+
+
 def method_key(mnemonic: str) -> Optional[str]:
     """Ключ метода для мнемоники (GK_500 → GK, ЛИТОЛОГИЯ → LITH)."""
     meth = method_for_mnemonic(mnemonic or "")
     return meth.key if meth else None
+
+
+def _base_mnemonic(name: str) -> str:
+    """Мнемоника без суффиксов рейса: MGZ_500_2 → MGZ, GK_1 → GK."""
+    base = (name or "").strip().upper()
+    while True:
+        head, sep, tail = base.rpartition("_")
+        if sep and (tail.isdigit() or tail in {"W", "500"}):
+            base = head
+            continue
+        return base
 
 
 def _wanted(keys: Iterable[str]) -> set:
@@ -80,15 +109,31 @@ def find_curve(db, log_run_id: int, *keys: str) -> Optional[CurveData]:
     if not wanted:
         return None
     rows = db.query(CurveData).filter(CurveData.log_run_id == log_run_id).all()
-    best = None
-    for cd in rows:
-        name = (cd.mnemonic or "").strip()
-        if name.upper() in DEPTH_NAMES:
-            continue
-        mk = method_key(name)
-        if mk and mk in wanted:
-            if best is None or (cd.num_points or 0) > (best.num_points or 0):
-                best = cd
+
+    # Для Rt микрозонды отсекаем: они читают промытую зону, а не пласт
+    drop_shallow = any((k or "").upper() == "RT" for k in keys)
+
+    def _pick(allowed: set) -> Optional[CurveData]:
+        best = None
+        for cd in rows:
+            name = (cd.mnemonic or "").strip()
+            if name.upper() in DEPTH_NAMES:
+                continue
+            if drop_shallow and _base_mnemonic(name) in SHALLOW_PROBES:
+                continue
+            mk = method_key(name)
+            if mk and mk in allowed:
+                if best is None or (cd.num_points or 0) > (best.num_points or 0):
+                    best = cd
+        return best
+
+    # сначала — методы в порядке предпочтения, затем всё остальное семейство
+    for k in keys:
+        for meth in PREFERRED.get((k or "").upper(), ()):
+            got = _pick({meth})
+            if got is not None:
+                return got
+    best = _pick(wanted)
     if best is not None:
         return best
     # прямое совпадение по имени — на случай мнемоник вне справочника
