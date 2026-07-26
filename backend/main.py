@@ -6012,19 +6012,38 @@ def crossplot_matrix(pid: int, curve_x: str = "GR", curve_y: str = "RT",
 def get_decimated_data(
     lr_id: int,
     max_points: int = 3000,
+    curves: str = "",
+    curve_mnemonics: str = "",
     start_depth: float = None,
     stop_depth: float = None,
     if_none_match: str = Header(default=None),
     if_modified_since: str = Header(default=None),
     db: Session = Depends(get_db),
 ):
-    """Return curve data decimated to <= max_points using LTTB."""
+    """Return curve data decimated to <= max_points using LTTB.
+
+    ``curves``/``curve_mnemonics`` — список мнемоник через запятую
+    (поддерживаются оба имени: фронтенд исторически шлёт второе). Без списка
+    прореживается ВЕСЬ рейс: на скважине с двумя десятками кривых планшет ждал
+    секунды ради восьми показанных.
+    """
     lr = db.query(LogRun).filter(LogRun.id == lr_id).first()
     if not lr:
         raise HTTPException(404, "Log run not found")
 
     max_points = max(200, min(int(max_points or 3000), 50000))
-    curves = db.query(CurveData).filter(CurveData.log_run_id == lr_id).all()
+    DEPTH_MNEMONICS = {"DEPT", "DEPTH", "MD", "TVD"}
+    wanted = {m.strip().upper()
+              for m in f"{curve_mnemonics or ''},{curves or ''}".split(",")
+              if m.strip()}
+    curve_rows = db.query(CurveData).filter(CurveData.log_run_id == lr_id).all()
+    if wanted:
+        # индексная кривая нужна всегда, иначе нечем строить глубину
+        keep = [cd for cd in curve_rows
+                if (cd.mnemonic or "").strip().upper() in wanted | DEPTH_MNEMONICS]
+        if keep:
+            curve_rows = keep
+    curves = curve_rows
 
     headers = _build_curve_cache_headers(lr_id, [c.mnemonic for c in curves], start_depth, stop_depth, 1, max_points=max_points)
     last_modified_dt = (lr.uploaded_at or datetime.datetime.utcnow()).replace(tzinfo=datetime.timezone.utc)

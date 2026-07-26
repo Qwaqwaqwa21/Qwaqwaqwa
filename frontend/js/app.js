@@ -992,7 +992,12 @@ class GeoLogApp {
         try {
             this.projects = await this._api('/projects/');
             if (!this.projects.some(p => p.id === this.currentProjectId)) {
-                this.currentProjectId = this.projects.length ? this.projects[0].id : null;
+                // выбранное месторождение переживает перезагрузку: иначе после
+                // F5 работа молча возвращалась на первый проект в списке
+                const stored = parseInt(localStorage.getItem('geolog_project_id'), 10);
+                this.currentProjectId = this.projects.some(p => p.id === stored)
+                    ? stored
+                    : (this.projects.length ? this.projects[0].id : null);
             }
             this._renderProjectTree();
             if (this.projects.length > 0) {
@@ -1161,8 +1166,13 @@ class GeoLogApp {
         if (!this.currentLogRun.version) this.currentLogRun.version = versionLabel;
     }
 
-    _curveRangeKey(start, stop, mode = 'full') {
-        return `${this.currentLogRun?.id || 0}:${mode}:${start.toFixed(2)}:${stop.toFixed(2)}`;
+    _curveRangeKey(start, stop, mode = 'full', mnemonics = null) {
+        // состав кривых входит в ключ: прореженный ответ теперь зависит от
+        // запрошенного списка, и без этого добавленная кривая доставалась бы
+        // из кэша урезанного набора и не рисовалась
+        const set = mnemonics && mnemonics.length
+            ? [...mnemonics].sort().join('|') : '*';
+        return `${this.currentLogRun?.id || 0}:${mode}:${start.toFixed(2)}:${stop.toFixed(2)}:${set}`;
     }
 
     _normalizeWindow(start, stop) {
@@ -1185,13 +1195,15 @@ class GeoLogApp {
 
     async _fetchCurveRange(curves, start, stop, { decimated = false } = {}) {
         const mode = (decimated ? `decimated-${this.maxPoints}` : 'full') + ':' + (this.depthMode || 'MD');
-        const key = this._curveRangeKey(start, stop, mode);
+        const mnemonics = curves.map(c => c.mnemonic);
+        const key = this._curveRangeKey(start, stop, mode, mnemonics);
         if (this.curveRangeCache.has(key)) return this.curveRangeCache.get(key);
 
-        const mnemonics = curves.map(c => c.mnemonic);
         let data;
         if (decimated) {
-            const dec = await this._api(`/log-runs/${this.currentLogRun.id}/data-decimated?max_points=${this.maxPoints}&start_depth=${encodeURIComponent(start)}&stop_depth=${encodeURIComponent(stop)}`);
+            // просим только показанные кривые — иначе сервер прореживает весь рейс
+            const wanted = encodeURIComponent((mnemonics || []).join(','));
+            const dec = await this._api(`/log-runs/${this.currentLogRun.id}/data-decimated?max_points=${this.maxPoints}&curve_mnemonics=${wanted}&start_depth=${encodeURIComponent(start)}&stop_depth=${encodeURIComponent(stop)}`);
             data = { ...(dec?.curves || {}) };
         } else {
             data = await this._api(`/log-runs/${this.currentLogRun.id}/data`, {
@@ -1911,6 +1923,7 @@ class GeoLogApp {
         const p = (this.projects || []).find(x => x.id === Number(projectId));
         if (!p) return;
         this.currentProjectId = p.id;
+        try { localStorage.setItem('geolog_project_id', String(p.id)); } catch (e) {}
         this._renderProjectTree();
         await this.loadWells(p.id);
     }
