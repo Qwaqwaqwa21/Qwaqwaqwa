@@ -77,6 +77,7 @@
       if (!d.runs.length) {
         h += '<div class="ct-empty">Нет загруженного каротажа</div>';
       } else {
+        h += '<div class="ct-bulk"><a href="#" data-dups="1">Найти дубли данных</a></div>';
         h += '<div class="ct-bulk">На планшет: '
           + '<a href="#" data-all="1">все</a> · <a href="#" data-none="1">ни одного</a>'
           + '<div class="ct-hint">Активный рейс рисуется сплошной линией, остальные — '
@@ -129,6 +130,9 @@
           if (app() && app().renderShownRuns) app().renderShownRuns();
         };
       };
+      var dupEl = host.querySelector('[data-dups]');
+      if (dupEl) dupEl.onclick = function (e) { e.preventDefault(); self.findDuplicates(); };
+
       var allEl = host.querySelector('[data-all]');
       if (allEl) allEl.onclick = setAll(true);
       var noneEl = host.querySelector('[data-none]');
@@ -153,6 +157,45 @@
           self.deleteCurve(parseInt(parts[0], 10), decodeURIComponent(parts[1]));
         };
       });
+    },
+
+    /** Отчёт о полных дублях: одинаковые кривые, повторы глубин, повторы рейсов. */
+    findDuplicates: async function () {
+      var a = app();
+      if (!a || !this.wellId) return;
+      try {
+        var r = await a._api('/wells/' + this.wellId + '/duplicates');
+        var h = '<div style="padding:14px;max-width:640px;font-size:13px;color:#c9d1d9">'
+          + '<h3 style="margin:0 0 10px;color:#58a6ff;font-size:14px">Дубли в скважине ' + esc(r.well) + '</h3>';
+        if (!r.total) {
+          h += '<p style="color:#3fb950">Полных дублей не найдено.</p>';
+        } else {
+          if (r.identical_curves.length) {
+            h += '<b>Полностью совпадающие кривые (' + r.identical_curves.length + ')</b><ul>'
+              + r.identical_curves.slice(0, 20).map(function (x) {
+                  return '<li>' + esc(x.a.run) + '·' + esc(x.a.curve) + ' = '
+                    + esc(x.b.run) + '·' + esc(x.b.curve) + ' (' + x.points + ' точек)</li>';
+                }).join('') + '</ul>';
+          }
+          if (r.duplicate_depths.length) {
+            h += '<b>Повторяющиеся глубины (' + r.duplicate_depths.length + ' рейс(ов))</b><ul>'
+              + r.duplicate_depths.map(function (x) {
+                  return '<li>' + esc(x.run) + ': ' + x.count + ' повторов, например '
+                    + esc(x.examples.join(', ')) + '</li>';
+                }).join('') + '</ul>';
+          }
+          if (r.duplicate_runs.length) {
+            h += '<b>Рейсы-двойники (' + r.duplicate_runs.length + ')</b><ul>'
+              + r.duplicate_runs.map(function (x) {
+                  return '<li>' + esc(x.a.run) + ' ↔ ' + esc(x.b.run) + ' — перекрытие '
+                    + x.overlap_pct + ' %, методы ' + esc(x.methods.join(', ')) + '</li>';
+                }).join('') + '</ul>';
+          }
+        }
+        h += '<div style="text-align:right"><button onclick="GeoModal.close()" '
+          + 'style="background:#30363d;color:#c9d1d9;border:none;border-radius:6px;padding:6px 14px;cursor:pointer">Закрыть</button></div></div>';
+        if (window.GeoModal && GeoModal.showHtml) GeoModal.showHtml(h, 'Поиск дублей');
+      } catch (e) { toast('error', 'Не удалось проверить: ' + (e.message || e)); }
     },
 
     rename: async function (runId) {

@@ -28,8 +28,9 @@
   var SECTIONS = [
     {
       key: 'las', title: 'ГИС / РИГИС — каротаж (LAS)',
-      hint: 'Выберите корневую папку — подпапки обходятся рекурсивно. Скважина берётся из шапки LAS, имя рейса — из папки.',
-      accept: '.las,.LAS', dir: true, multiple: true,
+      hint: 'Папка обходится рекурсивно вместе с подпапками; можно выбрать и отдельные файлы. '
+          + 'Скважина берётся из шапки LAS, имя рейса — из папки (для отдельных файлов — из имени файла).',
+      accept: '.las,.LAS', dir: true, multiple: true, alsoFiles: true,
     },
     {
       key: 'tops', title: 'Отбивки (горизонты)',
@@ -85,7 +86,10 @@
           + '<div class="imp-file" id="impFile_' + s.key + '">' + esc(label) + '</div>'
           + '</div>'
           + '<div class="imp-actions">'
-          + '<button class="btn-sm" data-pick="' + s.key + '">Выбрать…</button>'
+          + (s.alsoFiles
+              ? '<button class="btn-sm" data-pickdir="' + s.key + '">Папку…</button>'
+                + '<button class="btn-sm" data-pick="' + s.key + '">Файлы…</button>'
+              : '<button class="btn-sm" data-pick="' + s.key + '">Выбрать…</button>')
           + '<button class="btn-sm btn-primary-action" data-run="' + s.key + '">Выполнить</button>'
           + '</div>'
           + '<div class="imp-result" id="impRes_' + s.key + '"></div>'
@@ -94,7 +98,10 @@
       host.innerHTML = h;
 
       host.querySelectorAll('[data-pick]').forEach(function (b) {
-        b.onclick = function () { self.pick(b.getAttribute('data-pick')); };
+        b.onclick = function () { self.pick(b.getAttribute('data-pick'), false); };
+      });
+      host.querySelectorAll('[data-pickdir]').forEach(function (b) {
+        b.onclick = function () { self.pick(b.getAttribute('data-pickdir'), true); };
       });
       host.querySelectorAll('[data-run]').forEach(function (b) {
         b.onclick = function () { self.run(b.getAttribute('data-run')); };
@@ -103,14 +110,17 @@
 
     /* Диалог выбора обязан открываться синхронно внутри обработчика клика,
        иначе браузер считает жест пользователя потерянным и молча его игнорирует. */
-    pick: function (key) {
+    pick: function (key, asDirectory) {
       var s = SECTIONS.filter(function (x) { return x.key === key; })[0];
       if (!s) return;
       var self = this;
       var input = document.createElement('input');
       input.type = 'file';
       if (s.multiple) input.multiple = true;
-      if (s.dir) { input.webkitdirectory = true; input.directory = true; }
+      // Раздел ГИС умеет и папку, и отдельные файлы: раньше выбор папки был
+      // единственным вариантом и загрузить один LAS было нельзя.
+      var wantDir = (asDirectory === undefined) ? s.dir : !!asDirectory;
+      if (wantDir) { input.webkitdirectory = true; input.directory = true; }
       else if (s.accept) input.accept = s.accept;
       input.style.display = 'none';
       document.body.appendChild(input);
@@ -194,7 +204,7 @@
 
       // Крупные выгрузки режем на пачки — иначе один запрос на сотни мегабайт.
       var BATCH = 25;
-      var total = { imported: 0, failed: 0, wells: 0, errors: [], runs: {} };
+      var total = { imported: 0, failed: 0, wells: 0, errors: [], runs: {}, dups: [], marked: [] };
       for (var i = 0; i < files.length; i += BATCH) {
         var chunk = files.slice(i, i + BATCH);
         var fd = new FormData();
@@ -205,13 +215,18 @@
         });
         fd.append('paths', JSON.stringify(paths));
         fd.append('run_name_mode', 'folder');
+        fd.append('on_duplicate', this._dupPolicy || 'load');
         this._result('las', 'импорт ' + Math.min(i + BATCH, files.length) + ' из ' + files.length + '…', '');
         var r = await this._post('/api/projects/' + p + '/bulk-import', fd);
         total.imported += r.imported;
         total.failed += r.failed;
         total.wells += r.wells_created;
         (r.results || []).forEach(function (row) {
-          if (row.status === 'ok') total.runs[row.run] = (total.runs[row.run] || 0) + 1;
+          if (row.status === 'ok') {
+            total.runs[row.run] = (total.runs[row.run] || 0) + 1;
+            if (row.duplicate_of) total.marked.push(row);
+          }
+          else if (row.status === 'duplicate') total.dups.push(row);
           else if (total.errors.length < 8) total.errors.push(row.file + ' — ' + row.error);
         });
       }
@@ -223,11 +238,38 @@
         + (total.failed ? ', с ошибкой: <b>' + total.failed + '</b>' : '')
         + '<br>создано скважин: <b>' + total.wells + '</b>'
         + (runsTxt ? '<br>рейсы: ' + runsTxt : '');
+      if (total.dups.length) {
+        html += '<br><span class="imp-warn">пропущено как повтор: <b>' + total.dups.length + '</b></span>'
+          + '<div class="imp-dups">' + total.dups.slice(0, 10).map(function (d) {
+              return esc(d.well) + ' · ' + esc(d.run) + ' повторяет «' + esc(d.duplicate_of)
+                + '» (' + d.overlap + ' % интервала, методы ' + esc((d.methods || []).join(', ')) + ')';
+            }).join('<br>') + '</div>'
+          + '<button class="btn-sm" id="impForceDup">Всё равно загрузить повторы</button>';
+      }
+      if (total.marked.length) {
+        // Повтор того же исследования в том же интервале — сообщаем, но грузим:
+        // молча терять данные нельзя.
+        html += '<br><span class="imp-warn">похожи на повтор уже загруженного (<b>'
+          + total.marked.length + '</b>) — проверьте и при необходимости удалите рейс:</span>'
+          + '<div class="imp-dups">' + total.marked.slice(0, 10).map(function (d) {
+              return esc(d.well) + ' · ' + esc(d.run) + ' ≈ «' + esc(d.duplicate_of) + '»';
+            }).join('<br>') + '</div>';
+      }
       if (total.errors.length) {
         html += '<br><span class="imp-warn">' + esc(total.errors.join('; ')) + '</span>';
       }
       this._result('las', html, total.failed ? '' : 'imp-ok');
-      toast('success', 'Загружено файлов: ' + total.imported);
+      toast('success', 'Загружено файлов: ' + total.imported
+        + (total.dups.length ? ', пропущено повторов: ' + total.dups.length : ''));
+
+      var self = this;
+      var force = document.getElementById('impForceDup');
+      if (force) {
+        force.onclick = async function () {
+          self._dupPolicy = 'load';
+          try { await self.run('las'); } finally { self._dupPolicy = 'ask'; }
+        };
+      }
 
       var a = app();
       if (a) {

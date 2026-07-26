@@ -225,3 +225,35 @@ def test_plot_scale_options_are_geological():
     assert re.search(r'value="250" selected', block)
     # футо-дюймовых подписей остаться не должно
     assert "ft/in" not in html
+
+
+def test_duplicate_run_needs_same_interval_and_point_count():
+    """Разные проходы одного метода (С1/С2) повтором не считаются."""
+    import inspect
+    from backend.routers import ingest
+
+    src = inspect.getsource(ingest._find_duplicate_run)
+    assert "share >= 0.99 and same_points" in src
+    # доля считается по ШИРОКОМУ интервалу — иначе короткий рейс внутри
+    # длинного всегда выглядел бы полным повтором
+    assert "max(n_hi - n_lo, o_hi - o_lo)" in src
+
+
+def test_bulk_import_loads_duplicates_by_default():
+    """По умолчанию повтор грузится и помечается, а не выбрасывается молча."""
+    import inspect
+    from backend.routers import ingest
+
+    src = inspect.getsource(ingest.bulk_import)
+    assert 'on_duplicate: str = Form("load")' in inspect.getsource(ingest)
+    assert 'on_duplicate == "skip"' in src
+
+
+def test_duplicate_finder_endpoint_exists():
+    from backend.routers import ingest
+
+    assert hasattr(ingest, "find_duplicates")
+    import inspect
+    src = inspect.getsource(ingest.find_duplicates)
+    for key in ("identical_curves", "duplicate_depths", "duplicate_runs"):
+        assert key in src

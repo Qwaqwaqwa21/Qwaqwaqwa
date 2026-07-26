@@ -520,7 +520,7 @@ class GeoLogApp {
                 formData.append('file', file);
                 try {
                     GeoLoading.show(`Uploading ${file.name}...`);
-                    const resp = await fetch(`/api/wells/${this.currentWell.id}/upload-las`, { method: 'POST', body: formData });
+                    const resp = await fetch(`/api/wells/${this.currentWell.id}/upload-las`, { method: 'POST', headers: { 'X-User-Role': this.currentRole || 'viewer' }, body: formData });
                     if (!resp.ok) throw new Error(`Upload failed: ${resp.status}`);
                     const result = await resp.json();
                     this._applyUploadedLASVersion(result);
@@ -611,6 +611,7 @@ class GeoLogApp {
         if (view === 'tools') { this._initToolsPanel(); this.refreshJobs(); }
         if (view === 'production') { this.loadProduction(); this._initProductionCSVUpload(); }
         if (view === 'facies') this._initFaciesPanel();
+        if (view === 'vclay' || view === 'petrophysics') this._suggestGrCutoffs();
         if (view === 'striplog') this.renderStripLog();
         if (view === 'probability') this.runProbabilityPlot();
         if (view === 'moveable') this.runMoveableOil();
@@ -1024,6 +1025,7 @@ class GeoLogApp {
             this._initBulkUpload();
             this._initCSVUpload();
             await this._loadTvdTable(wellId);
+            this._loadCurveOverrides();
             if (typeof CurveTree !== 'undefined') await CurveTree.load(wellId);
             // Открытые вкладки анализа пересчитываются под новую скважину:
             // раньше инклинометрия продолжала показывать прежнюю траекторию.
@@ -1205,25 +1207,60 @@ class GeoLogApp {
     }
 
     /**
+     * Какие МЕТОДЫ записаны сразу в нескольких показываемых рейсах с
+     * перекрытием по глубине. Только их кривые имеет смысл различать
+     * пунктиром — если метод в скважине один, штриховать нечего.
+     */
+    _overlappingMethods() {
+        const out = new Set();
+        if (typeof CurveTree === 'undefined' || !CurveTree.data) return out;
+        const shown = new Set(CurveTree.shownRunIds().map(Number));
+        const byMethod = {};                       // метод → [{runId, top, base}]
+        for (const run of (CurveTree.data.runs || [])) {
+            if (!shown.has(Number(run.id))) continue;
+            for (const c of (run.curves || [])) {
+                if (!c.method || c.empty) continue;
+                const top = Number(c.top), base = Number(c.base);
+                if (!Number.isFinite(top) || !Number.isFinite(base)) continue;
+                (byMethod[c.method] = byMethod[c.method] || []).push({ runId: run.id, top, base });
+            }
+        }
+        for (const [method, list] of Object.entries(byMethod)) {
+            for (let i = 0; i < list.length && !out.has(method); i++) {
+                for (let j = i + 1; j < list.length; j++) {
+                    if (list[i].runId === list[j].runId) continue;
+                    const ov = Math.min(list[i].base, list[j].base) - Math.max(list[i].top, list[j].top);
+                    if (ov > 0) { out.add(method); break; }
+                }
+            }
+        }
+        return out;
+    }
+
+    /**
      * Кривая из соседнего рейса сохраняет ЦВЕТ МЕТОДА (БК синяя, ИК зелёная —
-     * так принято на планшете), а рейсы различаются пунктиром: сплошная —
-     * активный рейс, штриховая — наложенный.
+     * так принято на планшете). Пунктиром помечаются только те кривые, чей
+     * метод записан ещё и в другом рейсе в том же интервале, — иначе штриховка
+     * появлялась там, где различать нечего.
      */
     _applyExtraRunStyles(extra) {
         const DASHES = [[6, 4], [2, 3], [10, 4, 2, 4], [1, 3]];
         const runOrder = {};
+        const overlapping = this._overlappingMethods();
         (extra || []).forEach((e) => {
             const base = this.curveConfig[e.base];
             if (!base) return;
             const run = e.mnemonic.split('·')[1] || '';
             if (!(run in runOrder)) runOrder[run] = Object.keys(runOrder).length;
+            const method = this._methodOf(e.base);
+            const marked = method && overlapping.has(method);
             this.curveConfig[e.mnemonic] = {
                 ...base,
-                dash: DASHES[runOrder[run] % DASHES.length],
+                dash: marked ? DASHES[runOrder[run] % DASHES.length] : null,
                 // название метода сохраняем, добавляя рейс — иначе теряется
                 // и человекочитаемое имя, и признак категориальной колонки
                 name: (base.name ? `${base.name} · ${e.mnemonic.split('·')[1] || ''}` : e.mnemonic),
-                dashed: true,
+                dashed: marked,
             };
         });
         if (this.renderer) this.renderer.curveConfig = this.curveConfig;
@@ -1477,7 +1514,10 @@ class GeoLogApp {
                 // Данные всегда тянем по MD; ось TVD/абс. отметки — пересчёт при показе.
                 const mdStart = this._axisToMD(start);
                 const mdStop = this._axisToMD(stop);
-                const data = await this._fetchCurveRange(curves, mdStart, mdStop, { decimated: false });
+                // Копия: в неё дописываются кривые соседних рейсов, а исходный
+                // объект лежит в кэше — иначе при повторной загрузке метки
+                // накапливались и появлялись имена вида «ЛИТОЛОГИЯ·РИГИС_2».
+                const data = { ...(await this._fetchCurveRange(curves, mdStart, mdStop, { decimated: false })) };
                 // Галочка показа действует и на активный рейс: иначе снять его
                 // с планшета было нечем и «отключить всё» не получалось.
                 let activeCurves = curves;
@@ -1515,18 +1555,18 @@ class GeoLogApp {
                 if (bottomInput) bottomInput.value = viewStop?.toFixed(1) || '';
             }
 
-            // One-time auto-zoom to the interval that actually carries data.
-            // Real LAS often declares the full hole (0–TD) but logs only a deep
-            // interval; without this the curves render squeezed into a sliver.
+            // Первый показ скважины — на весь интервал данных.
+            //
+            // Берём объединение интервалов ВСЕХ показываемых рейсов: у РИГИС
+            // они узкие и не пересекаются (565–801, 1047–1132, 1646–1692), и
+            // при окне по одному рейсу остальные выглядят как «не загрузились».
             if (this._autoZoomPending && !preserveInputs) {
                 this._autoZoomPending = false;
-                const ext = this._finiteDataExtent();
+                const ext = this._shownRunsExtent() || this._finiteDataExtent();
                 if (ext) {
                     const [dTop, dBot] = ext;
-                    const span = stop - start;
-                    // only re-zoom if data covers noticeably less than the window
-                    if (span > 0 && (dBot - dTop) < span * 0.85 && (dBot - dTop) > 0) {
-                        const pad = Math.max((dBot - dTop) * 0.02, 0.5);
+                    if (dBot > dTop) {
+                        const pad = Math.max((dBot - dTop) * 0.01, 0.5);
                         if (topInput) topInput.value = (dTop - pad).toFixed(1);
                         if (bottomInput) bottomInput.value = (dBot + pad).toFixed(1);
                         await this._loadCurveData();   // flag cleared → no recursion
@@ -1534,6 +1574,20 @@ class GeoLogApp {
                 }
             }
         } catch (e) { console.error('Failed to load curve data:', e); }
+    }
+
+    /** Объединённый интервал глубин всех рейсов, отмеченных для показа. */
+    _shownRunsExtent() {
+        if (typeof CurveTree === 'undefined' || !CurveTree.data) return null;
+        const shown = new Set(CurveTree.shownRunIds().map(Number));
+        let lo = Infinity, hi = -Infinity;
+        for (const r of (CurveTree.data.runs || [])) {
+            if (!shown.has(Number(r.id))) continue;
+            const a = Number(r.start_depth), b = Number(r.stop_depth);
+            if (Number.isFinite(a)) lo = Math.min(lo, a);
+            if (Number.isFinite(b)) hi = Math.max(hi, b);
+        }
+        return (lo < hi) ? [lo, hi] : null;
     }
 
     // Depth range [top, bottom] over which any displayed curve has finite data.
@@ -1679,7 +1733,9 @@ class GeoLogApp {
         container.innerHTML = this.wells.map(w => `
             <div class="well-item" data-id="${w.id}" onclick="app.onWellClick(${w.id})">
                 <div class="well-name">${w.name}</div>
-                <div class="well-meta">${w.uwi || '—'} • ${w.log_run_count || 0} logs</div>
+                <div class="well-meta">${w.uwi || '—'} • рейсов: ${w.log_run_count || 0}</div>
+                <button class="well-del" title="Удалить скважину"
+                        onclick="event.stopPropagation(); app.deleteWell(${w.id})">✕</button>
             </div>
         `).join('');
     }
@@ -2840,16 +2896,27 @@ class GeoLogApp {
         } catch (e) { GeoToast.error('Failed to add well: ' + e.message); }
     }
 
+    /**
+     * Удалить скважину со всеми рейсами.
+     *
+     * Ниже по файлу было второе определение этого метода, которое затирало это
+     * и слало запрос голым fetch — без заголовка роли, поэтому сервер отвечал
+     * 403 и скважина не удалялась.
+     */
     async deleteWell(id) {
-        const r = await GeoModal.show({ title: 'Delete Well?', fields: [
-            { id: 'confirm', label: 'This will delete all log data. Type DELETE to confirm:', placeholder: 'DELETE' },
-        ]});
-        if (r?.confirm !== 'DELETE') return;
+        const well = (this.wells || []).find(w => w.id === id);
+        const name = well ? well.name : id;
+        if (!window.confirm(`Удалить скважину «${name}» со всеми рейсами и кривыми?`)) return;
         try {
             await this._api(`/wells/${id}`, { method: 'DELETE' });
+            if (this.currentWell?.id === id) {
+                this.currentWell = null;
+                this.currentLogRun = null;
+                if (typeof CurveTree !== 'undefined') CurveTree.data = null, CurveTree.render();
+            }
             if (this.projects.length > 0) await this.loadWells(this.projects[0].id);
-            GeoToast.success('Well deleted');
-        } catch (e) { GeoToast.error('Failed to delete well: ' + e.message); }
+            GeoToast.success(`Скважина «${name}» удалена`);
+        } catch (e) { GeoToast.error('Не удалось удалить скважину: ' + e.message); }
     }
 
     async deleteTop(id) {
@@ -3553,6 +3620,13 @@ class GeoLogApp {
      */
     _getCurveByFamily(family) {
         if (!this.renderer?.curveData) return null;
+
+        // Ручное сопоставление имеет приоритет: если автоопределение
+        // промахнулось, геолог задаёт кривую сам (кнопка «Кривые для расчётов»).
+        const manual = (this.curveOverrides || {})[family];
+        if (manual && Array.isArray(this.renderer.curveData[manual])) {
+            return { mnemonic: manual, data: this.renderer.curveData[manual], manual: true };
+        }
         const EXACT = {
             RT: ['RT', 'RESD', 'RILD', 'ILD', 'ILM', 'RILM', 'RLL3', 'RLLS', 'MSFL', 'RXO', 'SFLU', 'SFLA'],
             NPHI: ['NPHI', 'NPHI_LS'],
@@ -4065,7 +4139,12 @@ class GeoLogApp {
         const gr = grPack?.data;
 
         if (!rt || !nphi) {
-            result.innerHTML = '<p style="color:#8b949e">Need resistivity + NPHI-family curves for calculation.</p>';
+            const have = Object.keys(this.renderer.curveData || {})
+                .filter(m => !['DEPT', 'DEPTH', 'MD', 'TVD'].includes(String(m).toUpperCase()));
+            result.innerHTML = '<p style="color:#d29922">Для расчёта нужны кривая сопротивления и кривая пористости.<br>'
+                + 'Не распознаны: ' + (!rt ? 'сопротивление' : '') + (!rt && !nphi ? ', ' : '') + (!nphi ? 'пористость' : '') + '.<br>'
+                + 'Кривые скважины: ' + have.join(', ') + '</p>'
+                + '<button class="btn-sm btn-primary-action" onclick="app.openCurveMapping()">Указать кривые вручную</button>';
             return;
         }
 
@@ -4409,7 +4488,7 @@ class GeoLogApp {
     async downloadZonationReport() {
         if (!this.currentWell) return GeoToast.warn('No well selected');
         try {
-            const resp = await fetch(`/api/wells/${this.currentWell.id}/zonation-report`);
+            const resp = await fetch(`/api/wells/${this.currentWell.id}/zonation-report`, { headers: { 'X-User-Role': this.currentRole || 'viewer' } });
             if (!resp.ok) throw new Error(await resp.text());
             const blob = await resp.blob();
             const a = document.createElement('a');
@@ -6462,15 +6541,68 @@ class GeoLogApp {
     }
 
 
+    /**
+     * Подставить границы «чистая порода / глина» по фактическому ГК.
+     *
+     * Зашитые 20 и 120 — это API-единицы западного гамма-каротажа. Российский
+     * ГК в мкР/ч даёт значения 1–10, поэтому Vsh получался нулевым по всей
+     * скважине. Берём 5-й и 95-й перцентиль реальной кривой.
+     */
+    _suggestGrCutoffs(force = false) {
+        const pack = this._getCurveByFamily('GR');
+        if (!pack) return;
+        const valid = [];
+        for (const v of pack.data) if (v != null && isFinite(v)) valid.push(v);
+        if (valid.length < 50) return;
+        valid.sort((a, b) => a - b);
+        const clean = valid[Math.floor(valid.length * 0.05)];
+        const shale = valid[Math.floor(valid.length * 0.95)];
+        if (!(shale > clean)) return;
+
+        const put = (id, v) => {
+            const el = document.getElementById(id);
+            if (!el) return;
+            // не перетираем то, что пользователь уже поправил вручную
+            if (!force && el.dataset.userEdited === '1') return;
+            el.value = (Math.abs(v) < 10 ? v.toFixed(2) : v.toFixed(0));
+            if (!el._geologWatch) {
+                el._geologWatch = true;
+                el.addEventListener('input', () => { el.dataset.userEdited = '1'; });
+            }
+        };
+        put('vclGrClean', clean);
+        put('vclGrShale', shale);
+        put('lithGrMin', clean);
+        put('lithGrMax', shale);
+    }
+
     // --- Electrofacies Panel ---
     _initFaciesPanel() {
         if (!this.renderer) return;
         const container = document.getElementById('faciesCurveCheckboxes');
-        if (!container || container.children.length > 0) return;
-        const curves = Object.keys(this.renderer.curveData || {}).filter(k => k !== 'DEPT');
+        if (!container) return;
+        const curves = Object.keys(this.renderer.curveData || {})
+            .filter(k => !['DEPT', 'DEPTH', 'MD', 'TVD'].includes(String(k).toUpperCase()))
+            .filter(k => !(typeof RigisTracks !== 'undefined' && RigisTracks.isCategorical(k)));
+        // Предвыбор по МЕТОДАМ, а не по западным именам: раньше отмечались
+        // GR/RHOB/NPHI/RT, которых в промысловом файле нет, и кластеризация
+        // жаловалась «нужно минимум две кривые».
+        const preferred = [];
+        for (const fam of ['GR', 'RT', 'NPHI', 'RHOB', 'DT', 'CAL', 'SP']) {
+            const pack = this._getCurveByFamily(fam);
+            if (pack && curves.includes(pack.mnemonic) && !preferred.includes(pack.mnemonic)) {
+                preferred.push(pack.mnemonic);
+            }
+            if (preferred.length >= 4) break;
+        }
+        while (preferred.length < Math.min(3, curves.length)) {
+            const next = curves.find(c => !preferred.includes(c));
+            if (!next) break;
+            preferred.push(next);
+        }
         container.innerHTML = curves.map(mn =>
             '<label style="display:flex;align-items:center;gap:4px;font-size:12px;color:#c9d1d9;background:#161b22;padding:4px 8px;border-radius:4px;border:1px solid #30363d">' +
-            '<input type="checkbox" value="' + mn + '" ' + (['GR','RHOB','NPHI','RT'].includes(mn) ? 'checked' : '') + '> ' + mn + '</label>'
+            '<input type="checkbox" value="' + mn + '" ' + (preferred.includes(mn) ? 'checked' : '') + '> ' + mn + '</label>'
         ).join('');
     }
 
@@ -6479,7 +6611,7 @@ class GeoLogApp {
         const n = parseInt(document.getElementById('faciesN')?.value || '4');
         const checks = document.querySelectorAll('#faciesCurveCheckboxes input:checked');
         const curves = Array.from(checks).map(c => c.value);
-        if (curves.length < 2) return GeoToast.warn('Select at least 2 curves');
+        if (curves.length < 2) return GeoToast.warn('Отметьте минимум две кривые');
         GeoLoading.show('Running K-means clustering...');
         try {
             const result = await this._api('/wells/' + this.currentWell.id + '/electrofacies', {
@@ -6520,7 +6652,7 @@ class GeoLogApp {
         const n = parseInt(document.getElementById('faciesN')?.value || '4');
         const checks = document.querySelectorAll('#faciesCurveCheckboxes input:checked');
         const curves = Array.from(checks).map(c => c.value);
-        if (curves.length < 2) return GeoToast.warn('Select at least 2 curves');
+        if (curves.length < 2) return GeoToast.warn('Отметьте минимум две кривые');
         GeoLoading.show('Queueing electrofacies job...');
         try {
             const res = await this._api('/wells/' + this.currentWell.id + '/electrofacies-async', {
@@ -7636,7 +7768,7 @@ class GeoLogApp {
         if (!this.projects?.[0]) return;
         const pid = this.projects[0].id;
         try {
-            const resp = await fetch(`/api/projects/${pid}/tops-export`);
+            const resp = await fetch(`/api/projects/${pid}/tops-export`, { headers: { 'X-User-Role': this.currentRole || 'viewer' } });
             const text = await resp.text();
             const blob = new Blob([text], { type: 'text/csv' });
             const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
@@ -7648,7 +7780,7 @@ class GeoLogApp {
     async exportTopsPetrel() {
         if (!this.currentWell) return;
         try {
-            const resp = await fetch(`/api/wells/${this.currentWell.id}/tops-petrel`);
+            const resp = await fetch(`/api/wells/${this.currentWell.id}/tops-petrel`, { headers: { 'X-User-Role': this.currentRole || 'viewer' } });
             const text = await resp.text();
             const blob = new Blob([text], { type: 'text/csv' });
             const a = document.createElement('a');
@@ -8168,7 +8300,7 @@ class GeoLogApp {
         if (!this.projects.length) return [];
         const pid = this.projects[0]?.id;
         try {
-            const resp = await fetch(`/api/audit-log?project_id=${pid}&limit=50`);
+            const resp = await fetch(`/api/audit-log?project_id=${pid}&limit=50`, { headers: { 'X-User-Role': this.currentRole || 'viewer' } });
             return await resp.json();
         } catch { return []; }
     }
@@ -8207,7 +8339,7 @@ class GeoLogApp {
         const curveX = document.getElementById('matrixCurveX')?.value || 'GR';
         const curveY = document.getElementById('matrixCurveY')?.value || 'RT';
         try {
-            const resp = await fetch(`/api/projects/${pid}/crossplot-matrix?curve_x=${curveX}&curve_y=${curveY}`);
+            const resp = await fetch(`/api/projects/${pid}/crossplot-matrix?curve_x=${curveX}&curve_y=${curveY}`, { headers: { 'X-User-Role': this.currentRole || 'viewer' } });
             const data = await resp.json();
             this._renderMatrixPlot(data);
         } catch (e) {
@@ -8306,7 +8438,7 @@ class GeoLogApp {
         if (!this.currentWell) { GeoToast.warn('Select a well first'); return; }
         GeoLoading.show('Generating report...');
         try {
-            const resp = await fetch(`/api/wells/${this.currentWell.id}/report`);
+            const resp = await fetch(`/api/wells/${this.currentWell.id}/report`, { headers: { 'X-User-Role': this.currentRole || 'viewer' } });
             const data = await resp.json();
             GeoLoading.hide();
             this._renderReportPreview(data);
@@ -8378,7 +8510,7 @@ class GeoLogApp {
 
     async _exportPackage(wid) {
         try {
-            const resp = await fetch(`/api/wells/${wid}/export-package`);
+            const resp = await fetch(`/api/wells/${wid}/export-package`, { headers: { 'X-User-Role': this.currentRole || 'viewer' } });
             const data = await resp.json();
             const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
             const a = document.createElement('a');
@@ -8406,14 +8538,6 @@ class GeoLogApp {
         this.editCurrentWell();
     }
 
-    deleteWell(wid) {
-        if (!confirm('Delete this well and all its data?')) return;
-        fetch(`/api/wells/${wid}`, { method: 'DELETE' }).then(() => {
-            GeoToast.success('Well deleted');
-            this.loadProjects();
-        });
-    }
-
     // ─── Sprint 27: Tornado Chart ───────────────────────────────
     async runTornado() {
         if (!this.currentWell) { GeoToast.warn('Select a well first'); return; }
@@ -8421,7 +8545,7 @@ class GeoLogApp {
         GeoLoading.show('Running tornado analysis...');
         try {
             const resp = await fetch(`/api/wells/${this.currentWell.id}/tornado`, {
-                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                method: 'POST', headers: { 'Content-Type': 'application/json', 'X-User-Role': this.currentRole || 'viewer' },
                 body: JSON.stringify({ variation_pct: parseFloat(variation) })
             });
             const data = await resp.json();
@@ -8478,7 +8602,7 @@ class GeoLogApp {
         GeoLoading.show('Computing Vclay models...');
         try {
             const resp = await fetch(`/api/wells/${this.currentWell.id}/vcl-models`, {
-                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                method: 'POST', headers: { 'Content-Type': 'application/json', 'X-User-Role': this.currentRole || 'viewer' },
                 body: JSON.stringify({ gr_clean: grClean, gr_shale: grShale })
             });
             const data = await resp.json();
@@ -8617,7 +8741,7 @@ class GeoLogApp {
         GeoLoading.show('Calibrating...');
         try {
             const resp = await fetch(`/api/wells/${this.currentWell.id}/core-calibration`, {
-                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                method: 'POST', headers: { 'Content-Type': 'application/json', 'X-User-Role': this.currentRole || 'viewer' },
                 body: JSON.stringify({ core_depth: depths, core_phi: phi, core_k: perm, log_curve: curve })
             });
             const data = await resp.json();
@@ -8739,7 +8863,7 @@ class GeoLogApp {
         GeoLoading.show('Running enhanced QC...');
         try {
             const resp = await fetch(`/api/wells/${this.currentWell.id}/qc-autofix`, {
-                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                method: 'POST', headers: { 'Content-Type': 'application/json', 'X-User-Role': this.currentRole || 'viewer' },
                 body: JSON.stringify({})
             });
             const data = await resp.json();
@@ -9074,7 +9198,7 @@ class GeoLogApp {
         GeoLoading.show('Generating borehole image...');
         try {
             const resp = await fetch(`/api/wells/${this.currentWell.id}/image-log`, {
-                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                method: 'POST', headers: { 'Content-Type': 'application/json', 'X-User-Role': this.currentRole || 'viewer' },
                 body: JSON.stringify({})
             });
             const data = await resp.json();
@@ -9167,7 +9291,7 @@ class GeoLogApp {
         GeoLoading.show('Finding analog wells...');
         try {
             const pid = this.projects[0]?.id;
-            const resp = await fetch(`/api/projects/${pid}/well-analogs?reference_well_id=${this.currentWell.id}`);
+            const resp = await fetch(`/api/projects/${pid}/well-analogs?reference_well_id=${this.currentWell.id}`, { headers: { 'X-User-Role': this.currentRole || 'viewer' } });
             const data = await resp.json();
             GeoLoading.hide();
             if (data.detail) { GeoToast.error(data.detail); return; }
@@ -9262,7 +9386,7 @@ class GeoLogApp {
             ],
             onConfirm: async (vals) => {
                 try {
-                    await fetch('/api/users', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(vals) });
+                    await fetch('/api/users', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-User-Role': this.currentRole || 'viewer' }, body: JSON.stringify(vals) });
                     GeoToast.success('User created');
                     this.loadUsers();
                 } catch { GeoToast.error('Failed to create user'); }
@@ -9272,7 +9396,7 @@ class GeoLogApp {
 
     async deleteUser(uid) {
         if (!confirm('Delete this user?')) return;
-        await fetch(`/api/users/${uid}`, { method: 'DELETE' });
+        await fetch(`/api/users/${uid}`, { method: 'DELETE', headers: { 'X-User-Role': this.currentRole || 'viewer' } });
         GeoToast.success('User deleted');
         this.loadUsers();
     }
@@ -9461,7 +9585,7 @@ class GeoLogApp {
                 include_curve_summary: includeCurves ? 'true' : 'false',
                 include_qc: includeQc ? 'true' : 'false',
             });
-            const resp = await fetch(`/api/wells/${this.currentWell.id}/report-pdf?${qs.toString()}`);
+            const resp = await fetch(`/api/wells/${this.currentWell.id}/report-pdf?${qs.toString()}`, { headers: { 'X-User-Role': this.currentRole || 'viewer' } });
             if (!resp.ok) throw new Error('HTTP ' + resp.status);
             const blob = await resp.blob();
             const url = URL.createObjectURL(blob);
@@ -9651,7 +9775,7 @@ class GeoLogApp {
             const projects = await this._api('/projects/');
             if (!projects.length) { GeoToast.warn('No project found'); return; }
             const pid = projects[0].id;
-            const resp = await fetch(`/api/projects/${pid}/tops-export`);
+            const resp = await fetch(`/api/projects/${pid}/tops-export`, { headers: { 'X-User-Role': this.currentRole || 'viewer' } });
             if (!resp.ok) throw new Error('HTTP ' + resp.status);
             const blob = await resp.blob();
             const url = URL.createObjectURL(blob);
@@ -9662,7 +9786,7 @@ class GeoLogApp {
             // Also export each well LAS
             for (const w of wells) {
                 try {
-                    const lasResp = await fetch(`/api/wells/${w.id}/export-las`);
+                    const lasResp = await fetch(`/api/wells/${w.id}/export-las`, { headers: { 'X-User-Role': this.currentRole || 'viewer' } });
                     if (lasResp.ok) {
                         const lasBlob = await lasResp.blob();
                         const lasUrl = URL.createObjectURL(lasBlob);
@@ -9747,7 +9871,7 @@ class GeoLogApp {
             const runs = await this._api(`/wells/${wellId}/log-runs`);
             if (!runs.length) return;
             const run = runs[runs.length-1];
-            const resp = await fetch(`/api/log-runs/${run.id}/data-decimated?max_points=200&curve_mnemonics=GR`);
+            const resp = await fetch(`/api/log-runs/${run.id}/data-decimated?max_points=200&curve_mnemonics=GR`, { headers: { 'X-User-Role': this.currentRole || 'viewer' } });
             if (!resp.ok) return;
             const data = await resp.json();
             const gr = data.GR || data.data?.GR || [];
@@ -9993,6 +10117,105 @@ class GeoLogApp {
                 GeoToast.info(`Настройки применены: ${mnemonic}`);
             });
         };
+    }
+
+    // ─── Ручное сопоставление «семейство → кривая» ───────────────────
+
+    /** Семейства, которые используют расчётные модули. */
+    get _curveFamilies() {
+        return [
+            ['GR', 'Гамма-каротаж (ГК)'],
+            ['RT', 'Сопротивление (ИК / БК / КС)'],
+            ['RXO', 'Сопротивление промытой зоны (МКЗ)'],
+            ['NPHI', 'Нейтронный / пористость (НГК, Кп)'],
+            ['PHIE', 'Эффективная пористость (Кп)'],
+            ['RHOB', 'Плотностной (ГГКп)'],
+            ['DT', 'Акустический (АК)'],
+            ['CAL', 'Каверномер (ДС)'],
+            ['SP', 'ПС'],
+            ['SW', 'Водонасыщенность / Кнг'],
+            ['VSH', 'Глинистость (Кгл)'],
+        ];
+    }
+
+    _overrideKey() {
+        return 'geolog_curve_map_' + (this.currentWell?.id || 0);
+    }
+
+    _loadCurveOverrides() {
+        try { this.curveOverrides = JSON.parse(localStorage.getItem(this._overrideKey()) || '{}'); }
+        catch { this.curveOverrides = {}; }
+    }
+
+    /** Окно ручного сопоставления кривых для всех расчётных модулей. */
+    openCurveMapping() {
+        if (!this.currentWell || !this.renderer?.curveData) {
+            GeoToast.warn('Сначала выберите скважину');
+            return;
+        }
+        this._loadCurveOverrides();
+        const names = Object.keys(this.renderer.curveData)
+            .filter(m => !['DEPT', 'DEPTH', 'MD', 'TVD'].includes(String(m).toUpperCase()));
+        const esc = (v) => String(v).replace(/"/g, '&quot;');
+
+        const rows = this._curveFamilies.map(([fam, label]) => {
+            const auto = this._getCurveByFamily(fam);
+            const cur = this.curveOverrides[fam] || '';
+            const opts = ['<option value="">— автоматически —</option>']
+                .concat(names.map(m => `<option value="${esc(m)}" ${m === cur ? 'selected' : ''}>${esc(m)}</option>`))
+                .join('');
+            const autoTxt = auto && !auto.manual ? `авто: ${auto.mnemonic}` : (auto ? '' : 'не найдено');
+            return `<tr>
+                <td style="padding:4px 8px;color:#c9d1d9">${label}</td>
+                <td style="padding:4px 8px"><select data-fam="${fam}" style="background:#161b22;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:4px;min-width:170px">${opts}</select></td>
+                <td style="padding:4px 8px;color:${auto ? '#6e7681' : '#d29922'};font-size:11px">${autoTxt}</td>
+            </tr>`;
+        }).join('');
+
+        const html = `<div style="padding:14px;max-width:640px">
+            <p style="color:#8b949e;font-size:12px;margin:0 0 10px">
+                Если программа не распознала кривую сама, укажите её здесь — выбор
+                действует во всех расчётах (петрофизика, Pickett, Hingle, Buckles,
+                кластеризация) и запоминается для этой скважины.</p>
+            <table style="width:100%;border-collapse:collapse;font-size:12px">${rows}</table>
+            <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
+                <button id="cmReset" style="background:#30363d;color:#c9d1d9;border:none;border-radius:6px;padding:6px 14px;cursor:pointer">Сбросить</button>
+                <button onclick="GeoModal.close()" style="background:#30363d;color:#c9d1d9;border:none;border-radius:6px;padding:6px 14px;cursor:pointer">Отмена</button>
+                <button id="cmApply" style="background:#238636;color:#fff;border:none;border-radius:6px;padding:6px 14px;cursor:pointer">Применить</button>
+            </div>
+        </div>`;
+        GeoModal.showHtml(html, 'Кривые для расчётов');
+
+        document.getElementById('cmReset')?.addEventListener('click', () => {
+            this.curveOverrides = {};
+            localStorage.removeItem(this._overrideKey());
+            GeoModal.close();
+            GeoToast.info('Сопоставление сброшено — снова автоопределение');
+        });
+        document.getElementById('cmApply')?.addEventListener('click', () => {
+            const map = {};
+            document.querySelectorAll('[data-fam]').forEach(sel => {
+                if (sel.value) map[sel.getAttribute('data-fam')] = sel.value;
+            });
+            this.curveOverrides = map;
+            localStorage.setItem(this._overrideKey(), JSON.stringify(map));
+            GeoModal.close();
+            GeoToast.success('Сопоставление сохранено');
+            this._refreshActiveAnalysis();
+        });
+    }
+
+    /** Пересчитать открытую вкладку анализа после смены сопоставления. */
+    _refreshActiveAnalysis() {
+        const v = this.currentView;
+        const map = {
+            petrophysics: '_renderPetrophysics', pickett: '_renderPickettPlot',
+            mnplot: '_renderMNPlot', buckles: 'runBuckles', hingle: 'runHingle',
+            moveable: 'runMoveableOil', probability: 'runProbabilityPlot',
+            vclay: 'runVclModels', facies: '_initFaciesPanel', striplog: 'renderStripLog',
+        };
+        const fn = map[v];
+        if (fn && typeof this[fn] === 'function') { try { this[fn](); } catch (e) {} }
     }
 
     /** Единица глубины активной скважины для подписей интерфейса. */

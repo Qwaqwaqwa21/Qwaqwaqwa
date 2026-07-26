@@ -1608,3 +1608,14 @@ tr:hover td {
 .clipboard-panel.collapsed .clipboard-content { display: none; }
 .clipboard-panel.collapsed { max-height: none; flex: 0 0 auto; }
 .ct-hint { color: #6e7681; font-size: 10px; line-height: 1.4; margin-top: 3px; }
+.imp-dups { margin: 6px 0; color: #8b949e; font-size: 11px; line-height: 1.5; }
+
+/* кнопка удаления скважины в списке */
+.well-item { position: relative; }
+.well-del {
+    position: absolute; top: 8px; right: 8px;
+    background: none; border: 0; color: #6e7681; cursor: pointer;
+    font-size: 13px; padding: 0 3px; opacity: 0; line-height: 1;
+}
+.well-item:hover .well-del { opacity: 1; }
+.well-del:hover { color: #f85149; }

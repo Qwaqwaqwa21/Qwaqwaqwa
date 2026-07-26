@@ -192,6 +192,47 @@ def _persist_run(db: Session, well: Well, las, filename: str,
     return run
 
 
+def _find_duplicate_run(db: Session, well: Well, las, mnemonics: List[str]):
+    """Есть ли в скважине рейс с тем же набором методов и тем же интервалом.
+
+    Считаем повтором, если совпадает набор методов ГИС и интервалы глубин
+    перекрываются больше чем на 90 % — именно так выглядит случайная повторная
+    загрузка того же файла. Разные интервалы одного метода (С1/С2/D у
+    заказчика) повтором НЕ считаются.
+    """
+    new_keys = {m.key for m in (method_for_mnemonic(x) for x in mnemonics) if m}
+    if not new_keys:
+        return None
+    n_lo, n_hi = float(las.well.start or 0), float(las.well.stop or 0)
+    if not (n_hi > n_lo):
+        return None
+
+    for run in well.log_runs:
+        try:
+            defs = json.loads(run.curves_json or "[]")
+        except (ValueError, TypeError):
+            defs = []
+        old_keys = {
+            m.key for m in (method_for_mnemonic(d.get("mnemonic", "")) for d in defs) if m
+        }
+        if not old_keys or old_keys != new_keys:
+            continue
+        o_lo, o_hi = float(run.start_depth or 0), float(run.stop_depth or 0)
+        if not (o_hi > o_lo):
+            continue
+        overlap = max(0.0, min(n_hi, o_hi) - max(n_lo, o_lo))
+        share = overlap / max(n_hi - n_lo, o_hi - o_lo)   # по ШИРОКОМУ интервалу
+        same_points = int(run.num_points or 0) == int(len(las.depth))
+        if share >= 0.99 and same_points:
+            return {
+                "id": run.id,
+                "run": run.name or run.filename,
+                "overlap": round(share * 100, 1),
+                "methods": sorted(new_keys),
+            }
+    return None
+
+
 def _apply_header_to_well(well: Well, las) -> None:
     """Единицы, координаты и альтитуда из шапки LAS — если их ещё нет."""
     if las.well.depth_unit:
@@ -219,6 +260,7 @@ async def bulk_import(
     paths: str = Form("[]"),
     run_name_mode: str = Form("folder"),   # folder | file | fixed
     run_name: str = Form(""),
+    on_duplicate: str = Form("load"),      # load — загрузить и пометить, skip — пропустить
     db: Session = Depends(get_db),
 ):
     """Импорт множества LAS: скважина определяется из шапки, рейс — из папки."""
@@ -235,6 +277,7 @@ async def bulk_import(
         _clean_name(w.name).lower(): w
         for w in db.query(Well).filter(Well.project_id == pid).all()
     }
+    created_ids: set = set()   # скважины, созданные этим импортом
 
     results: List[Dict[str, Any]] = []
     created_wells = 0
@@ -264,6 +307,7 @@ async def bulk_import(
                 db.add(well)
                 db.flush()
                 wells_by_name[key] = well
+                created_ids.add(well.id)
                 created_wells += 1
 
             mnems = [c.mnemonic for c in las.curves if c.mnemonic.upper() not in DEPTH_MNEMONICS]
@@ -277,6 +321,22 @@ async def bulk_import(
             kind = _classify(rname, mnems)
             _apply_header_to_well(well, las)
 
+            # Скважина уже была в проекте — проверяем, не грузим ли повторно
+            # тот же набор методов в том же интервале.
+            dup = None
+            if kind != "inkl" and well.id not in created_ids:
+                dup = _find_duplicate_run(db, well, las, mnems)
+            if dup is not None and on_duplicate == "skip":
+                # Пропускаем только по явному требованию: молча терять данные
+                # нельзя, поэтому по умолчанию повтор грузится и помечается.
+                row.update(status="duplicate", well=well.name, run=rname,
+                           kind=kind, duplicate_of=dup["run"],
+                           duplicate_id=dup["id"], overlap=dup["overlap"],
+                           methods=dup["methods"])
+                db.rollback()
+                results.append(row)
+                continue
+
             if kind == "inkl":
                 n = _store_deviation(db, well, las)
                 if not n:
@@ -287,6 +347,9 @@ async def bulk_import(
                 run = _persist_run(db, well, las, fname, rname, kind)
                 row.update(status="ok", well=well.name, run=rname,
                            curves=len(las.curves), kind=kind, run_id=run.id)
+                if dup is not None:
+                    row.update(duplicate_of=dup["run"], duplicate_id=dup["id"],
+                               overlap=dup["overlap"], methods=dup["methods"])
             db.commit()
         except Exception as exc:  # noqa: BLE001 — отчёт по каждому файлу отдельно
             db.rollback()
@@ -294,11 +357,13 @@ async def bulk_import(
         results.append(row)
 
     ok = sum(1 for r in results if r["status"] == "ok")
+    dups = sum(1 for r in results if r["status"] == "duplicate")
     return {
         "project_id": pid,
         "files": len(results),
         "imported": ok,
-        "failed": len(results) - ok,
+        "duplicates": dups,
+        "failed": len(results) - ok - dups,
         "wells_created": created_wells,
         "results": results,
     }
@@ -553,6 +618,100 @@ def delete_curve(rid: int, mnemonic: str, db: Session = Depends(get_db)):
         pass
     db.commit()
     return {"status": "ok", "deleted": mnemonic, "run_id": rid}
+
+
+# ── Поиск полных дублей ──────────────────────────────────────────────────────
+
+@router.get("/api/wells/{wid}/duplicates")
+def find_duplicates(wid: int, db: Session = Depends(get_db)):
+    """Полные дубли внутри скважины: одинаковые кривые и повторы по глубине.
+
+    Проверяем три вещи:
+      * пары кривых с полностью совпадающими значениями (в т.ч. в разных рейсах);
+      * повторяющиеся значения глубины внутри рейса;
+      * рейсы с одинаковым набором методов и перекрытием интервала.
+    """
+    well = db.query(Well).filter(Well.id == wid).first()
+    if not well:
+        raise HTTPException(404, "Скважина не найдена")
+
+    # ── кривые ──
+    series = []            # (рейс, мнемоника, массив)
+    depth_dups = []
+    for run in well.log_runs:
+        rows = db.query(CurveData).filter(CurveData.log_run_id == run.id).all()
+        by_name = {c.mnemonic: c for c in rows}
+        dkey = next((k for k in ("DEPT", "DEPTH", "MD", "TVD") if k in by_name), None)
+        if dkey and by_name[dkey].data_binary:
+            d = np.frombuffer(by_name[dkey].data_binary, dtype=np.float64)
+            uniq, counts = np.unique(d[np.isfinite(d)], return_counts=True)
+            rep = uniq[counts > 1]
+            if rep.size:
+                depth_dups.append({
+                    "run": run.name or run.filename, "run_id": run.id,
+                    "count": int(rep.size),
+                    "examples": [round(float(x), 3) for x in rep[:10]],
+                })
+        for c in rows:
+            if c.mnemonic == dkey or not c.data_binary:
+                continue
+            arr = np.frombuffer(c.data_binary, dtype=np.float64)
+            if np.isfinite(arr).sum() == 0:
+                continue
+            series.append((run, c.mnemonic, arr))
+
+    curve_dups = []
+    for i in range(len(series)):
+        run_a, name_a, a = series[i]
+        for j in range(i + 1, len(series)):
+            run_b, name_b, b = series[j]
+            if len(a) != len(b):
+                continue
+            same = np.array_equal(np.nan_to_num(a, nan=-9.87e37),
+                                  np.nan_to_num(b, nan=-9.87e37))
+            if same:
+                curve_dups.append({
+                    "a": {"run": run_a.name or run_a.filename, "run_id": run_a.id, "curve": name_a},
+                    "b": {"run": run_b.name or run_b.filename, "run_id": run_b.id, "curve": name_b},
+                    "points": int(len(a)),
+                })
+
+    # ── рейсы ──
+    run_dups = []
+    runs = list(well.log_runs)
+    for i in range(len(runs)):
+        for j in range(i + 1, len(runs)):
+            ra, rb = runs[i], runs[j]
+            try:
+                ka = {m.key for m in (method_for_mnemonic(d.get("mnemonic", ""))
+                                      for d in json.loads(ra.curves_json or "[]")) if m}
+                kb = {m.key for m in (method_for_mnemonic(d.get("mnemonic", ""))
+                                      for d in json.loads(rb.curves_json or "[]")) if m}
+            except (ValueError, TypeError):
+                continue
+            if not ka or ka != kb:
+                continue
+            a_lo, a_hi = float(ra.start_depth or 0), float(ra.stop_depth or 0)
+            b_lo, b_hi = float(rb.start_depth or 0), float(rb.stop_depth or 0)
+            if not (a_hi > a_lo and b_hi > b_lo):
+                continue
+            ov = max(0.0, min(a_hi, b_hi) - max(a_lo, b_lo))
+            share = ov / min(a_hi - a_lo, b_hi - b_lo)
+            if share >= 0.9:
+                run_dups.append({
+                    "a": {"run": ra.name or ra.filename, "run_id": ra.id},
+                    "b": {"run": rb.name or rb.filename, "run_id": rb.id},
+                    "overlap_pct": round(share * 100, 1),
+                    "methods": sorted(ka),
+                })
+
+    return {
+        "well_id": wid, "well": well.name,
+        "identical_curves": curve_dups,
+        "duplicate_depths": depth_dups,
+        "duplicate_runs": run_dups,
+        "total": len(curve_dups) + len(depth_dups) + len(run_dups),
+    }
 
 
 # ── MD → TVD ─────────────────────────────────────────────────────────────────

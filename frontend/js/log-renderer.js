@@ -681,14 +681,14 @@ class LogRenderer {
         } catch { return false; }
     }
 
-    /** Короткая запись границы шкалы для подписи в шапке. */
+    /** Короткая запись границы шкалы: не длиннее двух знаков после запятой. */
     _fmtScale(v) {
         if (!Number.isFinite(v)) return '?';
         const a = Math.abs(v);
         if (a >= 1000) return String(Math.round(v));
         if (a >= 10) return v.toFixed(0);
         if (a >= 1) return v.toFixed(1);
-        return v.toFixed(2).replace(/0$/, '');
+        return v.toFixed(2);
     }
 
     _getTrackAtX(x) {
@@ -1418,6 +1418,9 @@ class LogRenderer {
                 ctx.restore();
             });
         }
+        // _drawCurve подписывает границы шкалы только для одной кривой трека —
+        // ему нужен сам трек, чтобы понять, для какой именно.
+        this._currentTrack = track;
         for (const mnemonic of activeCurves) {
             if (catCurves.indexOf(mnemonic) !== -1) continue;
             this._drawCurve(ctx, mnemonic, x, plotTop, plotBottom, width, useLog);
@@ -1607,13 +1610,24 @@ class LogRenderer {
             }
         }
 
-        // Scale labels
-        ctx.fillStyle = color;
-        ctx.font = '9px IBM Plex Mono';
-        ctx.textAlign = 'left';
-        ctx.fillText(scale[0].toString(), trackX + 2, plotBottom + 12);
-        ctx.textAlign = 'right';
-        ctx.fillText(scale[1].toString(), trackX + width - 2, plotBottom + 12);
+        // Подпись границ шкалы под треком.
+        //
+        // Раньше её рисовала КАЖДАЯ кривая в одном и том же месте, полным
+        // числом с плавающей точкой — под планшетом получалась мешанина вида
+        // «0.008100000000007». Теперь подписывается одна кривая: выделенная
+        // кликом, иначе первая в треке; значения округляются до сотых.
+        const trackCurves = (this._currentTrack?.curves || [])
+            .filter(m => this.curveData[m] && this.curveData[m].length > 0);
+        const labelFor = trackCurves.includes(this.highlightedCurve)
+            ? this.highlightedCurve : trackCurves[0];
+        if (mnemonic === labelFor) {
+            ctx.fillStyle = color;
+            ctx.font = '9px IBM Plex Mono';
+            ctx.textAlign = 'left';
+            ctx.fillText(this._fmtScale(scale[0]), trackX + 2, plotBottom + 12);
+            ctx.textAlign = 'right';
+            ctx.fillText(this._fmtScale(scale[1]), trackX + width - 2, plotBottom + 12);
+        }
     }
 
     _drawHeaders(ctx, startX, totalWidth, completionTrackWidth = 0) {
