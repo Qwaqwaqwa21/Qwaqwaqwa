@@ -26,70 +26,76 @@
   function makePattern(ctx, kind, color) {
     var key = kind + '|' + color;
     if (PATTERNS[key]) return PATTERNS[key];
+    // Плитка 16×16: на 12 пикселях кирпич известняка и ромб доломита
+    // сливались в кашу и штриховку было не разобрать.
     var c = document.createElement('canvas');
-    c.width = 12; c.height = 12;
+    c.width = 16; c.height = 16;
     var g = c.getContext('2d');
-    g.fillStyle = color; g.fillRect(0, 0, 12, 12);
-    g.strokeStyle = 'rgba(15,20,25,.75)'; g.fillStyle = 'rgba(15,20,25,.75)';
-    g.lineWidth = 1;
-    function brick(off) {           // известняк — кирпичная кладка
+    g.fillStyle = color; g.fillRect(0, 0, 16, 16);
+    g.strokeStyle = 'rgba(10,14,20,.85)'; g.fillStyle = 'rgba(10,14,20,.85)';
+    g.lineWidth = 1.1;
+    g.lineCap = 'square';
+    // Условные знаки — как на геологической колонке.
+    function brick() {              // известняк: кирпичная кладка со сдвигом ряда
       g.beginPath();
-      g.moveTo(0, 4 + off); g.lineTo(12, 4 + off);
-      g.moveTo(0, 10 + off); g.lineTo(12, 10 + off);
-      g.moveTo(6, 4 + off); g.lineTo(6, 10 + off);
-      g.moveTo(0, 10 + off); g.lineTo(0, 12 + off);
+      g.moveTo(0, 8); g.lineTo(16, 8);
+      g.moveTo(0, 16); g.lineTo(16, 16);
+      g.moveTo(0, 0); g.lineTo(16, 0);
+      g.moveTo(8, 0); g.lineTo(8, 8);      // верхний ряд — шов посередине
+      g.moveTo(0, 8); g.lineTo(0, 16);     // нижний ряд — шов со сдвигом
+      g.moveTo(16, 8); g.lineTo(16, 16);
       g.stroke();
     }
-    function dots(n) {              // песчаник — точки
-      for (var i = 0; i < n; i++) {
-        var x = (i * 5 + 2) % 11, y = (i * 7 + 3) % 11;
-        g.beginPath(); g.arc(x, y, 1.05, 0, 6.283); g.fill();
+    function dots(n) {              // песчаник — крупная зернистость
+      var pts = [[3, 3], [11, 5], [6, 9], [13, 12], [2, 13], [9, 15], [15, 2]];
+      for (var i = 0; i < Math.min(n, pts.length); i++) {
+        g.beginPath(); g.arc(pts[i][0], pts[i][1], 1.3, 0, 6.283); g.fill();
       }
     }
     function hlines(step) {         // глина/аргиллит — горизонтальные линии
       g.beginPath();
-      for (var y = 2; y < 12; y += step) { g.moveTo(0, y); g.lineTo(12, y); }
+      for (var y = 3; y < 16; y += step) { g.moveTo(0, y); g.lineTo(16, y); }
       g.stroke();
     }
-    function rhomb() {              // доломит — ромбы
+    function rhomb() {              // доломит — ромбическая сетка
       g.beginPath();
-      g.moveTo(6, 1); g.lineTo(11, 6); g.lineTo(6, 11); g.lineTo(1, 6); g.closePath();
+      g.moveTo(8, 0); g.lineTo(16, 8); g.lineTo(8, 16); g.lineTo(0, 8); g.closePath();
       g.stroke();
     }
-    function dashes() {             // алевролит — штрихи
+    function dashes() {             // алевролит — прерывистые штрихи
       g.beginPath();
-      g.moveTo(1, 3); g.lineTo(5, 3); g.moveTo(7, 8); g.lineTo(11, 8);
+      g.moveTo(1, 4); g.lineTo(7, 4);
+      g.moveTo(9, 11); g.lineTo(15, 11);
       g.stroke();
     }
     function cross() {              // ангидрит/гипс — косая сетка
       g.beginPath();
-      g.moveTo(0, 0); g.lineTo(12, 12); g.moveTo(12, 0); g.lineTo(0, 12);
+      g.moveTo(0, 0); g.lineTo(16, 16); g.moveTo(16, 0); g.lineTo(0, 16);
       g.stroke();
     }
     switch (kind) {
-      case 'limestone': brick(0); break;
-      case 'limestone_dol': brick(0); rhomb(); break;
-      case 'limestone_clay': brick(0); hlines(6); break;
-      case 'carbonate': brick(0); break;
+      case 'limestone': case 'carbonate': brick(); break;
+      case 'limestone_dol': brick(); rhomb(); break;
+      case 'limestone_clay': brick(); hlines(8); break;
       case 'dolomite': rhomb(); break;
-      case 'dolomite_clay': rhomb(); hlines(6); break;
+      case 'dolomite_clay': rhomb(); hlines(8); break;
       case 'sand': dots(7); break;
-      case 'sand_clay': dots(5); hlines(6); break;
+      case 'sand_clay': dots(5); hlines(8); break;
       case 'sand_silt': dots(5); dashes(); break;
-      case 'sand_carb': dots(5); brick(0); break;
+      case 'sand_carb': dots(4); brick(); break;
       case 'silt': dashes(); break;
-      case 'silt_clay': dashes(); hlines(6); break;
-      case 'clay': case 'shale': hlines(3); break;
-      case 'marl': hlines(4); brick(0); break;
+      case 'silt_clay': dashes(); hlines(8); break;
+      case 'clay': case 'shale': hlines(4); break;
+      case 'marl': brick(); hlines(8); break;
       case 'gypsum': case 'anhydrite': cross(); break;
-      case 'coal': g.fillStyle = '#12161c'; g.fillRect(0, 0, 12, 12); break;
+      case 'coal': g.fillStyle = '#12161c'; g.fillRect(0, 0, 16, 16); break;
       case 'salt': cross(); dots(3); break;
       case 'crystalline': cross(); rhomb(); break;
       case 'conglomerate':
-        g.beginPath(); g.arc(4, 4, 2.4, 0, 6.283); g.stroke();
-        g.beginPath(); g.arc(9, 9, 2, 0, 6.283); g.stroke(); break;
+        g.beginPath(); g.arc(5, 5, 3.2, 0, 6.283); g.stroke();
+        g.beginPath(); g.arc(12, 12, 2.6, 0, 6.283); g.stroke(); break;
       case 'weathered': dashes(); dots(3); break;
-      case 'bitumen': hlines(3); g.fillStyle = 'rgba(0,0,0,.35)'; g.fillRect(0, 0, 12, 12); break;
+      case 'bitumen': hlines(4); g.fillStyle = 'rgba(0,0,0,.35)'; g.fillRect(0, 0, 16, 16); break;
       default: break;
     }
     var p = ctx.createPattern(c, 'repeat');

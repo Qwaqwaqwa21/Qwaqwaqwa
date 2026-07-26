@@ -28,7 +28,7 @@ try:
     from routers.inclinometry import router as inkl_router
     from routers.maps import router as maps_router
     from routers.ingest import router as ingest_router
-    from curve_lookup import find_curve as _find_curve, find_depth as _find_depth
+    from curve_lookup import find_curve as _find_curve, find_depth as _find_depth, find_curve_in_well as _find_curve_in_well
 except ImportError:
     from backend.routers.qc import router as qc_router
     from backend.routers.correlation import router as corr_router
@@ -40,7 +40,7 @@ except ImportError:
     from backend.routers.inclinometry import router as inkl_router
     from backend.routers.maps import router as maps_router
     from backend.routers.ingest import router as ingest_router
-    from backend.curve_lookup import find_curve as _find_curve, find_depth as _find_depth
+    from backend.curve_lookup import find_curve as _find_curve, find_depth as _find_depth, find_curve_in_well as _find_curve_in_well
 
 
 class SafeJSONResponse(JSONResponse):
@@ -6156,6 +6156,9 @@ def classify_lithology(wid: int, data: dict, db: Session = Depends(get_db)):
          db.query(LogRun).filter(LogRun.well_id == wid).order_by(LogRun.num_points.desc()).first()
     if not lr:
         raise HTTPException(404, "No log run")
+    well = db.query(Well).filter(Well.id == wid).first()
+    if not well:
+        raise HTTPException(404, "Well not found")
 
     method = str(data.get("method", "gr_rhob_nphi")).strip().lower()
     if method not in {"gr_only", "gr_rhob_nphi", "crossplot"}:
@@ -6166,13 +6169,19 @@ def classify_lithology(wid: int, data: dict, db: Session = Depends(get_db)):
     if gr_max <= gr_min:
         raise HTTPException(400, "gr_max must be greater than gr_min")
 
+    # ГК может лежать не в выбранном рейсе (например, выбран РИГИС) —
+    # ищем по всей скважине и считаем по тому рейсу, где он найден.
     gr_cd = _find_curve(db, lr.id, "GR")
+    src_run = lr.id
     if not gr_cd:
-        raise HTTPException(400, "Нужна кривая гамма-каротажа (ГК / GK / GR) — в выбранном рейсе её нет")
+        gr_cd, src_run = _find_curve_in_well(db, well, "GR")
+    if not gr_cd:
+        raise HTTPException(
+            400, "Нужна кривая гамма-каротажа (ГК / GK / GR) — в скважине её нет ни в одном рейсе")
 
-    rhob_cd = _find_curve(db, lr.id, "RHOB")
-    nphi_cd = _find_curve(db, lr.id, "NPHI")
-    dept_cd = _find_depth(db, lr.id)
+    rhob_cd = _find_curve(db, src_run, "RHOB")
+    nphi_cd = _find_curve(db, src_run, "NPHI")
+    dept_cd = _find_depth(db, src_run)
 
     gr = np.frombuffer(gr_cd.data_binary, dtype=np.float64).copy()
     n = len(gr)

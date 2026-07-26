@@ -604,6 +604,9 @@ CURVE_TRACKS.update(EXTRA_CURVE_TRACKS)
 
 
 # ── Русский стандарт ГИС: треки/шкалы для канонических мнемоник ──────────────
+# Цвета кривых заданы заказчиком: ДС зелёная, КС чёрная, ПС красная,
+# ГК красная, НГК чёрная, ИК зелёная, БК синяя. На тёмной теме чёрные
+# кривые рисуются светлым (см. _displayColor в log-renderer.js).
 # Раскладка треков планшета (номер = 1-based индекс трека):
 #   1  Стандартный каротаж   ДС, КС, ПС
 #   2  Радиоактивный         ГК, НГК
@@ -618,18 +621,18 @@ CURVE_TRACKS.update(EXTRA_CURVE_TRACKS)
 #   11 РИГИС                 литология / коллектор / насыщение
 #   12 Прочее                всё, что не опознано
 CURVE_TRACKS.update({
-    'DS':   {'track': 1, 'color': '#95a5a6', 'scale': (100, 400), 'unit': 'мм',  'name': 'ДС'},
+    'DS':   {'track': 1, 'color': '#2ecc71', 'scale': (100, 400), 'unit': 'мм',  'name': 'ДС'},
     'BS':   {'track': 1, 'color': '#7f8c8d', 'scale': (100, 400), 'unit': 'мм',  'name': 'Долото'},
-    'KS':   {'track': 1, 'color': '#e74c3c', 'scale': (0.2, 2000), 'log': True, 'unit': 'Ом·м', 'name': 'КС'},
-    'PS':   {'track': 1, 'color': '#9b59b6', 'scale': (-100, 100), 'unit': 'мВ', 'name': 'ПС'},
+    'KS':   {'track': 1, 'color': '#000000', 'scale': (0.2, 2000), 'log': True, 'unit': 'Ом·м', 'name': 'КС'},
+    'PS':   {'track': 1, 'color': '#e74c3c', 'scale': (-100, 100), 'unit': 'мВ', 'name': 'ПС'},
     'RS':   {'track': 1, 'color': '#16a085', 'scale': (0, 10),   'unit': 'Ом·м', 'name': 'РС'},
     'TEMP': {'track': 1, 'color': '#fd79a8', 'scale': (0, 100),  'unit': '°C',   'name': 'Термометрия'},
 
-    'GK':   {'track': 2, 'color': '#2ecc71', 'scale': (0, 20),   'unit': 'мкР/ч',   'name': 'ГК'},
-    'NGK':  {'track': 2, 'color': '#3498db', 'scale': (0, 10),   'unit': 'усл.ед.', 'name': 'НГК'},
+    'GK':   {'track': 2, 'color': '#e74c3c', 'scale': (0, 20),   'unit': 'мкР/ч',   'name': 'ГК'},
+    'NGK':  {'track': 2, 'color': '#000000', 'scale': (0, 10),   'unit': 'усл.ед.', 'name': 'НГК'},
 
-    'IK':   {'track': 3, 'color': '#e67e22', 'scale': (0.2, 2000), 'log': True, 'unit': 'мСм/м', 'name': 'ИК'},
-    'BK':   {'track': 3, 'color': '#c0392b', 'scale': (0.2, 2000), 'log': True, 'unit': 'Ом·м', 'name': 'БК'},
+    'IK':   {'track': 3, 'color': '#2ecc71', 'scale': (0.2, 2000), 'log': True, 'unit': 'мСм/м', 'name': 'ИК'},
+    'BK':   {'track': 3, 'color': '#2980b9', 'scale': (0.2, 2000), 'log': True, 'unit': 'Ом·м', 'name': 'БК'},
     'BKZ':  {'track': 3, 'color': '#f39c12', 'scale': (0.2, 2000), 'log': True, 'unit': 'Ом·м', 'name': 'БКЗ (ГЗ)'},
 
     'MKZ':  {'track': 4, 'color': '#d35400', 'scale': (0.2, 2000), 'log': True, 'unit': 'Ом·м', 'name': 'МКЗ'},

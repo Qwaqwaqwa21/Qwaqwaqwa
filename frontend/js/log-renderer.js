@@ -141,6 +141,9 @@ class LogRenderer {
             }
         } catch {}
         this._autoAssignTracks();
+        this._fitCategoricalWidth();
+        this._fitTrackWidths();
+        this._fitHeaderHeight();
         this._autoFitView();
         this.render();
     }
@@ -198,6 +201,7 @@ class LogRenderer {
         }
         this.tracks = this.allTracks.filter(t =>
             t.curves.some(m => this.curveData[m] && this.curveData[m].length > 0));
+        this._fitHeaderHeight();
         this.render();
         return true;
     }
@@ -462,8 +466,10 @@ class LogRenderer {
             this.canvas.style.cursor = 'default';
             const moved = Math.abs(e.clientX - drag.startX) + Math.abs(e.clientY - drag.startY);
             if (moved < 5) {
-                if (typeof this.onCurveScaleEdit === 'function') {
-                    this.onCurveScaleEdit(drag.mnemonic, drag.fromTrack);
+                // короткий клик — подсветить кривую (двойной клик открывает настройку)
+                this.highlightedCurve = (this.highlightedCurve === drag.mnemonic) ? null : drag.mnemonic;
+                if (typeof this.onCurveHighlight === 'function') {
+                    this.onCurveHighlight(this.highlightedCurve);
                 }
                 this.render();
                 return;
@@ -489,9 +495,9 @@ class LogRenderer {
         const rect = this.canvas.getBoundingClientRect();
         const x = e.clientX - rect.left;
         const y = e.clientY - rect.top;
-        const depth = this._yToDepth(y);
-        if (depth < 0) return;
-        // Check if click is in the track header area (scale editor)
+        // Шапку проверяем ДО отсечки по глубине: над планшетом _yToDepth
+        // возвращает отрицательное значение, и двойной клик по подписи кривой
+        // отсекался раньше, чем открывалась настройка.
         if (y < this.margin.top - 15) {
             const curveLabel = this._getCurveAtHeaderPos(x, y);
             if (curveLabel && typeof this.onCurveScaleEdit === 'function') {
@@ -499,6 +505,8 @@ class LogRenderer {
                 return;
             }
         }
+        const depth = this._yToDepth(y);
+        if (depth < 0) return;
         // Check if click is in the track area
         const lithTrackWidth = (this._showLithology && this.lithologyData?.lith_code?.length) ? 46 : 0;
         const startX = this.margin.left + this.depthTrackWidth + lithTrackWidth;
@@ -515,11 +523,59 @@ class LogRenderer {
         const active = track.curves.filter(m => this.curveData[m] && this.curveData[m].length > 0);
         const rowH = 12;
         const top = 33;
-        const maxRows = Math.max(1, Math.floor((this.margin.top - 15 - top) / rowH));
-        const shown = active.slice(0, active.length > maxRows ? maxRows - 1 : maxRows);
-        const rows = shown.map((m, i) => ({ mnemonic: m, y: top + i * rowH }));
-        return { rows, rowH, hidden: active.length - shown.length,
-                 moreY: top + shown.length * rowH };
+        // Показываем ВСЕ кривые трека: шапка растягивается под их число
+        // (_fitHeaderHeight), скрывать подписи нельзя — иначе непонятно, что
+        // нарисовано.
+        const rows = active.map((m, i) => ({ mnemonic: m, y: top + i * rowH }));
+        return { rows, rowH, hidden: 0, moreY: top + rows.length * rowH };
+    }
+
+    /**
+     * Ширина трека РИГИС — по числу колонок: при двух рейсах интерпретации
+     * шесть колонок в фиксированные 132 px не помещались и штриховка литологии
+     * превращалась в кашу.
+     */
+    _fitCategoricalWidth() {
+        for (const t of this.allTracks) {
+            if (!t.categorical) continue;
+            const n = t.curves.filter(m => this.curveData[m] && this.curveData[m].length > 0).length;
+            t.width = Math.max(132, Math.min(420, n * 46));
+            t._baseWidth = t.width;
+        }
+    }
+
+    /**
+     * Ужать треки, если суммарно они шире канвы: иначе правые (РИГИС) уезжают
+     * за край и их не видно.
+     */
+    _fitTrackWidths() {
+        // Базовую ширину запоминаем один раз: без этого каждая перерисовка
+        // ужимала треки заново и они схлопывались до минимума.
+        for (const t of this.allTracks) {
+            if (t._baseWidth == null) t._baseWidth = t.width;
+            else if (!t.categorical) t.width = t._baseWidth;
+        }
+        const canvasW = (this.canvas?.getBoundingClientRect?.().width) || this.width || 0;
+        if (!canvasW) return;
+        const lith = (this._showLithology && this.lithologyData?.lith_code?.length) ? 46 : 0;
+        const completion = this.showCompletionTrack ? (this.completionTrackWidth || 0) : 0;
+        const avail = canvasW - this.margin.left - this.margin.right - this.depthTrackWidth - lith - completion;
+        const total = this.tracks.reduce((s, t) => s + t.width, 0);
+        if (avail <= 0 || total <= avail) return;
+        const k = avail / total;
+        for (const t of this.tracks) t.width = Math.max(70, Math.floor(t.width * k));
+    }
+
+    /** Высота шапки под самый «густой» трек — чтобы влезли все подписи. */
+    _fitHeaderHeight() {
+        const rowH = 12, top = 33, pad = 10;
+        let maxRows = 1;
+        for (const t of this.tracks) {
+            const n = t.curves.filter(m => this.curveData[m] && this.curveData[m].length > 0).length;
+            if (n > maxRows) maxRows = n;
+        }
+        const needed = top + maxRows * rowH + pad;
+        this.margin.top = Math.max(80, Math.min(300, needed));
     }
 
     _getCurveAtHeaderPos(x, y) {
@@ -561,6 +617,25 @@ class LogRenderer {
     _getCurveLabelAtPos(x, y) {
         if (y > this.margin.top - 15) return null;
         return this._getCurveAtHeaderPos(x, y);
+    }
+
+    /**
+     * Цвет для тёмной темы. Кривые, которым геолог назначил чёрный (КС, НГК —
+     * так принято на бумажном планшете), на тёмном фоне были бы невидимы,
+     * поэтому здесь они рисуются светлым.
+     */
+    _displayColor(color) {
+        const c = String(color || '').toLowerCase();
+        const isBlack = c === '#000' || c === '#000000' || c === 'black' || c === '#111111';
+        if (!isBlack) return color;
+        return this._isLightTheme() ? '#000000' : '#e6edf3';
+    }
+
+    _isLightTheme() {
+        try {
+            return document.body.classList.contains('light-theme')
+                || document.documentElement.getAttribute('data-theme') === 'light';
+        } catch { return false; }
     }
 
     /** Короткая запись границы шкалы для подписи в шапке. */
@@ -814,10 +889,9 @@ class LogRenderer {
         if (tooltip) tooltip.style.display = 'none';
     }
 
-    /** Название оси в шапке линейки глубин. */
+    /** Название оси в шапке линейки глубин — планшет строится по MD. */
     _depthAxisName() {
-        const m = window.app?.depthMode || 'MD';
-        return m === 'TVD' ? 'TVD' : (m === 'ABS' ? 'АБС.ОТМ' : 'MD');
+        return 'MD';
     }
 
     /**
@@ -826,9 +900,7 @@ class LogRenderer {
      * печатаем.
      */
     _depthLabel(v, digits) {
-        const m = window.app?.depthMode || 'MD';
-        const shown = (m === 'ABS') ? -v : v;
-        return shown.toFixed(digits);
+        return v.toFixed(digits);
     }
 
     _depthUnit() {
@@ -1382,7 +1454,7 @@ class LogRenderer {
 
     _drawCurve(ctx, mnemonic, trackX, plotTop, plotBottom, width, useLog) {
         const cfg = this.curveConfig[mnemonic] || {};
-        const color = cfg.color || '#58a6ff';
+        const color = this._displayColor(cfg.color || '#58a6ff');
         const scale = cfg.scale || [0, 100];
         const data = this.curveData[mnemonic];
         if (!data || data.length === 0) return;
@@ -1392,7 +1464,10 @@ class LogRenderer {
         const stride = this._computeRenderStride(visible);
 
         ctx.strokeStyle = color;
-        ctx.lineWidth = 1.5;
+        // выделенная кликом кривая рисуется толще — так её видно среди соседних
+        ctx.lineWidth = (this.highlightedCurve === mnemonic) ? 3.5 : 1.5;
+        // кривые наложенных рейсов идут пунктиром: цвет остаётся цветом метода
+        ctx.setLineDash(Array.isArray(cfg.dash) ? cfg.dash : []);
         ctx.beginPath();
 
         let started = false;
@@ -1434,7 +1509,8 @@ class LogRenderer {
             }
         }
         ctx.stroke();
-        
+        ctx.setLineDash([]);          // пунктир не должен «протекать» на следующие элементы
+
         // Curve fill/shading (Feature 2)
         if (cfg.fill) {
             const fillColor = cfg.fillColor || color;
@@ -1514,34 +1590,8 @@ class LogRenderer {
             ctx.font = 'bold 11px IBM Plex Mono';
             ctx.textAlign = 'center';
             
-            // Curve statistics overlay (Feature 7)
-            let statY = this.margin.top - 14;
-            const statLimit = 6;
-            let statShown = 0;
-            for (const mnemonic of track.curves) {
-                if (statShown >= statLimit) break;
-                const data = this.curveData[mnemonic];
-                if (!data || data.length === 0) continue;
-                const cfg = this.curveConfig[mnemonic] || {};
-                const visible = [];
-                for (let i = 0; i < this.depthData.length; i++) {
-                    if (this.depthData[i] >= this.viewStart && this.depthData[i] <= this.viewStop) {
-                        const v = data[i];
-                        if (v != null && !isNaN(v)) visible.push(v);
-                    }
-                }
-                if (visible.length === 0) continue;
-                const min = Math.min(...visible);
-                const max = Math.max(...visible);
-                const mean = visible.reduce((s,v) => s+v, 0) / visible.length;
-                ctx.fillStyle = cfg.color || '#8b949e';
-                ctx.font = '8px IBM Plex Mono';
-                ctx.textAlign = 'left';
-                ctx.fillText(`${mnemonic}: ${mean.toFixed(1)}`, trackX + 3, statY);
-                statShown++;
-                statY -= 10;
-                if (statY < 4) break;
-            }
+            // Средние значения в шапке убраны: они наезжали на подписи кривых,
+            // а нужное значение показывает всплывающая подсказка под курсором.
             ctx.fillText(track.name, trackX + track.width / 2, 18);
 
             // Названия кривых. При показе нескольких рейсов их набирается
@@ -1551,18 +1601,14 @@ class LogRenderer {
             const layout = this._headerRows(track);
             for (const r of layout.rows) {
                 const cfg = this.curveConfig[r.mnemonic] || {};
-                ctx.fillStyle = cfg.color || '#58a6ff';
-                ctx.font = '10px IBM Plex Mono';
+                const sel = this.highlightedCurve === r.mnemonic;
+                ctx.fillStyle = this._displayColor(cfg.color || '#58a6ff');
+                ctx.font = (sel ? 'bold 10px' : '10px') + ' IBM Plex Mono';
                 ctx.textAlign = 'center';
                 const sc = Array.isArray(cfg.scale) ? ` ${this._fmtScale(cfg.scale[0])}…${this._fmtScale(cfg.scale[1])}` : '';
                 ctx.fillText(r.mnemonic + sc, trackX + track.width / 2, r.y);
             }
-            if (layout.hidden > 0) {
-                ctx.fillStyle = '#8b949e';
-                ctx.font = '10px IBM Plex Mono';
-                ctx.textAlign = 'center';
-                ctx.fillText(`+ ещё ${layout.hidden}`, trackX + track.width / 2, layout.moreY);
-            }
+
 
             trackX += track.width;
         }

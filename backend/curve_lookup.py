@@ -88,6 +88,21 @@ def find_curve(db, log_run_id: int, *keys: str) -> Optional[CurveData]:
     return None
 
 
+def find_curve_in_well(db, well, *keys: str):
+    """Кривая метода в любом рейсе скважины.
+
+    Возвращает `(CurveData, log_run_id)`. Нужна там, где расчёт привязан к
+    активному рейсу, но сам метод записан в соседнем: у заказчика ГК лежит в
+    рейсе ГИС, а выбран может быть рейс РИГИС.
+    """
+    best = None
+    for run in getattr(well, "log_runs", []) or []:
+        cd = find_curve(db, run.id, *keys)
+        if cd is not None and (best is None or (cd.num_points or 0) > (best[0].num_points or 0)):
+            best = (cd, run.id)
+    return best if best else (None, None)
+
+
 def find_depth(db, log_run_id: int) -> Optional[CurveData]:
     """Индексная кривая рейса (DEPT/DEPTH/MD/TVD — как записано в файле)."""
     rows = db.query(CurveData).filter(CurveData.log_run_id == log_run_id).all()

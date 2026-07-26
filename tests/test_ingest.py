@@ -161,3 +161,26 @@ def test_curve_lookup_treats_russian_and_western_methods_as_equivalent():
     assert "NGK" in EQUIVALENT["NPHI"]
     assert "DS" in EQUIVALENT["CAL"]
     assert "PS" in EQUIVALENT["SP"]
+
+
+def test_curve_colors_follow_customer_scheme():
+    """ДС зелёная, КС чёрная, ПС красная, ГК красная, НГК чёрная, ИК зелёная, БК синяя."""
+    from backend.las_parser import CURVE_TRACKS as C
+
+    assert C["DS"]["color"] == "#2ecc71"
+    assert C["KS"]["color"] == "#000000"
+    assert C["PS"]["color"] == "#e74c3c"
+    assert C["GK"]["color"] == "#e74c3c"
+    assert C["NGK"]["color"] == "#000000"
+    assert C["IK"]["color"] == "#2ecc71"
+    assert C["BK"]["color"] == "#2980b9"
+
+
+def test_lithology_falls_back_to_other_runs_for_gamma():
+    """ГК ищется по всей скважине: выбранным может быть рейс РИГИС без ГК."""
+    import inspect
+    from backend import main
+
+    src = inspect.getsource(main.classify_lithology)
+    assert "_find_curve_in_well" in src
+    assert "ни в одном рейсе" in src

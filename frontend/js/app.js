@@ -113,7 +113,7 @@ class GeoLogApp {
         this.renderer = null;
         this.currentWell = null;
         this.currentLogRun = null;
-        this.depthMode = 'MD';       // MD | TVD | ABS — ось глубин планшета
+        this.depthMode = 'MD';       // планшет всегда по MD
         this._tvd = null;            // таблица пересчёта MD→TVD активной скважины
         this.curveConfig = {};
         this.wells = [];
@@ -535,6 +535,7 @@ class GeoLogApp {
 
     // ─── Navigation ──────────────────────────────────────────
     switchView(view) {
+        this.currentView = view;   // нужен, чтобы обновлять открытую вкладку при смене скважины
         document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
         document.querySelector(`.nav-btn[data-view="${view}"]`)?.classList.add('active');
 
@@ -1017,6 +1018,14 @@ class GeoLogApp {
             this._initCSVUpload();
             await this._loadTvdTable(wellId);
             if (typeof CurveTree !== 'undefined') await CurveTree.load(wellId);
+            // Открытые вкладки анализа пересчитываются под новую скважину:
+            // раньше инклинометрия продолжала показывать прежнюю траекторию.
+            if (this.currentView === 'inklqc' && typeof InclinometryView !== 'undefined') {
+                InclinometryView.load();
+            }
+            if (this.currentView === 'coverage' && typeof ResearchCoverage !== 'undefined') {
+                ResearchCoverage.load?.();
+            }
             if (well.log_runs && well.log_runs.length > 0) {
                 this.currentLogRun = this._normalizeLogRunVersion(well.log_runs[0]);
                 this._populateLogRunSelector(well.log_runs, this.currentLogRun.id);
@@ -1188,15 +1197,22 @@ class GeoLogApp {
         if (this.renderer) this.renderer.curveConfig = this.curveConfig;
     }
 
-    /** Кривая из соседнего рейса берёт трек и шкалу базовой, но другой оттенок. */
+    /**
+     * Кривая из соседнего рейса сохраняет ЦВЕТ МЕТОДА (БК синяя, ИК зелёная —
+     * так принято на планшете), а рейсы различаются пунктиром: сплошная —
+     * активный рейс, штриховая — наложенный.
+     */
     _applyExtraRunStyles(extra) {
-        const SHADES = ['#f0a30a', '#00b8d9', '#ff7ab6', '#8bc34a', '#b39ddb'];
-        (extra || []).forEach((e, i) => {
+        const DASHES = [[6, 4], [2, 3], [10, 4, 2, 4], [1, 3]];
+        const runOrder = {};
+        (extra || []).forEach((e) => {
             const base = this.curveConfig[e.base];
             if (!base) return;
+            const run = e.mnemonic.split('·')[1] || '';
+            if (!(run in runOrder)) runOrder[run] = Object.keys(runOrder).length;
             this.curveConfig[e.mnemonic] = {
                 ...base,
-                color: SHADES[i % SHADES.length],
+                dash: DASHES[runOrder[run] % DASHES.length],
                 // название метода сохраняем, добавляя рейс — иначе теряется
                 // и человекочитаемое имя, и признак категориальной колонки
                 name: (base.name ? `${base.name} · ${e.mnemonic.split('·')[1] || ''}` : e.mnemonic),
@@ -1259,29 +1275,13 @@ class GeoLogApp {
         } catch { this._tvd = null; }
     }
 
-    setDepthMode(mode) {
-        const m = ['MD', 'TVD', 'ABS'].includes(mode) ? mode : 'MD';
-        if (m !== 'MD' && (!this._tvd || !this._tvd.md.length)) {
-            if (m === 'ABS' && this._tvd?.elevation == null) {
-                GeoToast.warn('Нет альтитуды — абсолютную отметку посчитать не из чего');
-                document.getElementById('depthModeSelect').value = this.depthMode || 'MD';
-                return;
-            }
-            GeoToast.info('Инклинометрии нет — скважина считается вертикальной, TVD = MD');
-        }
-        // Поля «Top/Bottom» заданы в прежней оси — переводим их в новую через MD,
-        // иначе после переключения окно уезжает в пустоту.
-        const topIn = document.getElementById('depthTop');
-        const botIn = document.getElementById('depthBottom');
-        const mdTop = this._axisToMD(parseFloat(topIn?.value));
-        const mdBot = this._axisToMD(parseFloat(botIn?.value));
-
-        this.depthMode = m;
-        if (topIn && Number.isFinite(mdTop)) topIn.value = this._mdToAxis(mdTop).toFixed(1);
-        if (botIn && Number.isFinite(mdBot)) botIn.value = this._mdToAxis(mdBot).toFixed(1);
-
-        this.curveRangeCache?.clear?.();
-        this._loadCurveData();
+    /**
+     * Ось планшета — всегда MD. TVD и абсолютная отметка убраны из интерфейса:
+     * пересчёт нужен картам и корреляции, а на планшете геолог работает по
+     * глубине по стволу. Функции пересчёта ниже остаются для этих задач.
+     */
+    setDepthMode() {
+        this.depthMode = 'MD';
     }
 
     /** MD → значение выбранной оси. */
@@ -1360,7 +1360,16 @@ class GeoLogApp {
                 });
             } catch (e) { console.warn('run', runId, 'skipped:', e?.message || e); continue; }
 
-            const runName = (CurveTree.data.runs.find(r => r.id === runId) || {}).name || ('run' + runId);
+            // Имена рейсов у заказчика повторяются (два РИГИС подряд), поэтому
+            // к одинаковым добавляем номер — иначе кривые второго рейса
+            // перезаписывали первый и на планшет попадал только один.
+            const runs = CurveTree.data.runs || [];
+            const rec = runs.find(r => r.id === runId) || {};
+            let runName = rec.name || ('рейс' + runId);
+            const sameName = runs.filter(r => (r.name || '') === (rec.name || ''));
+            if (sameName.length > 1) {
+                runName += '#' + (sameName.findIndex(r => r.id === runId) + 1);
+            }
             const srcDepth = data.DEPTH || data.DEPT || [];
             if (!srcDepth.length) continue;
             for (const def of defs) {
@@ -1368,7 +1377,12 @@ class GeoLogApp {
                 if (['DEPTH', 'DEPT', 'MD', 'TVD'].includes(String(mn).toUpperCase())) continue;
                 const src = data[mn];
                 if (!src || !src.length) continue;
-                const label = `${mn}·${runName}`;
+                let label = `${mn}·${runName}`;
+                if (curveData[label]) {                 // подстраховка от совпадений
+                    let k = 2;
+                    while (curveData[`${label}_${k}`]) k++;
+                    label = `${label}_${k}`;
+                }
                 curveData[label] = this._resampleOnto(srcDepth, src, baseDepth);
                 added.push({ mnemonic: label, base: mn });
             }

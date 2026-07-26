@@ -259,15 +259,6 @@
                     <label>Bottom</label>
                     <input type="number" id="depthBottom" step="10" class="depth-input">
                 </div>
-                <div class="toolbar-group">
-                    <label>Ось</label>
-                    <select id="depthModeSelect" class="depth-select" style="min-width:150px"
-                            title="Ось глубин планшета" onchange="app.setDepthMode(this.value)">
-                        <option value="MD">MD (по стволу)</option>
-                        <option value="TVD">TVD (вертикальная)</option>
-                        <option value="ABS">Абс. отметка</option>
-                    </select>
-                </div>
                 <span class="toolbar-hint">🖱️ Колесо — масштаб, Shift+колесо и протяжка — по глубине</span>
                 <button class="btn-sm" id="btnLithTrack" onclick="app.toggleLithTrack()" title="Toggle lithology track">
                     <i data-lucide="paintbrush"></i> Lithology
