@@ -383,6 +383,11 @@ class LogRenderer {
      * собственную же выборку.
      */
     _dataBounds() {
+        // Объединение показываемых рейсов, иначе выбор короткого рейса
+        // запирает окно в его интервале.
+        const ext = window.app?._shownRunsExtent?.();
+        if (ext && ext[1] > ext[0]) return { lo: ext[0], hi: ext[1] };
+
         const run = window.app?.currentLogRun;
         const runLo = Number(run?.start_depth), runHi = Number(run?.stop_depth);
         if (Number.isFinite(runLo) && Number.isFinite(runHi) && runHi > runLo) {

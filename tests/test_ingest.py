@@ -257,3 +257,25 @@ def test_duplicate_finder_endpoint_exists():
     src = inspect.getsource(ingest.find_duplicates)
     for key in ("identical_curves", "duplicate_depths", "duplicate_runs"):
         assert key in src
+
+
+def test_planshet_uses_union_depth_axis():
+    """Кривые всех показываемых рейсов сводятся на объединённую ось глубин.
+
+    Без этого активный короткий рейс (РИГИС по одному пласту) задавал ось, и
+    рейсы за его пределами не попадали на планшет вовсе.
+    """
+    js = open("frontend/js/app.js", encoding="utf-8").read()
+    assert "_collectShownRuns" in js
+    assert "_buildUnionAxis" in js
+    # окно и границы прокрутки тоже считаются по объединению
+    assert "const ext = this._shownRunsExtent();" in js
+    renderer = open("frontend/js/log-renderer.js", encoding="utf-8").read()
+    assert "window.app?._shownRunsExtent?.()" in renderer
+
+
+def test_categorical_curves_resampled_by_nearest_value():
+    """Коды РИГИС переносятся ближайшим значением, а не интерполяцией."""
+    js = open("frontend/js/app.js", encoding="utf-8").read()
+    assert "_resampleOnto(srcDepth, src, dstDepth, nearest = false)" in js
+    assert "RigisTracks.isCategorical(mn)" in js

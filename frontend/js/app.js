@@ -1085,11 +1085,18 @@ class GeoLogApp {
             if (this.overlayState.runBId === this.overlayState.runAId) this.overlayState.runBId = null;
             this.curveRangeCache.clear();
             this._populateLogRunSelector(well.log_runs || [], chosen.id);
-            // Auto-populate depth inputs with log run bounds
+            // Окно ставим по ОБЪЕДИНЕНИЮ показываемых рейсов, а не по одному
+            // выбранному: иначе выбор короткого РИГИС сжимал окно до его
+            // интервала и остальные рейсы уходили с планшета.
             const topInput = document.getElementById('depthTop');
             const bottomInput = document.getElementById('depthBottom');
-            if (topInput && chosen.start_depth != null) topInput.value = chosen.start_depth;
-            if (bottomInput && chosen.stop_depth != null) bottomInput.value = chosen.stop_depth;
+            const ext = this._shownRunsExtent()
+                || ((chosen.start_depth != null && chosen.stop_depth != null)
+                    ? [chosen.start_depth, chosen.stop_depth] : null);
+            if (ext) {
+                if (topInput) topInput.value = ext[0];
+                if (bottomInput) bottomInput.value = ext[1];
+            }
             this._autoZoomPending = true;   // fit view to logged interval on first load
             await this._loadCurveData();
             await this._loadFormationTops();
@@ -1157,8 +1164,11 @@ class GeoLogApp {
         const e = Number.isFinite(stop) ? stop : Number(this.currentLogRun?.stop_depth || s + 100);
         const span = Math.max(1, e - s);
         const pad = span * this._viewportPaddingFactor;
-        const minDepth = Number(this.currentLogRun?.start_depth ?? s);
-        const maxDepth = Number(this.currentLogRun?.stop_depth ?? e);
+        // Границы — по ОБЪЕДИНЕНИЮ показываемых рейсов: при активном коротком
+        // рейсе окно обрезалось до него и соседние рейсы не запрашивались.
+        const ext = this._shownRunsExtent();
+        const minDepth = ext ? ext[0] : Number(this.currentLogRun?.start_depth ?? s);
+        const maxDepth = ext ? ext[1] : Number(this.currentLogRun?.stop_depth ?? e);
         return {
             start: Math.max(minDepth, s - pad),
             stop: Math.min(maxDepth, e + pad),
@@ -1395,15 +1405,34 @@ class GeoLogApp {
     }
 
     /**
-     * Наложить кривые других рейсов на общую ось глубин активного рейса.
-     * Имена получают суффикс «·имя рейса», чтобы ГК из С1 и ГК из С2 были
-     * видны одновременно и различались в легенде.
+     * Собрать данные ВСЕХ показываемых рейсов на общую ось глубин.
+     *
+     * Раньше общей осью была ось активного рейса. Если активным становился
+     * короткий рейс (РИГИС по одному пласту, 1048–1132 м), то рейсы за его
+     * пределами — 566–802 и 1647–1692 — не попадали на планшет вообще.
+     * Теперь ось — объединение глубин всех показываемых рейсов, и активный
+     * рейс тоже переносится на неё.
+     *
+     * Возвращает { depth, curves, defs }, где defs — описания кривых для
+     * дальнейшей настройки треков.
      */
-    async _mergeExtraRuns(baseDepth, curveData, start, stop) {
-        const extra = this._extraRunIds();
-        if (!extra.length || !baseDepth || !baseDepth.length) return [];
-        const added = [];
-        for (const runId of extra) {
+    async _collectShownRuns(activeCurves, activeData, start, stop) {
+        const activeId = Number(this.currentLogRun?.id || 0);
+        const activeHidden = this._activeRunHidden();
+        const extraIds = this._extraRunIds();
+
+        // 1. Данные каждого рейса: активный уже загружен, остальные тянем.
+        const runs = [];
+        if (!activeHidden) {
+            runs.push({
+                id: activeId, suffix: '',
+                depth: activeData.DEPTH || activeData.DEPT || [],
+                data: activeData,
+                names: activeCurves.map(c => c.mnemonic),
+            });
+        }
+        const treeRuns = (typeof CurveTree !== 'undefined' && CurveTree.data) ? (CurveTree.data.runs || []) : [];
+        for (const runId of extraIds) {
             let defs, data;
             try {
                 defs = await this._api(`/log-runs/${runId}/curves`, { dedupe: false });
@@ -1414,49 +1443,111 @@ class GeoLogApp {
                         start_depth: start, stop_depth: stop,
                     }),
                 });
-            } catch (e) { console.warn('run', runId, 'skipped:', e?.message || e); continue; }
+            } catch (e) { console.warn('рейс', runId, 'пропущен:', e?.message || e); continue; }
 
-            // Имена рейсов у заказчика повторяются (два РИГИС подряд), поэтому
-            // к одинаковым добавляем номер — иначе кривые второго рейса
-            // перезаписывали первый и на планшет попадал только один.
-            const runs = CurveTree.data.runs || [];
-            const rec = runs.find(r => r.id === runId) || {};
-            let runName = rec.name || ('рейс' + runId);
-            const sameName = runs.filter(r => (r.name || '') === (rec.name || ''));
-            if (sameName.length > 1) {
-                runName += '#' + (sameName.findIndex(r => r.id === runId) + 1);
-            }
-            const srcDepth = data.DEPTH || data.DEPT || [];
-            if (!srcDepth.length) continue;
-            for (const def of defs) {
-                const mn = def.mnemonic;
-                if (['DEPTH', 'DEPT', 'MD', 'TVD'].includes(String(mn).toUpperCase())) continue;
-                const src = data[mn];
+            const rec = treeRuns.find(r => r.id === runId) || {};
+            let suffix = rec.name || ('рейс' + runId);
+            const same = treeRuns.filter(r => (r.name || '') === (rec.name || ''));
+            if (same.length > 1) suffix += '#' + (same.findIndex(r => r.id === runId) + 1);
+
+            runs.push({
+                id: runId, suffix,
+                depth: data.DEPTH || data.DEPT || [],
+                data,
+                names: defs.map(c => c.mnemonic),
+            });
+        }
+        if (!runs.length) return { depth: [], curves: {}, defs: [] };
+
+        // 2. Общая ось — объединение глубин всех рейсов.
+        const depth = this._buildUnionAxis(runs.map(r => r.depth));
+
+        // 3. Перенос кривых на общую ось.
+        const curves = {};
+        const defs = [];
+        const DEPTH_NAMES = ['DEPTH', 'DEPT', 'MD', 'TVD'];
+        for (const run of runs) {
+            if (!run.depth || !run.depth.length) continue;
+            for (const mn of run.names) {
+                if (DEPTH_NAMES.includes(String(mn).toUpperCase())) continue;
+                const src = run.data[mn];
                 if (!src || !src.length) continue;
-                let label = `${mn}·${runName}`;
-                if (curveData[label]) {                 // подстраховка от совпадений
+
+                let label = run.suffix ? `${mn}·${run.suffix}` : mn;
+                if (curves[label]) {
                     let k = 2;
-                    while (curveData[`${label}_${k}`]) k++;
+                    while (curves[`${label}_${k}`]) k++;
                     label = `${label}_${k}`;
                 }
-                curveData[label] = this._resampleOnto(srcDepth, src, baseDepth);
-                added.push({ mnemonic: label, base: mn });
+                // Коды РИГИС нельзя интерполировать линейно: между 94 и 5
+                // появились бы несуществующие «промежуточные» литотипы.
+                const categorical = (typeof RigisTracks !== 'undefined') && RigisTracks.isCategorical(mn);
+                curves[label] = (run.depth === depth)
+                    ? src
+                    : this._resampleOnto(run.depth, src, depth, categorical);
+                defs.push({ mnemonic: label, base: mn, runId: run.id, suffix: run.suffix });
             }
         }
-        return added;
+        return { depth, curves, defs };
     }
 
-    /** Линейная интерполяция значений src(srcDepth) на сетку dstDepth. */
-    _resampleOnto(srcDepth, src, dstDepth) {
+    /**
+     * Объединить оси глубин нескольких рейсов в одну возрастающую.
+     * При переборе точек сетка равномерно прореживается — планшет всё равно
+     * не покажет больше, чем есть пикселей.
+     */
+    _buildUnionAxis(arrays, maxPoints = 30000) {
+        const all = [];
+        for (const a of arrays) {
+            if (!a) continue;
+            for (const v of a) if (Number.isFinite(v)) all.push(v);
+        }
+        if (!all.length) return [];
+        all.sort((x, y) => x - y);
+        const out = [all[0]];
+        for (let i = 1; i < all.length; i++) {
+            if (all[i] - out[out.length - 1] > 1e-6) out.push(all[i]);
+        }
+        if (out.length <= maxPoints) return out;
+        const step = out.length / maxPoints;
+        const thin = [];
+        for (let i = 0; i < maxPoints; i++) thin.push(out[Math.floor(i * step)]);
+        if (thin[thin.length - 1] !== out[out.length - 1]) thin.push(out[out.length - 1]);
+        return thin;
+    }
+
+    /**
+     * Перенести значения src(srcDepth) на сетку dstDepth.
+     * `nearest` — для кодов (литология/коллектор/насыщение): берётся значение
+     * ближайшего замера, а не интерполяция.
+     */
+    _resampleOnto(srcDepth, src, dstDepth, nearest = false) {
         const out = new Array(dstDepth.length).fill(null);
-        let i = 0;
         const n = srcDepth.length;
+        if (!n) return out;
+        // Допуск: половина типичного шага записи — за его пределами значения
+        // не размазываются на соседние интервалы.
+        let stepSum = 0, stepN = 0;
+        for (let i = 1; i < Math.min(n, 200); i++) {
+            const d = srcDepth[i] - srcDepth[i - 1];
+            if (d > 0) { stepSum += d; stepN++; }
+        }
+        const tol = stepN ? (stepSum / stepN) * 0.75 : 0.5;
+
+        let i = 0;
         for (let k = 0; k < dstDepth.length; k++) {
             const d = dstDepth[k];
-            if (!isFinite(d)) continue;
+            if (!Number.isFinite(d)) continue;
             while (i < n - 2 && srcDepth[i + 1] < d) i++;
             const d0 = srcDepth[i], d1 = srcDepth[i + 1];
-            if (d < Math.min(d0, d1) || d > Math.max(d0, d1)) continue;
+            if (nearest) {
+                const j = (Math.abs(d - d0) <= Math.abs(d - d1) || !Number.isFinite(d1)) ? i : i + 1;
+                if (Math.abs(d - srcDepth[j]) > tol) continue;
+                const v = src[j];
+                if (v != null && isFinite(v)) out[k] = v;
+                continue;
+            }
+            if (d < Math.min(d0, d1) - tol || d > Math.max(d0, d1) + tol) continue;
             const v0 = src[i], v1 = src[i + 1];
             if (v0 == null || !isFinite(v0)) continue;
             if (v1 == null || !isFinite(v1) || d1 === d0) { out[k] = v0; continue; }
@@ -1517,31 +1608,22 @@ class GeoLogApp {
                 // Копия: в неё дописываются кривые соседних рейсов, а исходный
                 // объект лежит в кэше — иначе при повторной загрузке метки
                 // накапливались и появлялись имена вида «ЛИТОЛОГИЯ·РИГИС_2».
-                const data = { ...(await this._fetchCurveRange(curves, mdStart, mdStop, { decimated: false })) };
-                // Галочка показа действует и на активный рейс: иначе снять его
-                // с планшета было нечем и «отключить всё» не получалось.
-                let activeCurves = curves;
-                if (this._activeRunHidden()) {
-                    for (const c of curves) {
-                        if (!['DEPTH', 'DEPT', 'MD', 'TVD'].includes(String(c.mnemonic).toUpperCase())) {
-                            delete data[c.mnemonic];
-                        }
-                    }
-                    activeCurves = curves.filter(c =>
-                        ['DEPTH', 'DEPT', 'MD', 'TVD'].includes(String(c.mnemonic).toUpperCase()));
-                }
-                const extra = await this._mergeExtraRuns(data.DEPTH || data.DEPT, data, mdStart, mdStop);
+                const active = { ...(await this._fetchCurveRange(curves, mdStart, mdStop, { decimated: false })) };
+                const merged = await this._collectShownRuns(curves, active, mdStart, mdStop);
+
+                const data = { ...merged.curves, DEPTH: merged.depth };
                 if ((this.depthMode || 'MD') !== 'MD' && Array.isArray(data.DEPTH)) {
                     data.DEPTH = data.DEPTH.map(v => this._mdToAxis(v));
                 }
-                const allCurves = activeCurves.concat(extra.map(e => ({
-                    mnemonic: e.mnemonic, unit: '', description: 'из другого рейса',
-                })));
-                // Настройки нужны и для базовых имён наложенных кривых —
+                const allCurves = merged.defs.map(d => ({
+                    mnemonic: d.mnemonic, unit: '',
+                    description: d.suffix ? ('рейс ' + d.suffix) : '',
+                }));
+                // Настройки нужны и для базовых имён кривых соседних рейсов —
                 // из них берутся трек, шкала и признак категориальной колонки.
                 await this._ensureCurveConfig(
-                    allCurves.map(c => c.mnemonic).concat(extra.map(e => e.base)));
-                this._applyExtraRunStyles(extra);
+                    allCurves.map(c => c.mnemonic).concat(merged.defs.map(d => d.base)));
+                this._applyExtraRunStyles(merged.defs.filter(d => d.suffix));
                 this._applyCurveDataToRenderer(data, allCurves);
             }
             if (this._showLithTrack) await this.toggleLithTrack(true);
