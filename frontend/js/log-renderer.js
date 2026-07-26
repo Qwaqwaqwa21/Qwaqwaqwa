@@ -256,10 +256,40 @@ class LogRenderer {
         if (typeof this.onViewChanged === 'function') this.onViewChanged(this.viewStart, this.viewStop);
     }
 
-    setScale(scale) {
-        this.scale = scale;
-        this.pixelsPerFoot = (this.height - this.margin.top - this.margin.bottom) / scale;
-        this.requestRender();
+    /**
+     * Установить вертикальный масштаб планшета вида 1:N (N — знаменатель).
+     *
+     * Раньше значение селектора только запоминалось: pixelsPerFoot нигде не
+     * использовался, и масштаб ни на что не влиял. Теперь по знаменателю
+     * считается видимый интервал глубин, а верх окна остаётся на месте.
+     *
+     * 1 см экрана = N см разреза, то есть N/100 метров; в дюйме 2.54 см,
+     * CSS-дюйм равен 96 px.
+     */
+    setScale(denominator) {
+        const denom = Number(denominator);
+        if (!Number.isFinite(denom) || denom <= 0) return;
+        this.scale = denom;
+
+        const rect = this.canvas?.getBoundingClientRect?.();
+        const plotPx = (rect ? rect.height : this.height) - this.margin.top - this.margin.bottom;
+        if (!(plotPx > 0)) return;
+
+        const metresPerPx = (denom / 100) / (96 / 2.54);   // 96 px = 1 дюйм = 2.54 см
+        const span = plotPx * metresPerPx;
+        if (!(span > 0)) return;
+
+        const start = Number.isFinite(this.viewStart) ? this.viewStart : 0;
+        this._setView(start, start + span);
+    }
+
+    /** Текущий фактический масштаб 1:N по видимому интервалу. */
+    currentScaleDenominator() {
+        const rect = this.canvas?.getBoundingClientRect?.();
+        const plotPx = (rect ? rect.height : this.height) - this.margin.top - this.margin.bottom;
+        const span = this.viewStop - this.viewStart;
+        if (!(plotPx > 0) || !(span > 0)) return null;
+        return Math.round((span / plotPx) * (96 / 2.54) * 100);
     }
 
     // ─── Mouse Events ───────────────────────────────────────
@@ -344,8 +374,21 @@ class LogRenderer {
         this._hideTooltip();
     }
 
-    /** Границы данных планшета; пустой массив глубин не должен ломать зум. */
+    /**
+     * Границы, в которых можно двигать окно планшета.
+     *
+     * Это интервал ВСЕГО рейса, а не загруженного куска: данные подгружаются
+     * по видимому окну, и если ограничиваться уже загруженным, то отдалить или
+     * выбрать более мелкий масштаб становится невозможно — окно упирается в
+     * собственную же выборку.
+     */
     _dataBounds() {
+        const run = window.app?.currentLogRun;
+        const runLo = Number(run?.start_depth), runHi = Number(run?.stop_depth);
+        if (Number.isFinite(runLo) && Number.isFinite(runHi) && runHi > runLo) {
+            return { lo: runLo, hi: runHi };
+        }
+
         const d = this.depthData;
         if (!d || !d.length) return null;
         let lo = Infinity, hi = -Infinity;

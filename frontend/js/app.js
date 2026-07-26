@@ -362,10 +362,12 @@ class GeoLogApp {
         const scaleSelect = document.getElementById('scaleSelect');
         if (scaleSelect) {
             scaleSelect.addEventListener('change', () => {
-                const scale = parseInt(scaleSelect.value);
-                this.renderer.scale = scale;
-                localStorage.setItem('geolog_scale', String(scale));
-                this._loadCurveData();
+                const denom = parseInt(scaleSelect.value, 10);
+                localStorage.setItem('geolog_scale', String(denom));
+                // setScale пересчитывает видимый интервал под масштаб 1:N,
+                // просто присвоить значение недостаточно.
+                this.renderer.setScale(denom);
+                this._loadCurveData({ preserveInputs: true });
             });
         }
 
@@ -663,11 +665,14 @@ class GeoLogApp {
     }
 
     _restoreUIPreferences() {
-        const savedScale = parseInt(localStorage.getItem('geolog_scale') || '', 10);
-        if (Number.isFinite(savedScale)) {
-            const scaleSelect = document.getElementById('scaleSelect');
-            if (scaleSelect) scaleSelect.value = String(savedScale);
-            if (this.renderer) this.renderer.scale = savedScale;
+        // В хранилище могло остаться значение из прежней шкалы (фут/дюйм) —
+        // принимаем только знаменатели из текущего списка.
+        const ALLOWED = ['100', '200', '250', '500', '1000'];
+        const saved = localStorage.getItem('geolog_scale') || '';
+        const scaleSelect = document.getElementById('scaleSelect');
+        if (scaleSelect) {
+            scaleSelect.value = ALLOWED.includes(saved) ? saved : '250';
+            this.renderer && (this.renderer.scale = parseInt(scaleSelect.value, 10));
         }
 
         const top = parseFloat(localStorage.getItem('geolog_depth_top') || '');
@@ -1243,8 +1248,9 @@ class GeoLogApp {
             }));
         this.renderer.setData(depth, curveData, tops, this.curveConfig);
         this.renderer.setBadHoleIntervals([]);
-        const scale = parseInt(document.getElementById('scaleSelect')?.value || '100', 10);
-        this.renderer.scale = scale;
+        // Масштаб применяется только по явному выбору пользователя; при каждой
+        // загрузке данных окно не переустанавливаем, иначе зум сбрасывается.
+        this.renderer.scale = parseInt(document.getElementById('scaleSelect')?.value || '250', 10);
         this._renderCurvePanel(curves);
         this._populateCurveSelectors(curves);
         this._populateAllCurveSelectors(curves);
@@ -1256,6 +1262,7 @@ class GeoLogApp {
     }
 
     _onViewportChanged(start, stop) {
+        this._updateScaleHint();
         if (!this.currentLogRun || this._suppressViewportLoad) return;
         clearTimeout(this._curveLoadDebounceTimer);
         this._curveLoadDebounceTimer = setTimeout(() => this._loadCurveData({ viewportStart: start, viewportStop: stop, preserveInputs: true }), 300);
@@ -1421,6 +1428,14 @@ class GeoLogApp {
         return out;
     }
 
+    /** Показать фактический масштаб планшета рядом с селектором. */
+    _updateScaleHint() {
+        const el = document.getElementById('scaleActual');
+        if (!el || !this.renderer?.currentScaleDenominator) return;
+        const n = this.renderer.currentScaleDenominator();
+        el.textContent = n ? `сейчас 1:${n}` : '';
+    }
+
     /** Перерисовать планшет после смены набора отображаемых рейсов. */
     async renderShownRuns() {
         this.curveRangeCache?.clear?.();
@@ -1429,6 +1444,11 @@ class GeoLogApp {
 
     async _loadCurveData({ viewportStart = null, viewportStop = null, preserveInputs = false } = {}) {
         if (!this.currentLogRun) return;
+
+        // Метка запроса: пока данные едут, пользователь мог сменить масштаб или
+        // окно. Устаревшая загрузка не должна возвращать планшет назад.
+        const seq = (this._curveLoadSeq = (this._curveLoadSeq || 0) + 1);
+        const stale = () => seq !== this._curveLoadSeq;
 
         try {
             const curves = await this._api(`/log-runs/${this.currentLogRun.id}/curves`);
@@ -1486,6 +1506,7 @@ class GeoLogApp {
             }
             if (this._showLithTrack) await this.toggleLithTrack(true);
 
+            if (stale()) return;
             this._suppressViewportLoad = true;
             this.renderer.setView(viewStart, viewStop);
             this._suppressViewportLoad = false;

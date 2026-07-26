@@ -212,3 +212,16 @@ def test_standard_track_is_linear():
     assert not C["KS"].get("log")
     # логарифм остаётся у бокового и индукционного
     assert C["BK"].get("log") and C["IK"].get("log") and C["BKZ"].get("log")
+
+
+def test_plot_scale_options_are_geological():
+    """Масштабы планшета 1:100…1:1000, по умолчанию 1:250."""
+    import re
+
+    html = open("frontend/index.html", encoding="utf-8").read()
+    block = re.search(r'<select id="scaleSelect".*?</select>', html, re.S).group(0)
+    values = re.findall(r'value="(\d+)"', block)
+    assert values == ["100", "200", "250", "500", "1000"]
+    assert re.search(r'value="250" selected', block)
+    # футо-дюймовых подписей остаться не должно
+    assert "ft/in" not in html
