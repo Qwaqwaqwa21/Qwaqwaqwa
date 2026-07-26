@@ -102,6 +102,9 @@
           this.wellheads = null;
         }
       } catch (e) {
+        // запрос вытеснен более новым (дедупликация в app._api) — не ошибка:
+        // карту дорисует тот вызов, который его вытеснил
+        if (/superseded/i.test((e && e.message) || '')) return;
         if (host) host.innerHTML = '<p style="color:#f85149">' + esc(e.message || e) + '</p>';
         return;
       }
@@ -134,7 +137,11 @@
       host.innerHTML = '<p style=\"color:#8b949e\">Сбор сведений…</p>';
       var inv;
       try { inv = await app._api('/projects/' + p + '/inventory'); }
-      catch (e) { host.innerHTML = '<p style=\"color:#f85149\">' + esc(e.message || e) + '</p>'; return; }
+      catch (e) {
+        if (/superseded/i.test((e && e.message) || '')) return;
+        host.innerHTML = '<p style=\"color:#f85149\">' + esc(e.message || e) + '</p>';
+        return;
+      }
       var s = inv.summary;
       var yes = function (v) { return v ? '<span style=\"color:#3fb950\">✔</span>' : '<span style=\"color:#f85149\">—</span>'; };
       var h = '<h3 style=\"color:#c9d1d9;margin:0 0 10px\">Что есть в скважинах</h3>';

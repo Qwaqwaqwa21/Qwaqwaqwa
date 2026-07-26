@@ -556,7 +556,10 @@ def project_inventory(pid: int, db: Session = Depends(get_db)) -> Dict[str, Any]
         from backend.methods import method_for_mnemonic
         from backend.models import DeviationSurvey
 
-    INKL_M = {"INKL", "AZ"}
+    # Ключи методов инклинометрии плюс сырые имена на случай, когда
+    # мнемоника вне справочника и _method_key вернул None
+    INKL_M = {"INKL", "AZIM", "AZ", "INCL", "ZENIT", "ZENITH", "DEVI",
+              "ЗЕНИТ", "ЗЕН", "УГОЛ", "АЗИМУТ", "АЗ"}
     RIGIS_M = {"KP", "KGL", "KNG", "KPR", "LITH", "COLL", "SAT"}
 
     wells = db.query(Well).filter(Well.project_id == pid).order_by(Well.name).all()
