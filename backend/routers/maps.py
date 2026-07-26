@@ -551,10 +551,12 @@ def project_inventory(pid: int, db: Session = Depends(get_db)) -> Dict[str, Any]
     инклинометрия, ГИС (методы), РИГИС, отбивки."""
     try:
         from methods import method_for_mnemonic
+        from models import DeviationSurvey
     except ImportError:  # pragma: no cover
         from backend.methods import method_for_mnemonic
+        from backend.models import DeviationSurvey
 
-    INKL_M = {"INKL", "INCL", "AZ", "AZIM", "ZENIT"}
+    INKL_M = {"INKL", "AZ"}
     RIGIS_M = {"KP", "KGL", "KNG", "KPR", "LITH", "COLL", "SAT"}
 
     wells = db.query(Well).filter(Well.project_id == pid).order_by(Well.name).all()
@@ -572,15 +574,23 @@ def project_inventory(pid: int, db: Session = Depends(get_db)) -> Dict[str, Any]
                 m = (cd.mnemonic or "").strip().upper()
                 if m in _DEPTH:
                     continue
-                if m in INKL_M:
+                # Сверяем МЕТОД, а не имя колонки: в промысловых файлах пишут
+                # КП_W и КОЛЛЕКТОР, поэтому счёт по мнемоникам давал «РИГИС 0».
+                key = _method_key(m) or m
+                if key in INKL_M:
                     inkl_pts = max(inkl_pts, cd.num_points or 0)
                     continue
-                if m in RIGIS_M:
-                    rigis.add(m)
+                if key in RIGIS_M:
+                    rigis.add(key)
                     continue
                 meth = method_for_mnemonic(m)
                 if meth is not None:
                     gis.add(meth.canonical)
+
+        # Инклинометрия чаще приходит отдельным файлом и лежит в таблице замеров
+        if inkl_pts == 0:
+            inkl_pts = (db.query(DeviationSurvey)
+                        .filter(DeviationSurvey.well_id == w.id).count())
 
         rows.append({
             "well_id": w.id, "well_name": w.name,

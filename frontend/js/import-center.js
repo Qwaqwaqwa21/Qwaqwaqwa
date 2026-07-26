@@ -9,7 +9,8 @@
   function app() { return (typeof window.app !== 'undefined') ? window.app : null; }
   function pid() {
     var a = app();
-    return (a && a.projects && a.projects[0]) ? a.projects[0].id : null;
+    return (a && typeof a._pid === 'function') ? a._pid()
+         : ((a && a.projects && a.projects[0]) ? a.projects[0].id : null);
   }
   function role() {
     var a = app();
@@ -274,7 +275,7 @@
       var a = app();
       if (a) {
         await a.loadProjects();
-        if (a.projects && a.projects.length) await a.loadWells(a.projects[0].id);
+        if (a.projects && a.projects.length) await a.loadWells(a._pid());
       }
     },
   };

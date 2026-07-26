@@ -4762,8 +4762,11 @@ def probability_plot(wid: int, data: dict, db: Session = Depends(get_db)):
     start_depth = data.get("start_depth")
     stop_depth = data.get("stop_depth")
 
-    cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic == mnemonic).first()
-    depth_cd = _find_depth(db, lr.id)
+    cd = _find_curve(db, lr.id, str(mnemonic).upper())
+    lr_cd = lr.id
+    if cd is None:
+        cd, lr_cd = _find_curve_in_well(db, well, str(mnemonic).upper())
+    depth_cd = _find_depth(db, lr_cd) if lr_cd else _find_depth(db, lr.id)
     if not cd:
         raise HTTPException(404, f"Curve {mnemonic} not found")
 
@@ -5067,11 +5070,19 @@ def hingle_plot(wid: int, data: dict, db: Session = Depends(get_db)):
     x_curve = str(data.get("curve", data.get("x_curve", "RHOB"))).upper()
     use_log = bool(data.get("log", False))
 
-    rt_cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic == rt_curve).first()
-    x_cd = db.query(CurveData).filter(CurveData.log_run_id == lr.id, CurveData.mnemonic == x_curve).first()
-    depth_cd = _find_depth(db, lr.id)
+    # Кривые ищем по методу и по всей скважине: сопротивление лежит в рейсе
+    # ГИС (КС/БК/ИК), пористость — в РИГИС, точных «RT»/«RHOB» в файле нет
+    rt_cd = _find_curve(db, lr.id, rt_curve, "RT")
+    lr_x = lr.id
+    if rt_cd is None:
+        rt_cd, lr_x = _find_curve_in_well(db, well, rt_curve, "RT")
+    x_cd = _find_curve(db, lr_x or lr.id, x_curve, "RHOB", "NPHI", "KP")
+    if x_cd is None:
+        x_cd, lr_x = _find_curve_in_well(db, well, x_curve, "RHOB", "NPHI", "KP")
+    depth_cd = _find_depth(db, lr_x) if lr_x else _find_depth(db, lr.id)
     if not rt_cd or not x_cd or not depth_cd:
         raise HTTPException(404, "Required curves not found")
+    x_curve = (x_cd.mnemonic or x_curve).upper()
 
     rt = np.frombuffer(rt_cd.data_binary, dtype=np.float64).copy()
     x_raw = np.frombuffer(x_cd.data_binary, dtype=np.float64).copy()

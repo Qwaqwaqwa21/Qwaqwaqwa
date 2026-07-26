@@ -234,6 +234,13 @@ body {
     padding: 6px 8px;
     border-radius: 6px;
     background: var(--bg-tertiary);
+    cursor: pointer;
+}
+/* Активное месторождение: без подсветки не видно, к какому из них относятся
+   карты, разрезы и выгрузки. */
+.project-group.active > .project-header {
+    background: var(--accent-bg, rgba(88, 166, 255, 0.14));
+    box-shadow: inset 2px 0 0 var(--accent, #58a6ff);
 }
 .project-name {
     flex: 1;

@@ -118,6 +118,7 @@ class GeoLogApp {
         this.curveConfig = {};
         this.wells = [];
         this.projects = [];
+        this.currentProjectId = null;
         this.corrMarkers = [];
         this.corrPickMode = false;
         this.corrLastRender = null;
@@ -525,7 +526,7 @@ class GeoLogApp {
                     const result = await resp.json();
                     this._applyUploadedLASVersion(result);
                     GeoToast.success(`Uploaded ${result.filename} — ${result.curves.length} curves, ${result.num_points} points`);
-                    await this.loadWells(this.projects[0].id);
+                    await this.loadWells(this._pid());
                 } catch (err) {
                     GeoToast.error('Upload failed: ' + err.message);
                 } finally {
@@ -990,15 +991,19 @@ class GeoLogApp {
     async loadProjects() {
         try {
             this.projects = await this._api('/projects/');
+            if (!this.projects.some(p => p.id === this.currentProjectId)) {
+                this.currentProjectId = this.projects.length ? this.projects[0].id : null;
+            }
             this._renderProjectTree();
             if (this.projects.length > 0) {
-                await this.loadWells(this.projects[0].id);
+                await this.loadWells(this._pid());
             }
         } catch (e) { console.error('Failed to load projects:', e); }
     }
 
     async loadWells(projectId) {
         try {
+            this.currentProjectId = Number(projectId);
             this.wells = await this._api(`/wells/?project_id=${projectId}`);
             this._renderWellList();
             this._populateCorrelationWellSelectors();
@@ -1313,7 +1318,14 @@ class GeoLogApp {
         this._updateScaleHint();
         if (!this.currentLogRun || this._suppressViewportLoad) return;
         clearTimeout(this._curveLoadDebounceTimer);
-        this._curveLoadDebounceTimer = setTimeout(() => this._loadCurveData({ viewportStart: start, viewportStop: stop, preserveInputs: true }), 300);
+        // Окно берём НА МОМЕНТ СРАБАТЫВАНИЯ, а не на момент планирования:
+        // отложенная подгрузка возвращала планшет к прежнему интервалу и
+        // отменяла нажатия, сделанные за эти 300 мс (зум после прокрутки).
+        this._curveLoadDebounceTimer = setTimeout(() => this._loadCurveData({
+            viewportStart: this.renderer ? this.renderer.viewStart : start,
+            viewportStop: this.renderer ? this.renderer.viewStop : stop,
+            preserveInputs: true,
+        }), 300);
     }
 
     // ─── Ось глубин: MD / TVD / абсолютная отметка ───────────────────
@@ -1657,6 +1669,11 @@ class GeoLogApp {
         // окно. Устаревшая загрузка не должна возвращать планшет назад.
         const seq = (this._curveLoadSeq = (this._curveLoadSeq || 0) + 1);
         const stale = () => seq !== this._curveLoadSeq;
+        // Окно пользователя на момент подстановки новых данных. Загрузка
+        // кривых сбрасывает вид, и раньше сюда возвращался интервал, снятый
+        // ДО запроса: нажатия за эти сотни миллисекунд (например «+» сразу
+        // после прокрутки) откатывались назад.
+        let userView = null;
 
         try {
             const curves = await this._api(`/log-runs/${this.currentLogRun.id}/curves`);
@@ -1670,6 +1687,7 @@ class GeoLogApp {
 
             if (this.performanceMode) {
                 const quick = await this._fetchCurveRange(curves, start, stop, { decimated: true });
+                userView = [this.renderer.viewStart, this.renderer.viewStop];
                 this._applyCurveDataToRenderer(quick, curves);
                 const points = quick.DEPTH?.length || quick.DEPT?.length || 0;
                 GeoToast.info(`Performance mode ON: ${points} pts`);
@@ -1705,13 +1723,17 @@ class GeoLogApp {
                     allCurves.map(c => c.mnemonic).concat(merged.defs.map(d => d.base)));
                 this._applyExtraRunStyles(merged.defs.filter(d => d.suffix));
                 this._labelMergedCurves(merged.defs);
+                userView = [this.renderer.viewStart, this.renderer.viewStop];
                 this._applyCurveDataToRenderer(data, allCurves);
             }
             if (this._showLithTrack) await this.toggleLithTrack(true);
 
             if (stale()) return;
+            const keepUser = preserveInputs && userView
+                && Number.isFinite(userView[0]) && userView[1] > userView[0];
             this._suppressViewportLoad = true;
-            this.renderer.setView(viewStart, viewStop);
+            this.renderer.setView(keepUser ? userView[0] : viewStart,
+                                  keepUser ? userView[1] : viewStop);
             this._suppressViewportLoad = false;
             if (!preserveInputs) {
                 if (topInput) topInput.value = viewStart?.toFixed(1) || '';
@@ -1872,15 +1894,37 @@ class GeoLogApp {
     }
 
     // ─── UI Rendering ────────────────────────────────────────
+    // Активный проект. Раньше по всему коду стояло projects[0], поэтому при
+    // двух и более месторождениях второе было недостижимо: карты, разрезы и
+    // выгрузки молча уходили в первый проект.
+    _activeProject() {
+        if (!this.projects || !this.projects.length) return null;
+        return this.projects.find(p => p.id === this.currentProjectId) || this.projects[0];
+    }
+
+    _pid() {
+        const p = this._activeProject();
+        return p ? p.id : null;
+    }
+
+    async selectProject(projectId) {
+        const p = (this.projects || []).find(x => x.id === Number(projectId));
+        if (!p) return;
+        this.currentProjectId = p.id;
+        this._renderProjectTree();
+        await this.loadWells(p.id);
+    }
+
     _renderProjectTree() {
         const container = document.getElementById('projectTree');
         if (!container) return;
+        const active = this._pid();
         container.innerHTML = this.projects.map(p => `
-            <div class="project-group">
-                <div class="project-header">
+            <div class="project-group${p.id === active ? ' active' : ''}">
+                <div class="project-header" onclick="app.selectProject(${p.id})">
                     <span class="project-name">${p.name}</span>
                     <span class="project-meta">${p.operator || ''} • ${p.country || ''}</span>
-                    <button class="btn-icon-sm" onclick="app.deleteProject(${p.id})" title="Delete">
+                    <button class="btn-icon-sm" onclick="event.stopPropagation(); app.deleteProject(${p.id})" title="Delete">
                         <i data-lucide="trash-2"></i>
                     </button>
                 </div>
@@ -1891,7 +1935,15 @@ class GeoLogApp {
     }
 
     _renderWellList() {
-        const container = document.querySelector('.well-list');
+        // Скважины кладём в контейнер СВОЕГО проекта: первый .well-list в
+        // документе принадлежит первому проекту, и при переключении список
+        // подменялся в чужой группе.
+        const pid = this._pid();
+        document.querySelectorAll('.well-list').forEach(el => {
+            if (el.id !== `wells-${pid}`) el.innerHTML = '';
+        });
+        const container = document.getElementById(`wells-${pid}`)
+            || document.querySelector('.well-list');
         if (!container) return;
         container.innerHTML = this.wells.map(w => `
             <div class="well-item" data-id="${w.id}" onclick="app.onWellClick(${w.id})">
@@ -3052,9 +3104,9 @@ class GeoLogApp {
         try {
             await this._api('/wells/', {
                 method: 'POST',
-                body: JSON.stringify({ name: r.name, uwi: r.uwi || '', project_id: this.projects[0].id }),
+                body: JSON.stringify({ name: r.name, uwi: r.uwi || '', project_id: this._pid() }),
             });
-            await this.loadWells(this.projects[0].id);
+            await this.loadWells(this._pid());
             GeoToast.success('Well added');
         } catch (e) { GeoToast.error('Failed to add well: ' + e.message); }
     }
@@ -3077,7 +3129,7 @@ class GeoLogApp {
                 this.currentLogRun = null;
                 if (typeof CurveTree !== 'undefined') CurveTree.data = null, CurveTree.render();
             }
-            if (this.projects.length > 0) await this.loadWells(this.projects[0].id);
+            if (this.projects.length > 0) await this.loadWells(this._pid());
             GeoToast.success(`Скважина «${name}» удалена`);
         } catch (e) { GeoToast.error('Не удалось удалить скважину: ' + e.message); }
     }
@@ -3189,7 +3241,7 @@ class GeoLogApp {
                 method: 'PUT',
                 body: JSON.stringify({ name: r.name, uwi: r.uwi, operator: r.operator, field_name: r.field_name, depth_unit: r.depth_unit }),
             });
-            await this.loadWells(this.projects[0].id);
+            await this.loadWells(this._pid());
             GeoToast.success('Well updated');
         } catch (e) { GeoToast.error('Failed to update well: ' + e.message); }
     }
@@ -3252,7 +3304,7 @@ class GeoLogApp {
                 this._applyUploadedLASVersion(result);
                 const runs = result.runs_created ? ` (${result.runs_created} run${result.runs_created > 1 ? 's' : ''})` : '';
                 GeoToast.success(`Uploaded ${result.filename}${runs} — ${result.curves.length} curves, ${result.num_points} points`);
-                if (this.projects.length > 0) await this.loadWells(this.projects[0].id);
+                if (this.projects.length > 0) await this.loadWells(this._pid());
             } catch (e) {
                 GeoToast.error(`${conf.label} upload failed: ` + e.message);
             } finally {
@@ -3264,10 +3316,10 @@ class GeoLogApp {
 
     // Guarantee a project exists (auto-create a default on a fresh database).
     async _ensureDefaultProject() {
-        if (this.projects && this.projects.length) return this.projects[0];
+        if (this.projects && this.projects.length) return this._activeProject();
         // refresh from server first — avoids creating a duplicate default
         try { await this.loadProjects(); } catch (e) { /* offline/backend issue */ }
-        if (this.projects && this.projects.length) return this.projects[0];
+        if (this.projects && this.projects.length) return this._activeProject();
         try {
             await this._api('/projects/', {
                 method: 'POST',
@@ -3276,7 +3328,7 @@ class GeoLogApp {
             await this.loadProjects();
             GeoToast.info('Created default project "My Project"');
         } catch (e) { GeoToast.error('Could not create a project: ' + (e.message || e)); }
-        return (this.projects && this.projects[0]) || null;
+        return this._activeProject();
     }
 
     // Guarantee a selected well exists so single-file upload can proceed.
@@ -3397,7 +3449,7 @@ class GeoLogApp {
     async _ensureWellByName(name) {
         const normalized = (name || '').trim();
         if (!normalized) throw new Error('Missing well name');
-        const projectId = this.projects?.[0]?.id;
+        const projectId = this._pid();
         if (!projectId) throw new Error('No project selected');
         let wells = [];
         try { wells = await this._api(`/wells/?project_id=${projectId}`); } catch { wells = this.wells || []; }
@@ -3474,7 +3526,7 @@ class GeoLogApp {
             const summary = document.getElementById('bulkImportSummary');
             if (summary) summary.innerHTML = `Done — <b>${createdWells}</b> wells created, <b>${uploadedFiles}</b> files uploaded, <b>${errors}</b> errors.`;
             GeoToast.info(`Bulk import done: ${uploadedFiles} uploaded, ${errors} errors`);
-            if (this.projects?.length) await this.loadWells(this.projects[0].id);
+            if (this.projects?.length) await this.loadWells(this._pid());
         } finally {
             GeoLoading.hide();
         }
@@ -5211,7 +5263,7 @@ class GeoLogApp {
     // ─── Cross Section (repurposed Comparison view) ─────────
     async loadWellComparison() {
         if (!this.projects || !this.projects.length) return GeoToast.warn('No project loaded');
-        const pid = this.projects[0].id;
+        const pid = this._pid();
         const curve = document.getElementById('crossSectionCurve')?.value || 'GR';
         const vScale = Math.max(0.2, parseFloat(document.getElementById('crossSectionVScale')?.value || '1'));
         const showTops = !!document.getElementById('crossSectionShowTops')?.checked;
@@ -7150,7 +7202,7 @@ class GeoLogApp {
         if (!this.projects?.length) return;
         const curve = document.getElementById('stripCurve')?.value || 'GR';
         const refFormation = document.getElementById('stripRefFormation')?.value || '';
-        const pid = this.projects[0].id;
+        const pid = this._pid();
         GeoLoading.show('Loading strip log data...');
         try {
             const data = await this._api('/projects/' + pid + '/strip-log-data?curve=' + curve);
@@ -7928,8 +7980,8 @@ class GeoLogApp {
     }
 
     async exportTopsCSV() {
-        if (!this.projects?.[0]) return;
-        const pid = this.projects[0].id;
+        if (!this._pid()) return;
+        const pid = this._pid();
         try {
             const resp = await fetch(`/api/projects/${pid}/tops-export`, { headers: { 'X-User-Role': this.currentRole || 'viewer' } });
             const text = await resp.text();
@@ -7987,7 +8039,7 @@ class GeoLogApp {
 
     // ─── Sprint 24: Well Location Map ─────────────────────────────
     async renderWellMap() {
-        if (!this.projects?.[0]) return;
+        if (!this._pid()) return;
         const canvas = document.getElementById('mapCanvas');
         const results = document.getElementById('mapResults');
         if (!canvas || !results) return;
@@ -8016,7 +8068,7 @@ class GeoLogApp {
         };
 
         try {
-            const pid = this.projects[0].id;
+            const pid = this._pid();
             // Ответ приходит объектом {wells:[…]}, а код ждал массив — отсюда
             // и падало «(rows || []).filter is not a function».
             const resp = await this._api(`/projects/${pid}/well-locations`);
@@ -8125,9 +8177,9 @@ class GeoLogApp {
 
     // ─── Sprint 24: Project Summary Dashboard ─────────────────────
     async loadDashboard() {
-        if (!this.projects?.[0]) return;
+        if (!this._pid()) return;
         try {
-            const data = await this._api(`/projects/${this.projects[0].id}/summary`);
+            const data = await this._api(`/projects/${this._pid()}/summary`);
             let html = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;margin-bottom:20px">';
             const cards = [
                 ['Wells', data.total_wells, '#58a6ff'],
@@ -8178,8 +8230,8 @@ class GeoLogApp {
 
     // ─── Sprint 23: Formation Matrix ─────────────────────────────
     async loadFormationMatrix() {
-        if (!this.projects?.[0]) return;
-        const pid = this.projects[0].id;
+        if (!this._pid()) return;
+        const pid = this._pid();
         try {
             const data = await this._api(`/projects/${pid}/formation-matrix`);
             let html = '<div style="overflow:auto"><table style="border-collapse:collapse;font-size:12px">';
@@ -8210,8 +8262,8 @@ class GeoLogApp {
 
     // ─── Sprint 23: Batch Petrophysics ────────────────────────────
     async runBatchPetro() {
-        if (!this.projects?.[0]) return;
-        const pid = this.projects[0].id;
+        if (!this._pid()) return;
+        const pid = this._pid();
         const params = {
             saturation_model: document.getElementById('batchSatModel').value,
             a: parseFloat(document.getElementById('batchA').value),
@@ -8239,8 +8291,8 @@ class GeoLogApp {
     }
 
     async runBatchPetroAsync() {
-        if (!this.projects?.[0]) return GeoToast.warn('No active project');
-        const pid = this.projects[0].id;
+        if (!this._pid()) return GeoToast.warn('No active project');
+        const pid = this._pid();
         const params = {
             saturation_model: document.getElementById('batchSatModel').value,
             a: parseFloat(document.getElementById('batchA').value),
@@ -8461,7 +8513,7 @@ class GeoLogApp {
     // ─── Sprint 26: Audit Trail ─────────────────────────────────
     async loadAuditLog() {
         if (!this.projects.length) return [];
-        const pid = this.projects[0]?.id;
+        const pid = this._pid();
         try {
             const resp = await fetch(`/api/audit-log?project_id=${pid}&limit=50`, { headers: { 'X-User-Role': this.currentRole || 'viewer' } });
             return await resp.json();
@@ -8498,7 +8550,7 @@ class GeoLogApp {
     // ─── Sprint 26: Cross-Plot Matrix ───────────────────────────
     async loadCrossPlotMatrix() {
         if (!this.projects.length) return;
-        const pid = this.projects[0]?.id;
+        const pid = this._pid();
         const curveX = document.getElementById('matrixCurveX')?.value || 'GR';
         const curveY = document.getElementById('matrixCurveY')?.value || 'RT';
         try {
@@ -9453,7 +9505,7 @@ class GeoLogApp {
         if (!this.currentWell || !this.projects.length) { GeoToast.warn('Select a well first'); return; }
         GeoLoading.show('Finding analog wells...');
         try {
-            const pid = this.projects[0]?.id;
+            const pid = this._pid();
             const resp = await fetch(`/api/projects/${pid}/well-analogs?reference_well_id=${this.currentWell.id}`, { headers: { 'X-User-Role': this.currentRole || 'viewer' } });
             const data = await resp.json();
             GeoLoading.hide();
@@ -9771,78 +9823,24 @@ class GeoLogApp {
             if (isTyping) return;
             const key = e.key.toLowerCase();
             const range = this.renderer ? (this.renderer.viewStop - this.renderer.viewStart) : 100;
-            const step = range * 0.1;
             const pageStep = range * 0.8;
             
             switch(key) {
                 case 'g': this._toggleCurveTrack('GR'); e.preventDefault(); break;
                 case 'r': if (!e.ctrlKey) { this._toggleCurveTrack('RT'); e.preventDefault(); } break;
                 case 'p': this._toggleCurveTrack('NPHI'); e.preventDefault(); break;
-                case 'arrowdown':
-                    if (this.renderer) {
-                        this.renderer.viewStart += step;
-                        this.renderer.viewStop += step;
-                        this.renderer.requestRender();
-                        this.renderer._updateDepthInputs();
-                    }
-                    e.preventDefault(); break;
-                case 'arrowup':
-                    if (this.renderer) {
-                        this.renderer.viewStart -= step;
-                        this.renderer.viewStop -= step;
-                        this.renderer.requestRender();
-                        this.renderer._updateDepthInputs();
-                    }
-                    e.preventDefault(); break;
+                // Стрелки, PageUp/Down, +/−, Home/End обрабатывает общий
+                // обработчик ниже — через renderer.setView(). Здесь их не
+                // дублируем: прямая запись viewStart/viewStop мимо setView не
+                // поднимала onViewChanged, и отложенная подгрузка данных
+                // возвращала окно к значению ПЕРВОГО обработчика — масштаб
+                // прыгал и откатывался назад.
                 case 'pagedown':
-                    if (this.renderer) {
-                        this.renderer.viewStart += pageStep;
-                        this.renderer.viewStop += pageStep;
-                        this.renderer.requestRender();
-                        this.renderer._updateDepthInputs();
-                    }
-                    e.preventDefault(); break;
                 case 'pageup':
                     if (this.renderer) {
-                        this.renderer.viewStart -= pageStep;
-                        this.renderer.viewStop -= pageStep;
-                        this.renderer.requestRender();
-                        this.renderer._updateDepthInputs();
-                    }
-                    e.preventDefault(); break;
-                case '=': case '+':
-                    if (this.renderer) {
-                        const mid = (this.renderer.viewStart + this.renderer.viewStop) / 2;
-                        const newRange = range * 0.7;
-                        this.renderer.viewStart = mid - newRange/2;
-                        this.renderer.viewStop = mid + newRange/2;
-                        this.renderer.requestRender();
-                        this.renderer._updateDepthInputs();
-                    }
-                    e.preventDefault(); break;
-                case '-':
-                    if (this.renderer) {
-                        const mid = (this.renderer.viewStart + this.renderer.viewStop) / 2;
-                        const newRange = range * 1.4;
-                        this.renderer.viewStart = mid - newRange/2;
-                        this.renderer.viewStop = mid + newRange/2;
-                        this.renderer.requestRender();
-                        this.renderer._updateDepthInputs();
-                    }
-                    e.preventDefault(); break;
-                case 'home':
-                    if (this.renderer && this.renderer.depthData?.length) {
-                        this.renderer.viewStart = this.renderer.depthData[0];
-                        this.renderer.viewStop = this.renderer.viewStart + range;
-                        this.renderer.requestRender();
-                        this.renderer._updateDepthInputs();
-                    }
-                    e.preventDefault(); break;
-                case 'end':
-                    if (this.renderer && this.renderer.depthData?.length) {
-                        this.renderer.viewStop = this.renderer.depthData[this.renderer.depthData.length-1];
-                        this.renderer.viewStart = this.renderer.viewStop - range;
-                        this.renderer.requestRender();
+                        const dir = key === 'pagedown' ? 1 : -1;
+                        this.renderer.setView(this.renderer.viewStart + dir * pageStep,
+                                              this.renderer.viewStop + dir * pageStep);
                         this.renderer._updateDepthInputs();
                     }
                     e.preventDefault(); break;
@@ -9934,10 +9932,8 @@ class GeoLogApp {
         if (wells.length === 0) { GeoToast.warn('No wells to export'); return; }
         GeoToast.info('Exporting ' + wells.length + ' wells...');
         try {
-            // Use the first project
-            const projects = await this._api('/projects/');
-            if (!projects.length) { GeoToast.warn('No project found'); return; }
-            const pid = projects[0].id;
+            const pid = this._pid();
+            if (!pid) { GeoToast.warn('No project found'); return; }
             const resp = await fetch(`/api/projects/${pid}/tops-export`, { headers: { 'X-User-Role': this.currentRole || 'viewer' } });
             if (!resp.ok) throw new Error('HTTP ' + resp.status);
             const blob = await resp.blob();
