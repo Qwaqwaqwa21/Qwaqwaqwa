@@ -49,7 +49,11 @@ METHODS: List[LogMethod] = [
     LogMethod("IK", "ИК — индукционный каротаж", "electrical", "IK",
               ("IK", "ИК", "RIK", "РИК", "ILD", "RILD", "ILM", "RILM",
                "CILD", "CILM", "AT90", "AT60"),
-              unit="мСм/м", color="#e67e22", track=1, log_scale=True,
+              # В российской практике ИК чаще выгружают уже пересчитанным в
+              # кажущееся сопротивление (Ом·м); проводимость встречается, но
+              # реже. Подпись по умолчанию — Ом·м, а фактическая берётся из
+              # файла, если она там указана.
+              unit="Ом·м", color="#e67e22", track=1, log_scale=True,
               keywords=("IK", "ИК", "ILD", "INDUC")),
     LogMethod("BK", "БК — боковой каротаж", "electrical", "BK",
               ("BK", "БК", "LLD", "LLS", "RLA5", "RLA3"), unit="Ом·м",

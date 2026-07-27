@@ -239,14 +239,42 @@ def test_duplicate_run_needs_same_interval_and_point_count():
     assert "max(n_hi - n_lo, o_hi - o_lo)" in src
 
 
-def test_bulk_import_loads_duplicates_by_default():
-    """По умолчанию повтор грузится и помечается, а не выбрасывается молча."""
+def test_bulk_import_asks_before_touching_existing_data():
+    """По умолчанию повтор НЕ грузится: решение за пользователем.
+
+    Те же методы на тот же интервал — это либо повторная загрузка, либо новая
+    версия РИГИС. Разница между «заменить», «дополнить» и «копией» меняет и
+    карты, и расчёты, поэтому выбирать за пользователя нельзя.
+    """
     import inspect
     from backend.routers import ingest
 
+    mod = inspect.getsource(ingest)
     src = inspect.getsource(ingest.bulk_import)
-    assert 'on_duplicate: str = Form("load")' in inspect.getsource(ingest)
-    assert 'on_duplicate == "skip"' in src
+    assert 'on_duplicate: str = Form("ask")' in mod
+    for act in ('"replace"', '"merge"', '"copy"'):
+        assert act in src, act
+    assert 'on_duplicate in ("ask", "skip")' in src
+
+
+def test_conflict_offers_all_four_choices():
+    """Сервер сам перечисляет варианты — интерфейс не хранит их отдельно."""
+    from backend.routers import ingest
+
+    vals = [c["value"] for c in ingest._CONFLICT_CHOICES]
+    assert vals == ["replace", "merge", "copy", "skip"], vals
+    assert all(c.get("title") and c.get("hint") for c in ingest._CONFLICT_CHOICES)
+
+
+def test_replace_keeps_run_id_for_depth_shift():
+    """Замена сохраняет id рейса: к нему привязана поправка глубины."""
+    import inspect
+    from backend.routers import ingest
+
+    src = inspect.getsource(ingest._replace_run)
+    assert "run.id" in src
+    assert "delete" in src          # старые кривые убираются
+    assert "LogRun(" not in src     # рейс не пересоздаётся
 
 
 def test_duplicate_finder_endpoint_exists():

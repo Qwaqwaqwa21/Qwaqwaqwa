@@ -39,6 +39,7 @@ try:
                               water_saturation as _water_saturation)
     from methods import method_for_mnemonic as _method_for_mnemonic
     from curve_lookup import as_porosity as _as_porosity
+    from curve_lookup import as_resistivity as _as_resistivity
 except ImportError:
     from backend.routers.qc import router as qc_router
     from backend.routers.correlation import router as corr_router
@@ -55,6 +56,24 @@ except ImportError:
                                       water_saturation as _water_saturation)
     from backend.methods import method_for_mnemonic as _method_for_mnemonic
     from backend.curve_lookup import as_porosity as _as_porosity
+    from backend.curve_lookup import as_resistivity as _as_resistivity
+
+
+def _rt_array(cd, values=None):
+    """Кривая сопротивления в Ом·м вместе с подписью источника.
+
+    Единый вход для всех расчётов: ИК местами выгружают проводимостью, и без
+    приведения формула Архи молча считает Кв с ошибкой на порядки. Здесь же
+    гасятся неположительные значения — сопротивление не бывает нулевым или
+    отрицательным, так в промысловых файлах выглядят необработанные пропуски.
+    """
+    if cd is None:
+        return None, None
+    arr = values
+    if arr is None:
+        arr = np.frombuffer(cd.data_binary, dtype=np.float64).copy()
+    return _as_resistivity(arr, getattr(cd, "unit", "") or "",
+                           getattr(cd, "mnemonic", "") or "")
 
 
 class SafeJSONResponse(JSONResponse):
@@ -1639,7 +1658,8 @@ def shoulder_bed_correction(lr_id: int, data: dict, db: Session = Depends(get_db
     cali_cd = _find_curve(db, lr_id, "CAL")
     bs_cd = _find_curve(db, lr_id, "BS")
 
-    rt = np.frombuffer(rt_cd.data_binary, dtype=np.float64).copy()[:n] if rt_cd else None
+    rt, _rt_note = _rt_array(rt_cd)
+    rt = rt[:n] if rt is not None else None
     rxo = np.frombuffer(rxo_cd.data_binary, dtype=np.float64).copy()[:n] if rxo_cd else None
     gr = np.frombuffer(gr_cd.data_binary, dtype=np.float64).copy()[:n] if gr_cd else None
     cali = np.frombuffer(cali_cd.data_binary, dtype=np.float64).copy()[:n] if cali_cd else None
@@ -2619,7 +2639,7 @@ def estimate_rw(wid: int, data: dict, db: Session = Depends(get_db)):
             if not rt_cd or not phi_cd:
                 raise ValueError("Required curves not found for Hingle")
 
-            rt = np.frombuffer(rt_cd.data_binary, dtype=np.float64).copy()
+            rt, _rt_note = _rt_array(rt_cd)
             phi = np.frombuffer(phi_cd.data_binary, dtype=np.float64).copy()
             npts = min(len(rt), len(phi))
             rt = rt[:npts]
@@ -2697,7 +2717,7 @@ def sensitivity_analysis(wid: int, data: dict, db: Session = Depends(get_db)):
     if not rt_cd or not nphi_cd:
         raise HTTPException(400, "Need RT and NPHI curves")
 
-    rt = np.frombuffer(rt_cd.data_binary, dtype=np.float64).copy()
+    rt, _rt_note = _rt_array(rt_cd)
     nphi = np.frombuffer(nphi_cd.data_binary, dtype=np.float64).copy()
     gr = np.frombuffer(gr_cd.data_binary, dtype=np.float64).copy() if gr_cd else np.zeros_like(rt)
 
@@ -4868,7 +4888,7 @@ def moveable_oil_index(wid: int, data: dict, db: Session = Depends(get_db)):
     if not rt_cd or not rxo_cd or not depth_cd:
         raise HTTPException(404, f"Required curves not found (need RT + at least one shallow resistivity + DEPTH). Available: {[c.mnemonic for c in db.query(CurveData).filter(CurveData.log_run_id == lr.id).all()]}")
 
-    rt = np.frombuffer(rt_cd.data_binary, dtype=np.float64).copy()
+    rt, _rt_note = _rt_array(rt_cd)
     rxo = np.frombuffer(rxo_cd.data_binary, dtype=np.float64).copy()
     if phie_computed:
         phie = phie_arr
@@ -5015,7 +5035,7 @@ def buckles_plot(wid: int, data: dict, db: Session = Depends(get_db)):
             rt_cd, _ = _find_curve_in_well(db, well, "RT", "BK", "IK")
         if not rt_cd:
             raise HTTPException(404, "SW curve not found and no RT curve available for Archie")
-        rt = np.frombuffer(rt_cd.data_binary, dtype=np.float64).copy()
+        rt, _rt_note = _rt_array(rt_cd)
 
         pp = db.query(PetroParams).filter(PetroParams.well_id == wid).first()
         a = float(pp.a) if pp and pp.a is not None else 1.0
@@ -5089,7 +5109,7 @@ def hingle_plot(wid: int, data: dict, db: Session = Depends(get_db)):
         raise HTTPException(404, "Required curves not found")
     x_curve = (x_cd.mnemonic or x_curve).upper()
 
-    rt = np.frombuffer(rt_cd.data_binary, dtype=np.float64).copy()
+    rt, _rt_note = _rt_array(rt_cd)
     x_raw = np.frombuffer(x_cd.data_binary, dtype=np.float64).copy()
     depth = np.frombuffer(depth_cd.data_binary, dtype=np.float64).copy()
 
@@ -6124,7 +6144,7 @@ def compute_dual_water(wid: int, data: dict, db: Session = Depends(get_db)):
     if not rt_cd or not nphi_cd:
         raise HTTPException(400, "Need RT and NPHI curves")
 
-    rt = np.frombuffer(rt_cd.data_binary, dtype=np.float64).copy()
+    rt, _rt_note = _rt_array(rt_cd)
     nphi = np.frombuffer(nphi_cd.data_binary, dtype=np.float64).copy()
     gr = np.frombuffer(gr_cd.data_binary, dtype=np.float64).copy() if gr_cd else np.zeros_like(rt)
     dept = np.frombuffer(dept_cd.data_binary, dtype=np.float64).copy() if dept_cd else np.arange(len(rt)) * 0.5
@@ -6460,7 +6480,7 @@ def compute_saturation(wid: int, data: dict, db: Session = Depends(get_db)):
             return np.full(len(dept), np.nan)
         return np.interp(dept, sd[ok], a[ok], left=np.nan, right=np.nan)
 
-    rt = _arr(rt_cd, rt_run)
+    rt, _rt_note = _rt_array(rt_cd, _arr(rt_cd, rt_run))
     if dept is None:
         dept = np.arange(len(rt)) * 0.5
     gr = _arr(gr_cd, gr_run, like=rt)
@@ -6667,7 +6687,8 @@ def compute_saturation(wid: int, data: dict, db: Session = Depends(get_db)):
                     "phie": (f"{'+'.join(sorted(set(kp_names)))} ({kp_note})"
                              if kp_ready is not None else "расчёт по ГИС"),
                     "nphi": nphi_note,
-                    "rt": rt_cd.mnemonic if rt_cd is not None else None},
+                    # подпись отражает и пересчёт проводимости, если он был
+                    "rt": _rt_note or (rt_cd.mnemonic if rt_cd is not None else None)},
         "stats": {
             "sw_mean": round(float(np.nanmean(valid_sw)), 4) if len(valid_sw) else None,
             "sw_min": round(float(np.nanmin(valid_sw)), 4) if len(valid_sw) else None,
@@ -6997,7 +7018,7 @@ def tornado_analysis(wid: int, data: dict, db: Session = Depends(get_db)):
     if not rt_cd or not nphi_cd:
         raise HTTPException(400, "Need RT and NPHI")
 
-    rt = np.frombuffer(rt_cd.data_binary, dtype=np.float64).copy()
+    rt, _rt_note = _rt_array(rt_cd)
     nphi = np.frombuffer(nphi_cd.data_binary, dtype=np.float64).copy()
     gr = np.frombuffer(gr_cd.data_binary, dtype=np.float64).copy() if gr_cd else np.zeros_like(rt)
 

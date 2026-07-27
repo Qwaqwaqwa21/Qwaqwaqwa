@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import csv
+import datetime
 import io
 import json
 import math
@@ -230,6 +231,19 @@ def _decode(cd) -> Optional[np.ndarray]:
         return None
 
 
+def _runs_newest_first(well: Well):
+    """Рейсы скважины от новых к старым.
+
+    Порядок задаёт, какая версия победит при равном перекрытии интервала:
+    для двух версий РИГИС на одну глубину это должна быть свежая.
+    """
+    return sorted(
+        well.log_runs,
+        key=lambda r: (r.uploaded_at or datetime.datetime.min, r.id),
+        reverse=True,
+    )
+
+
 def _well_curves(well: Well) -> Dict[str, List[Tuple[np.ndarray, np.ndarray]]]:
     """{мнемоника: [(глубины, значения), …]} — все рейсы, т.к. РИГИС С1/С2
     покрывают РАЗНЫЕ интервалы и нужный выбирается по горизонту."""
@@ -237,7 +251,10 @@ def _well_curves(well: Well) -> Dict[str, List[Tuple[np.ndarray, np.ndarray]]]:
     # КОЛЛЕКТОР / НАСЫЩЕНИЕ / КП_W / КГЛ / КНГ_W, а не COLL / SAT / KP.
     wanted = {"COLL", "SAT", "KP", "KGL", "KNG"}
     out: Dict[str, List[Tuple[np.ndarray, np.ndarray]]] = {}
-    for run in well.log_runs:
+    # Рейсы перебираем от НОВЫХ к старым: если пользователь загрузил новую
+    # версию РИГИС на тот же интервал отдельным рейсом, карта обязана считать
+    # по ней. При равном перекрытии выигрывает первый в этом порядке.
+    for run in _runs_newest_first(well):
         depth = None
         for cd in run.curve_data:
             if (cd.mnemonic or "").strip().upper() in _DEPTH:

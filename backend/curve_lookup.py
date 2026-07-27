@@ -150,8 +150,17 @@ def find_curve_in_well(db, well, *keys: str):
     активному рейсу, но сам метод записан в соседнем: у заказчика ГК лежит в
     рейсе ГИС, а выбран может быть рейс РИГИС.
     """
+    import datetime as _dt
+
+    # От НОВЫХ рейсов к старым: если на тот же интервал легла свежая версия
+    # РИГИС отдельным рейсом, расчёт обязан взять её. Число точек остаётся
+    # главным критерием (рядом лежат пустая и рабочая записи), а порядок
+    # решает ничью в пользу свежей.
+    runs = sorted(getattr(well, "log_runs", []) or [],
+                  key=lambda r: (r.uploaded_at or _dt.datetime.min, r.id),
+                  reverse=True)
     best = None
-    for run in getattr(well, "log_runs", []) or []:
+    for run in runs:
         cd = find_curve(db, run.id, *keys)
         if cd is not None and (best is None or (cd.num_points or 0) > (best[0].num_points or 0)):
             best = (cd, run.id)
@@ -172,6 +181,38 @@ def find_depth(db, log_run_id: int) -> Optional[CurveData]:
 _POROSITY_FRACTION_UNITS = {"V/V", "VV", "DEC", "FRAC", "Д.ЕД", "Д.ЕД.", "ДЕК",
                             "ДОЛ.ЕД", "ДОЛ.ЕД.", "ДОЛИ", "M3/M3", "М3/М3"}
 _POROSITY_PERCENT_UNITS = {"%", "PU", "P.U.", "PERC", "PCT", "PERCENT", "%V/V", "ПРОЦ"}
+
+
+# Единицы, в которых записана ПРОВОДИМОСТЬ, а не сопротивление.
+_CONDUCTIVITY_UNITS = {"МСМ/М", "MS/M", "MMHO/M", "MMHOS/M", "СМ/М", "S/M",
+                       "МСИМ/М", "MSIM/M"}
+
+
+def as_resistivity(values, unit: str, mnemonic: str = ""):
+    """Привести кривую к сопротивлению в Ом·м.
+
+    ИК измеряет проводимость, и часть выгрузок отдаёт её как есть. Подстановка
+    мСм/м вместо Ом·м в формулу Архи даёт Кв, ошибочный на порядки, причём
+    молча — числа остаются «правдоподобными». Возвращает ``(значения, подпись)``;
+    при отказе значения равны None, а подпись объясняет причину.
+    """
+    import numpy as np
+
+    if values is None:
+        return None, "кривая пуста"
+    arr = np.asarray(values, dtype=np.float64)
+    u = (unit or "").strip().upper().replace(" ", "").replace(".", "")
+    if u in _CONDUCTIVITY_UNITS:
+        with np.errstate(divide="ignore", invalid="ignore"):
+            res = np.where(arr > 0, 1000.0 / arr, np.nan)
+        return res, f"{mnemonic or 'ИК'}: {unit} → Ом·м (1000/C)"
+    # Отрицательное сопротивление физически невозможно: в промысловых файлах
+    # так выглядят необработанные пропуски. Гасим, иначе Архи считает по ним.
+    bad = np.isfinite(arr) & (arr <= 0)
+    if bad.any():
+        arr = arr.copy()
+        arr[bad] = np.nan
+    return arr, (f"{mnemonic or 'Rt'} ({unit})" if unit else (mnemonic or "Rt"))
 
 
 def water_saturation(db, well, log_run_id=None):

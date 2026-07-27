@@ -1626,3 +1626,50 @@ tr:hover td {
 }
 .well-item:hover .well-del { opacity: 1; }
 .well-del:hover { color: #f85149; }
+
+/* Диалог выбора при повторной загрузке тех же данных. Не модальное окно:
+   решение принимается по месту, рядом с отчётом об импорте. */
+.imp-conflict-dlg {
+    margin: 10px 0;
+    padding: 10px 12px;
+    border: 1px solid var(--accent, #58a6ff);
+    border-radius: 8px;
+    background: var(--bg-secondary, #161b22);
+    font-size: 12px;
+}
+.imp-conflict-head { font-weight: 600; color: var(--text-primary, #c9d1d9); margin-bottom: 8px; }
+.imp-conflict-row { padding: 4px 0; border-bottom: 1px solid var(--border, #30363d); }
+.imp-conflict-row:last-of-type { border-bottom: none; }
+.imp-dim { color: #8b949e; font-size: 11px; }
+.imp-conflict-hint {
+    margin: 8px 0;
+    padding: 8px;
+    border-radius: 6px;
+    background: var(--bg-tertiary, #21262d);
+    color: #8b949e;
+    font-size: 11px;
+    line-height: 1.6;
+}
+.imp-conflict-acts { display: flex; flex-wrap: wrap; gap: 6px; }
+.imp-conflict-acts .imp-choice { cursor: pointer; }
+.imp-conflict-acts .imp-choice[disabled] { opacity: .5; cursor: default; }
+
+/* Подложка модального окна конфликта: решение блокирующее, поэтому окно
+   поднято над сайдбаром и строкой состояния — иначе кнопки перекрываются. */
+.imp-conflict-back {
+    position: fixed;
+    inset: 0;
+    z-index: 9000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+    background: rgba(0, 0, 0, .55);
+}
+.imp-conflict-back .imp-conflict-dlg {
+    margin: 0;
+    max-width: 640px;
+    max-height: 82vh;
+    overflow-y: auto;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, .5);
+}
