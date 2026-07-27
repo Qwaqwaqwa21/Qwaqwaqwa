@@ -1334,11 +1334,28 @@
                 <div class="toolbar-group"><label>Изолиний</label><input id="mapLevels" class="depth-input" type="number" value="8" min="2" max="25" onchange="MapsView.render()"></div>
                 <div class="toolbar-group"><label>Степень IDW</label><input id="mapPower" class="depth-input" type="number" value="2" min="0.5" max="6" step="0.5" onchange="MapsView.load()"></div>
                 <label style="display:flex;align-items:center;gap:6px"><input id="mapReverse" type="checkbox" onchange="MapsView.render()"> physics reverse</label>
+                <div class="toolbar-group"><label>Подписи</label>
+                    <select id="mapLabels" class="depth-select" onchange="MapsView.render()">
+                        <option value="auto" selected>авто</option>
+                        <option value="on">показывать</option>
+                        <option value="off">скрыть</option>
+                    </select>
+                </div>
+                <div class="toolbar-group"><label>Масштаб</label>
+                    <button class="btn-sm" onclick="MapsView.zoomBy(1.4)" title="приблизить">+</button>
+                    <button class="btn-sm" onclick="MapsView.zoomBy(1/1.4)" title="отдалить">−</button>
+                    <button class="btn-sm" onclick="MapsView.resetView()" title="вся площадь">⤢</button>
+                </div>
                 <button class="btn-sm" onclick="MapsView.load()"><i data-lucide="refresh-cw"></i> Построить</button>
                 <button class="btn-sm" onclick="document.getElementById('coordFileInput').click()"><i data-lucide="map-pin"></i> Импорт координат</button>
                 <input type="file" id="coordFileInput" accept=".xlsx,.xlsm,.csv,.txt" style="display:none" onchange="MapsView.importCoordFile(this.files[0])">
                 <button class="btn-sm" onclick="ClipboardPanel.addCurrent()"><i data-lucide="clipboard-plus"></i> В clipboard</button>
                 <button class="btn-sm" onclick="MapsView.showInventory()"><i data-lucide="table"></i> Что есть в скважинах</button>
+                <div class="toolbar-group"><label>Выгрузка</label>
+                    <button class="btn-sm" onclick="MapsView.exportMap('pdf')" title="карта в PDF">PDF</button>
+                    <button class="btn-sm" onclick="MapsView.exportMap('tiff')" title="GeoTIFF с координатной привязкой">GeoTIFF</button>
+                    <button class="btn-sm" onclick="MapsView.exportMap('png')" title="растр PNG">PNG</button>
+                </div>
                 <span id="mapInfo" class="toolbar-hint"></span>
             </div>
             <div id="mapsContent" class="stats-container"></div>

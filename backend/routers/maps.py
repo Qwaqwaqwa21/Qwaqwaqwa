@@ -26,7 +26,7 @@ import struct
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session, selectinload
 
@@ -513,6 +513,47 @@ def map_grid(
         "used": len(used),
         "excluded": sorted(excluded),
     }
+
+
+@router.get("/api/projects/{pid}/map/export")
+def map_export(
+    pid: int,
+    fmt: str = Query("pdf", pattern="^(pdf|tiff|png)$"),
+    param: str = Query("thickness", pattern="^(thickness|porosity|oil_thick|altitude)$"),
+    horizon: str = Query(""),
+    nx: int = Query(140, ge=30, le=400),
+    ny: int = Query(140, ge=30, le=400),
+    power: float = Query(2.0, ge=0.5, le=6.0),
+    pinch: bool = Query(True),
+    exclude: str = Query(""),
+    db: Session = Depends(get_db),
+):
+    """Готовая карта файлом: PDF в отчёт, GeoTIFF в Petrel или QGIS.
+
+    Считается ровно та же сетка, что показана на экране, поэтому цифры в
+    файле и на экране совпадают. Зум и подписи на выгрузку не влияют: файл
+    отдаёт всю площадь в разрешении сетки.
+    """
+    try:
+        from map_export import to_pdf, to_png, to_geotiff
+        from http_files import file_headers
+    except ImportError:  # pragma: no cover — запуск пакетом backend.*
+        from backend.map_export import to_pdf, to_png, to_geotiff
+        from backend.http_files import file_headers
+
+    data = map_grid(pid, param, horizon, nx, ny, power, pinch, exclude, db)
+    data = dict(data)
+    data["horizon"] = horizon
+
+    stem = f"{data.get('param', param)}_{horizon or 'all'}"
+    if fmt == "tiff":
+        body, media, ext = to_geotiff(data), "image/tiff", "tif"
+    elif fmt == "png":
+        body, media, ext = to_png(data, data.get("wells")), "image/png", "png"
+    else:
+        body, media, ext = to_pdf(data, data.get("wells")), "application/pdf", "pdf"
+    return Response(content=body, media_type=media,
+                    headers=file_headers(f"{stem}.{ext}"))
 
 
 @router.get("/api/projects/{pid}/horizons")

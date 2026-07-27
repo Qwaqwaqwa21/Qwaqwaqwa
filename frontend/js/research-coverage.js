@@ -55,7 +55,9 @@
         // Постранично: на трёх тысячах скважин полная сводка считалась
         // полминуты и весила десятки мегабайт, а прочесть её разом нельзя.
         var off = this._offset || 0;
-        var lim = this._limit || 300;
+        // Планшет тяжелее прочих: сотня скважин строится быстро и читается,
+        // остальные догружаются кнопкой «вперёд».
+        var lim = this._limit || (m === 'planshet' ? 100 : 300);
         if (m === 'planshet') this.logData = await app._api('/projects/' + pid
             + '/coverage-log?bins=300&limit=' + lim + '&offset=' + off);
         else if (m === 'horizon') this.horizonData = await app._api('/projects/' + pid
@@ -90,7 +92,7 @@
       host.appendChild(bar);
       bar.querySelectorAll('button').forEach(function (b) {
         b.onclick = function () {
-          var step = self._limit || 300;
+          var step = page.limit || self._limit || 100;
           self._offset = (b.getAttribute('data-act') === 'next')
             ? (page.offset + step) : Math.max(0, page.offset - step);
           self.load();

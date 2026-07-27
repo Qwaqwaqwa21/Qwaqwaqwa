@@ -513,7 +513,7 @@ def research_coverage(
 def coverage_log(
     pid: int,
     bins: int = Query(240, ge=20, le=2000),
-    limit: int = Query(300, ge=0, le=5000,
+    limit: int = Query(100, ge=0, le=5000,
                        description="сколько скважин вернуть; 0 — все"),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
