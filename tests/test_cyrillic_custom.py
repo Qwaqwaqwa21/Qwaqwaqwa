@@ -32,11 +32,24 @@ def test_latin_transliterated_russian_gis_codes():
              "IK": "IK", "DS": "DS", "GZ1": "BKZ", "GZ5": "BKZ",
              "MPZ": "MKZ", "MGZ": "MKZ", "RS": "RS", "AK": "AK",
              "GGKP": "GGKP", "GAZ": "GAZ", "U1": "U1",
-             "INCL": "INKL", "AZ": "INKL"}
+             "INCL": "INKL", "AZ": "AZ"}
     for raw, canon in cases.items():
         s = suggest_mnemonic(raw)
         assert s.canonical == canon, (raw, s.canonical)
         assert s.confidence >= 0.6
+
+
+def test_zenith_and_azimuth_are_distinct_channels():
+    """Зенит и азимут нельзя сводить к одному методу.
+
+    В одном семействе вторая кривая отбрасывается как дубль, азимут читается
+    как зенит, и траектория со всеми TVD становится бессмысленной.
+    """
+    zenith = {suggest_mnemonic(x).canonical for x in ("INKL", "INCL", "ЗЕНИТ", "УГОЛ")}
+    azimuth = {suggest_mnemonic(x).canonical for x in ("AZ", "AZIM", "АЗИМУТ", "АЗ")}
+    assert zenith == {"INKL"}, zenith
+    assert azimuth == {"AZ"}, azimuth
+    assert not (zenith & azimuth)
 
 
 def test_scale_suffix_variants_strip_to_family():

@@ -27,7 +27,7 @@ class Well(Base):
     __tablename__ = "wells"
 
     id = Column(Integer, primary_key=True, index=True)
-    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False, index=True)
     name = Column(String(200), nullable=False)
     uwi = Column(String(100), default="")       # Unique Well Identifier
     api_number = Column(String(100), default="") # API number
@@ -58,7 +58,7 @@ class LogRun(Base):
     __tablename__ = "log_runs"
 
     id = Column(Integer, primary_key=True, index=True)
-    well_id = Column(Integer, ForeignKey("wells.id"), nullable=False)
+    well_id = Column(Integer, ForeignKey("wells.id"), nullable=False, index=True)
     run_number = Column(Integer, default=1)
     filename = Column(String(500), nullable=False)
     name = Column(String(200), default="")      # отображаемое имя рейса (ГИС_С1, РИГИС…)
@@ -82,7 +82,7 @@ class CurveData(Base):
     __tablename__ = "curve_data"
 
     id = Column(Integer, primary_key=True, index=True)
-    log_run_id = Column(Integer, ForeignKey("log_runs.id"), nullable=False)
+    log_run_id = Column(Integer, ForeignKey("log_runs.id"), nullable=False, index=True)
     mnemonic = Column(String(50), nullable=False)
     unit = Column(String(50), default="")
     description = Column(Text, default="")
@@ -99,7 +99,7 @@ class FormationTop(Base):
     __tablename__ = "formation_tops"
 
     id = Column(Integer, primary_key=True, index=True)
-    well_id = Column(Integer, ForeignKey("wells.id"), nullable=False)
+    well_id = Column(Integer, ForeignKey("wells.id"), nullable=False, index=True)
     formation_name = Column(String(200), nullable=False)
     depth = Column(Float, nullable=False)
     top_depth = Column(Float, nullable=True)
@@ -117,7 +117,7 @@ class Annotation(Base):
     __tablename__ = "annotations"
 
     id = Column(Integer, primary_key=True, index=True)
-    well_id = Column(Integer, ForeignKey("wells.id"), nullable=False)
+    well_id = Column(Integer, ForeignKey("wells.id"), nullable=False, index=True)
     depth = Column(Float, nullable=False)
     text = Column(Text, nullable=False)
     annotation_type = Column(String(50), default="note")  # note, flag, zone
@@ -129,7 +129,7 @@ class DSTTest(Base):
     __tablename__ = "dst_tests"
 
     id = Column(Integer, primary_key=True, index=True)
-    well_id = Column(Integer, ForeignKey("wells.id"), nullable=False)
+    well_id = Column(Integer, ForeignKey("wells.id"), nullable=False, index=True)
     test_number = Column(String(100), default="")
     top_depth = Column(Float, nullable=False)
     bottom_depth = Column(Float, nullable=False)
@@ -152,7 +152,7 @@ class RFTPoint(Base):
     __tablename__ = "rft_points"
 
     id = Column(Integer, primary_key=True, index=True)
-    well_id = Column(Integer, ForeignKey("wells.id"), nullable=False)
+    well_id = Column(Integer, ForeignKey("wells.id"), nullable=False, index=True)
     depth = Column(Float, nullable=False)
     pressure = Column(Float, nullable=False)
     mobility = Column(Float, nullable=True)
@@ -207,7 +207,7 @@ class Zone(Base):
     __tablename__ = "zones"
 
     id = Column(Integer, primary_key=True, index=True)
-    well_id = Column(Integer, ForeignKey("wells.id"), nullable=False)
+    well_id = Column(Integer, ForeignKey("wells.id"), nullable=False, index=True)
     name = Column(String(200), nullable=False)
     top_depth = Column(Float, nullable=False)
     bottom_depth = Column(Float, nullable=False)
@@ -223,8 +223,8 @@ class CorrelationMarker(Base):
     __tablename__ = "correlation_markers"
 
     id = Column(Integer, primary_key=True, index=True)
-    well_a_id = Column(Integer, ForeignKey("wells.id"), nullable=False)
-    well_b_id = Column(Integer, ForeignKey("wells.id"), nullable=False)
+    well_a_id = Column(Integer, ForeignKey("wells.id"), nullable=False, index=True)
+    well_b_id = Column(Integer, ForeignKey("wells.id"), nullable=False, index=True)
     a_depth = Column(Float, nullable=False)
     b_depth = Column(Float, nullable=False)
     label = Column(String(100), default="")
@@ -235,8 +235,8 @@ class CorrelationProfile(Base):
     __tablename__ = "correlation_profiles"
 
     id = Column(Integer, primary_key=True, index=True)
-    well_a_id = Column(Integer, ForeignKey("wells.id"), nullable=False)
-    well_b_id = Column(Integer, ForeignKey("wells.id"), nullable=False)
+    well_a_id = Column(Integer, ForeignKey("wells.id"), nullable=False, index=True)
+    well_b_id = Column(Integer, ForeignKey("wells.id"), nullable=False, index=True)
     curve = Column(String(50), default="GR")
     depth_shift = Column(Float, default=0.0)
     stretch = Column(Float, default=1.0)
@@ -284,7 +284,7 @@ class CurveAlias(Base):
     __tablename__ = "curve_aliases"
 
     id = Column(Integer, primary_key=True, index=True)
-    well_id = Column(Integer, ForeignKey("wells.id"), nullable=False)
+    well_id = Column(Integer, ForeignKey("wells.id"), nullable=False, index=True)
     original_mnemonic = Column(String(50), nullable=False)
     alias_mnemonic = Column(String(50), nullable=False)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
@@ -296,7 +296,7 @@ class DeviationSurvey(Base):
     __tablename__ = "deviation_surveys"
 
     id = Column(Integer, primary_key=True, index=True)
-    well_id = Column(Integer, ForeignKey("wells.id"), nullable=False)
+    well_id = Column(Integer, ForeignKey("wells.id"), nullable=False, index=True)
     md = Column(Float, nullable=False)
     inc = Column(Float, nullable=False)
     azi = Column(Float, nullable=False)
@@ -313,7 +313,7 @@ class AuditLog(Base):
     __tablename__ = "audit_log"
 
     id = Column(Integer, primary_key=True, index=True)
-    project_id = Column(Integer, ForeignKey("projects.id"), nullable=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=True, index=True)
     well_id = Column(Integer, ForeignKey("wells.id"), nullable=True)
     action = Column(String(100), nullable=False)  # upload, compute, export, edit, delete
     entity_type = Column(String(50), default="")  # well, top, zone, curve, petro_params

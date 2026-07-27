@@ -49,7 +49,11 @@ METHODS: List[LogMethod] = [
     LogMethod("IK", "ИК — индукционный каротаж", "electrical", "IK",
               ("IK", "ИК", "RIK", "РИК", "ILD", "RILD", "ILM", "RILM",
                "CILD", "CILM", "AT90", "AT60"),
-              unit="мСм/м", color="#e67e22", track=1, log_scale=True,
+              # В российской практике ИК чаще выгружают уже пересчитанным в
+              # кажущееся сопротивление (Ом·м); проводимость встречается, но
+              # реже. Подпись по умолчанию — Ом·м, а фактическая берётся из
+              # файла, если она там указана.
+              unit="Ом·м", color="#e67e22", track=1, log_scale=True,
               keywords=("IK", "ИК", "ILD", "INDUC")),
     LogMethod("BK", "БК — боковой каротаж", "electrical", "BK",
               ("BK", "БК", "LLD", "LLS", "RLA5", "RLA3"), unit="Ом·м",
@@ -118,10 +122,19 @@ METHODS: List[LogMethod] = [
     LogMethod("TEMP", "Термометрия", "auxiliary", "TEMP",
               ("TEMP", "DTEM", "TEMPC", "ТМ", "ТЕМ"), unit="°C",
               color="#fd79a8", track=0, keywords=("TEMP", "DTEM", "ТМ")),
-    LogMethod("INKL", "Инклинометрия", "auxiliary", "INKL",
-              ("INKL", "INCL", "ИНКЛ", "AZ", "AZIM", "ZENIT", "ZENITH", "DEVI", "INK"),
+    # Зенитный угол и азимут — РАЗНЫЕ каналы инклинометрии. Пока они лежали в
+    # одном семействе, обе кривые приводились к INKL: первая выигрывала,
+    # вторая отбрасывалась как дубль, азимут читался как зенит — траектория
+    # и TVD получались бессмысленными.
+    LogMethod("INKL", "Инклинометрия — зенитный угол", "auxiliary", "INKL",
+              ("INKL", "INCL", "ИНКЛ", "ZENIT", "ZENITH", "DEVI", "INK",
+               "ЗЕНИТ", "ЗЕН", "УГОЛ", "UGOL", "ANGLE"),
               unit="град", color="#636e72", track=0,
-              keywords=("INCL", "INKL", "AZIM", "ZENIT")),
+              keywords=("INCL", "INKL", "ZENIT", "ЗЕНИТ", "УГОЛ")),
+    LogMethod("AZIM", "Инклинометрия — азимут", "auxiliary", "AZ",
+              ("AZ", "AZIM", "AZIMUTH", "АЗИМУТ", "АЗ", "AZI"),
+              unit="град", color="#7f8fa6", track=0,
+              keywords=("AZIM", "АЗИМУТ", "AZIMUTH")),
 
     # --- Результаты интерпретации (РИГИС) ---
     LogMethod("KP", "Кп — пористость", "interpretation", "KP",
@@ -131,10 +144,17 @@ METHODS: List[LogMethod] = [
               ("KGL", "КГЛ", "КГЛ_ГК", "KGL_GK", "VSH", "VCL", "VSHALE"),
               unit="д.ед.", color="#7f8c8d", track=3, derived=True,
               keywords=("КГЛ", "VSH", "VCL")),
+    # Кнг и Кв — ДОПОЛНЯЮЩИЕ величины (Кв = 1 − Кнг), поэтому это разные
+    # методы: пока SW/SWE лежали в семействе КНГ, водонасыщенность
+    # подменялась нефтегазонасыщенностью и отбор коллектора инвертировался.
     LogMethod("KNG", "Кнг — нефтегазонасыщенность", "interpretation", "KNG",
-              ("KNG", "КНГ", "КНГ_W", "KNG_W", "КН", "SW", "SWT", "SWE", "КВ_W"),
+              ("KNG", "КНГ", "КНГ_W", "KNG_W", "КН", "SO", "SOIL", "SHC"),
               unit="д.ед.", color="#2980b9", track=3, derived=True,
-              keywords=("КНГ", "SATUR")),
+              keywords=("КНГ", "НЕФТЕНАС", "ГАЗОНАС")),
+    LogMethod("KV", "Кв — водонасыщенность", "interpretation", "SW",
+              ("SW", "SWT", "SWE", "КВ_W", "KV_W", "SW_W", "SWA"),
+              unit="д.ед.", color="#3498db", track=3, derived=True,
+              keywords=("КВ", "ВОДОНАС", "WATER SAT")),
     LogMethod("KPR", "Кпр — проницаемость", "interpretation", "KPR",
               ("KPR", "КПР", "ПРОН", "PERM", "KINT", "KLOGH"), unit="мД",
               color="#af7ac5", track=3, log_scale=True, derived=True,

@@ -13,7 +13,8 @@
 
   function projectId() {
     var a = (typeof app !== 'undefined') ? app : window.app;
-    return (a && a.projects && a.projects[0]) ? a.projects[0].id : null;
+    return (a && typeof a._pid === 'function') ? a._pid()
+         : ((a && a.projects && a.projects[0]) ? a.projects[0].id : null);
   }
   function esc(s) {
     return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
@@ -40,6 +41,7 @@
       if (mc) mc.style.display = (m === 'matrix') ? 'contents' : 'none';
       var hx = document.getElementById('coverageHorizonControls');
       if (hx) hx.style.display = (m === 'horizon') ? 'contents' : 'none';
+      this._offset = 0;
       this.load();
     },
 
@@ -50,15 +52,52 @@
       if (host) host.innerHTML = '<p style="color:#8b949e">Расчёт охвата…</p>';
       var m = this._mode();
       try {
-        if (m === 'planshet') this.logData = await app._api('/projects/' + pid + '/coverage-log?bins=300');
-        else if (m === 'horizon') this.horizonData = await app._api('/projects/' + pid + '/coverage-by-horizon');
-        else this.data = await app._api('/projects/' + pid + '/research-coverage?depth_bins=24');
+        // Постранично: на трёх тысячах скважин полная сводка считалась
+        // полминуты и весила десятки мегабайт, а прочесть её разом нельзя.
+        var off = this._offset || 0;
+        // Планшет тяжелее прочих: сотня скважин строится быстро и читается,
+        // остальные догружаются кнопкой «вперёд».
+        var lim = this._limit || (m === 'planshet' ? 100 : 300);
+        if (m === 'planshet') this.logData = await app._api('/projects/' + pid
+            + '/coverage-log?bins=300&limit=' + lim + '&offset=' + off);
+        else if (m === 'horizon') this.horizonData = await app._api('/projects/' + pid
+            + '/coverage-by-horizon?limit=' + lim + '&offset=' + off);
+        else this.data = await app._api('/projects/' + pid
+            + '/research-coverage?depth_bins=24&limit=' + lim + '&offset=' + off);
       } catch (e) {
         if (host) host.innerHTML = '<p style="color:#f85149">Ошибка: ' + esc(e.message || e) + '</p>';
         return;
       }
       this.render();
+      // страницу берём У ТЕКУЩЕГО режима: иначе после переключения
+      // показывалась навигация от прошлых данных
+      var cur = (m === 'planshet') ? this.logData
+              : (m === 'horizon') ? this.horizonData : this.data;
+      this._renderPager(host, (cur || {}).page);
       if (window.lucide) lucide.createIcons();
+    },
+
+    // Переход по страницам сводки. Показываем, сколько скважин видно из
+    // скольких — иначе непонятно, вся ли это выборка.
+    _renderPager: function (host, page) {
+      if (!host || !page || !page.total_wells) return;
+      var self = this;
+      var from = page.offset + 1, to = page.offset + page.returned;
+      var bar = document.createElement('div');
+      bar.className = 'coverage-pager';
+      bar.innerHTML = '<span>скважины <b>' + from + '–' + to + '</b> из <b>'
+        + page.total_wells + '</b></span>'
+        + '<button class="btn-sm" data-act="prev"' + (page.offset ? '' : ' disabled') + '>← назад</button>'
+        + '<button class="btn-sm" data-act="next"' + (page.has_more ? '' : ' disabled') + '>вперёд →</button>';
+      host.appendChild(bar);
+      bar.querySelectorAll('button').forEach(function (b) {
+        b.onclick = function () {
+          var step = page.limit || self._limit || 100;
+          self._offset = (b.getAttribute('data-act') === 'next')
+            ? (page.offset + step) : Math.max(0, page.offset - step);
+          self.load();
+        };
+      });
     },
 
     render: function () {

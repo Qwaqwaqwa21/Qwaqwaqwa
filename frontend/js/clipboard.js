@@ -27,7 +27,8 @@
   }
   function pid() {
     var a = (typeof app !== 'undefined') ? app : window.app;
-    return (a && a.projects && a.projects[0]) ? a.projects[0].id : null;
+    return (a && typeof a._pid === 'function') ? a._pid()
+         : ((a && a.projects && a.projects[0]) ? a.projects[0].id : null);
   }
 
   window.ClipboardPanel = {
@@ -111,7 +112,8 @@
       set('mapLevels', it.levels);
       var rev = document.getElementById('mapReverse');
       if (rev) rev.checked = !!it.reverse;
-      if (typeof MapsView !== 'undefined') MapsView.load();
+      // возвращаем промис: вызывающему коду нужно дождаться пересчёта карты
+      return (typeof MapsView !== 'undefined') ? MapsView.load() : Promise.resolve();
     },
 
     addCurrent: async function () {
@@ -126,6 +128,11 @@
         reverse: !!(document.getElementById('mapReverse') || {}).checked,
         title: ''
       };
+      if (body.param !== 'wellheads' && !body.horizon) {
+        // Позиция без горизонта не откроется: сохранять её бессмысленно
+        GeoToast.warn('Укажите горизонт — без него карта параметра не строится');
+        return;
+      }
       try {
         await app._api('/projects/' + p + '/clipboard', { method: 'POST', body: JSON.stringify(body) });
         GeoToast.success('Карта добавлена в clipboard');

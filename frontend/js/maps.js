@@ -31,7 +31,8 @@
   }
   function pid() {
     var a = (typeof app !== 'undefined') ? app : window.app;
-    return (a && a.projects && a.projects[0]) ? a.projects[0].id : null;
+    return (a && typeof a._pid === 'function') ? a._pid()
+         : ((a && a.projects && a.projects[0]) ? a.projects[0].id : null);
   }
 
   window.MapsView = {
@@ -85,6 +86,15 @@
           this.data = null;
         } else {
           var h = (document.getElementById('mapHorizon') || {}).value || '';
+          if (!h) {
+            // Без горизонта карта параметра не считается: не дёргаем сервер
+            // ради заведомого 400, а сразу объясняем, чего не хватает.
+            this.data = null;
+            this.wellheads = null;
+            if (host) host.innerHTML = '<p style="color:#f85149">Укажите горизонт — '
+              + 'в проекте нет отбивок, загрузите их во вкладке «Отбивки»</p>';
+            return;
+          }
           var pw = (document.getElementById('mapPower') || {}).value || '2';
           this.data = await app._api('/projects/' + p + '/map/grid?param=' + param
             + '&horizon=' + encodeURIComponent(h) + '&power=' + pw + '&nx=150&ny=150'
@@ -92,6 +102,9 @@
           this.wellheads = null;
         }
       } catch (e) {
+        // запрос вытеснен более новым (дедупликация в app._api) — не ошибка:
+        // карту дорисует тот вызов, который его вытеснил
+        if (/superseded/i.test((e && e.message) || '')) return;
         if (host) host.innerHTML = '<p style="color:#f85149">' + esc(e.message || e) + '</p>';
         return;
       }
@@ -124,7 +137,11 @@
       host.innerHTML = '<p style=\"color:#8b949e\">Сбор сведений…</p>';
       var inv;
       try { inv = await app._api('/projects/' + p + '/inventory'); }
-      catch (e) { host.innerHTML = '<p style=\"color:#f85149\">' + esc(e.message || e) + '</p>'; return; }
+      catch (e) {
+        if (/superseded/i.test((e && e.message) || '')) return;
+        host.innerHTML = '<p style=\"color:#f85149\">' + esc(e.message || e) + '</p>';
+        return;
+      }
       var s = inv.summary;
       var yes = function (v) { return v ? '<span style=\"color:#3fb950\">✔</span>' : '<span style=\"color:#f85149\">—</span>'; };
       var h = '<h3 style=\"color:#c9d1d9;margin:0 0 10px\">Что есть в скважинах</h3>';
@@ -167,6 +184,77 @@
       if (info) info.textContent = 'Инвентаризация · ' + s.wells + ' скв.';
     },
 
+    // Текущий масштаб и сдвиг карты. Хранится отдельно от данных: смена
+    // горизонта не должна сбрасывать то, куда пользователь смотрит.
+    view: { zoom: 1, dx: 0, dy: 0 },
+
+    // Выгрузка карты файлом. Параметры берём те же, что и при построении,
+    // иначе в файле окажется не то, что на экране.
+    exportMap: function (fmt) {
+      var p = pid();
+      if (!p) { GeoToast.warn('Откройте проект'); return; }
+      var param = (document.getElementById('mapParam') || {}).value || 'thickness';
+      if (param === 'wellheads') { GeoToast.warn('Карта устьев не выгружается — постройте карту параметра'); return; }
+      var h = (document.getElementById('mapHorizon') || {}).value || '';
+      if (param !== 'altitude' && !h) { GeoToast.warn('Выберите горизонт'); return; }
+      var pw = (document.getElementById('mapPower') || {}).value || 2;
+      var url = '/api/projects/' + p + '/map/export?fmt=' + fmt
+        + '&param=' + encodeURIComponent(param)
+        + '&horizon=' + encodeURIComponent(h)
+        + '&power=' + pw + '&nx=150&ny=150' + this._excludeParam();
+      GeoToast.info('Готовим ' + fmt.toUpperCase() + '…');
+      var a = document.createElement('a');
+      a.href = url; a.download = '';
+      document.body.appendChild(a); a.click(); a.remove();
+    },
+
+    resetView: function () {
+      this.view = { zoom: 1, dx: 0, dy: 0 };
+      this.render();
+    },
+
+    zoomBy: function (k, cx, cy) {
+      var v = this.view, geom = this._lastGeom;
+      var next = Math.min(40, Math.max(1, v.zoom * k));
+      if (next === v.zoom) return;
+      if (geom && cx != null) {
+        // масштабируем ОТНОСИТЕЛЬНО точки под курсором, иначе карта уползает
+        var r = next / v.zoom;
+        v.dx = cx - r * (cx - v.dx);
+        v.dy = cy - r * (cy - v.dy);
+      }
+      v.zoom = next;
+      if (next === 1) { v.dx = 0; v.dy = 0; }
+      this.render();
+    },
+
+    // Колесо — масштаб, перетаскивание — сдвиг. Вешается на холст после
+    // каждой отрисовки: холст создаётся заново.
+    _bindViewControls: function (cv) {
+      var self = this;
+      cv.onwheel = function (e) {
+        e.preventDefault();
+        var r = cv.getBoundingClientRect();
+        self.zoomBy(e.deltaY < 0 ? 1.2 : 1 / 1.2, e.clientX - r.left, e.clientY - r.top);
+      };
+      var drag = null;
+      cv.onmousedown = function (e) {
+        drag = { x: e.clientX, y: e.clientY, dx: self.view.dx, dy: self.view.dy };
+        cv.style.cursor = 'grabbing';
+      };
+      window.addEventListener('mousemove', function (e) {
+        if (!drag) return;
+        self.view.dx = drag.dx + (e.clientX - drag.x);
+        self.view.dy = drag.dy + (e.clientY - drag.y);
+        self.render();
+      });
+      window.addEventListener('mouseup', function () {
+        if (drag) { drag = null; cv.style.cursor = 'grab'; }
+      });
+      cv.style.cursor = 'grab';
+      cv.title = 'колесо — масштаб, перетаскивание — сдвиг';
+    },
+
     render: function () {
       var host = document.getElementById('mapsContent');
       if (!host) return;
@@ -202,15 +290,24 @@
         var px = (x1 - x0) * 0.12 || 500, py = (y1 - y0) * 0.12 || 500;
         x0 -= px; x1 += px; y0 -= py; y1 += py;
       }
-      // равный масштаб по осям
+      // равный масштаб по осям; поверх — пользовательский зум и сдвиг
       var availW = W - m.l - m.r, availH = H - m.t - m.b;
-      var sc = Math.min(availW / (x1 - x0), availH / (y1 - y0));
-      var offX = m.l + (availW - (x1 - x0) * sc) / 2;
-      var offY = m.t + (availH - (y1 - y0) * sc) / 2;
+      var base = Math.min(availW / (x1 - x0), availH / (y1 - y0));
+      var zoom = this.view.zoom || 1;
+      var sc = base * zoom;
+      var offX = m.l + (availW - (x1 - x0) * sc) / 2 + (this.view.dx || 0);
+      var offY = m.t + (availH - (y1 - y0) * sc) / 2 + (this.view.dy || 0);
+      this._lastGeom = { x0: x0, x1: x1, y0: y0, y1: y1, sc: sc, base: base,
+                         offX: offX, offY: offY, m: m, W: W, H: H };
       var X = function (v) { return offX + (v - x0) * sc; };
       var Y = function (v) { return offY + (y1 - v) * sc; };   // север вверх
 
       var rev = !!(document.getElementById('mapReverse') || {}).checked;
+
+      g.save();
+      g.beginPath();
+      g.rect(m.l, m.t, availW, availH);
+      g.clip();   // при зуме содержимое не должно вылезать на поля
 
       // ── заливка сетки ──
       if (d) {
@@ -245,21 +342,40 @@
       }
 
       // ── скважины ──
-      pts.forEach(function (p) {
+      // На трёх тысячах скважин кружки радиусом 4.5 с подписями сливались в
+      // сплошную кашу и полностью закрывали построенную поверхность. Размер
+      // значка и наличие подписей теперь зависят от того, сколько скважин
+      // реально попало в видимую область, и от масштаба.
+      var visible = pts.filter(function (p) {
+        var px = X(p.x), py = Y(p.y);
+        return px >= m.l - 20 && px <= m.l + availW + 20
+            && py >= m.t - 20 && py <= m.t + availH + 20;
+      });
+      var labelMode = (document.getElementById('mapLabels') || {}).value || 'auto';
+      var showLabels = labelMode === 'on'
+        || (labelMode === 'auto' && visible.length <= 60);
+      var rad = visible.length > 1200 ? 1.6
+              : visible.length > 400 ? 2.4
+              : visible.length > 120 ? 3.4 : 4.5;
+
+      visible.forEach(function (p) {
         var px = X(p.x), py = Y(p.y);
         var noData = d && (p.value == null);
         var zero = d && (p.value != null && p.value <= 1e-9);
         var off = p.excluded || (typeof MapsView !== 'undefined' && MapsView.isExcluded(p.id));
         g.save();
         if (off) g.globalAlpha = 0.4;
-        g.beginPath(); g.arc(px, py, 4.5, 0, 6.283);
+        g.beginPath(); g.arc(px, py, rad, 0, 6.283);
         g.fillStyle = noData ? '#484f58' : (zero ? '#0d1117' : '#ffffff');
         g.fill();
-        g.lineWidth = 1.4;
-        g.strokeStyle = off ? '#f0b429' : (zero ? '#f85149' : '#0d1117');
-        if (off) { g.setLineDash([2, 2]); g.lineWidth = 1.8; }
-        g.stroke();
+        if (rad >= 2.4) {                 // тонкая обводка неразличима и съедает поверхность
+          g.lineWidth = rad >= 4 ? 1.4 : 1;
+          g.strokeStyle = off ? '#f0b429' : (zero ? '#f85149' : '#0d1117');
+          if (off) { g.setLineDash([2, 2]); g.lineWidth = 1.8; }
+          g.stroke();
+        }
         g.restore();
+        if (!showLabels) return;
         g.fillStyle = '#ffffff'; g.font = '11px system-ui,sans-serif'; g.textAlign = 'left';
         g.fillText(p.name, px + 7, py - 5);
         if (d && p.value != null) {
@@ -267,6 +383,7 @@
           g.fillText(p.value.toFixed(p.value < 1 ? 3 : 1), px + 7, py + 8);
         }
       });
+      g.restore();   // снимаем обрезку поля карты
 
       // ── рамка, север, масштаб ──
       g.strokeStyle = '#484f58'; g.lineWidth = 1;
@@ -288,6 +405,16 @@
       g.fillText('X, м (СК-63)', W / 2, H - 12);
       g.save(); g.translate(16, H / 2); g.rotate(-Math.PI / 2);
       g.fillText('Y, м (СК-63)', 0, 0); g.restore();
+
+      // указатель масштаба: без него непонятно, почему видна часть площади
+      if ((this.view.zoom || 1) > 1.001) {
+        g.fillStyle = '#f0b429'; g.font = '11px system-ui,sans-serif'; g.textAlign = 'right';
+        g.fillText('масштаб ×' + this.view.zoom.toFixed(1) + '  (двойной щелчок — сброс)',
+                   W - m.r, m.t - 6);
+      }
+
+      this._bindViewControls(cv);
+      cv.ondblclick = function () { MapsView.resetView(); };
 
       var lg = document.getElementById('geoMapLegend');
       if (lg) lg.innerHTML = this._legend(d, rev);

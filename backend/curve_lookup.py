@@ -8,7 +8,7 @@
 """
 from __future__ import annotations
 
-from typing import Iterable, Optional
+from typing import Dict, Iterable, Optional, Tuple
 
 try:
     from models import CurveData
@@ -34,12 +34,40 @@ EQUIVALENT = {
     "DS": ("CAL",),
     "SP": ("PS",),
     "PS": ("SP",),
-    "RT": ("KS", "BK", "IK"),
+    "RT": ("BK", "IK", "KS", "BKZ"),
     "KS": ("RT",),
     "BK": ("RT",),
     "IK": ("RT",),
+    # Результаты интерпретации: расчёты просят западные обозначения величин,
+    # а в РИГИС они записаны как Кп/Кгл/Кнг/Кпр. Без этих пар петрофизика на
+    # промысловых файлах отвечала «PHIE not found» при наличии Кп в рейсе.
+    # Кв (SW) НЕ приравнивается к Кнг: это дополняющие величины, пересчёт
+    # делается явно (см. water_saturation).
+    "PHIE": ("KP",), "PHIT": ("KP",), "KP": ("PHIE",),
+    "VSH": ("KGL",), "VCL": ("KGL",), "KGL": ("VSH",),
+    "PERM": ("KPR",), "KPR": ("PERM",),
+    "SW": ("KV",), "KV": ("SW",),
+    "LITH": ("LITH",), "COLL": ("COLL",), "SAT": ("SAT",),
     "RXO": ("MKZ",),
     "MKZ": ("RXO",),
+}
+
+
+# Порядок предпочтения там, где годится несколько методов. Множество `wanted`
+# порядок теряет, поэтому для таких запросов сначала перебираем методы по
+# очереди. Для Rt это принципиально: КС — КАЖУЩЕЕСЯ сопротивление, искажённое
+# скважиной и зоной проникновения, и подстановка его вместо БК/ИК смещает Кв
+# по Архи на десятки процентов.
+PREFERRED: Dict[str, Tuple[str, ...]] = {
+    "RT": ("BK", "IK", "KS", "BKZ"),
+}
+
+# Микро- и неглубокие зонды: годятся как запасной вариант для Rxo, но не
+# должны выигрывать у глубинных зондов при поиске Rt.
+SHALLOW_PROBES = {
+    "MKZ", "МКЗ", "MPZ", "МПЗ", "MGZ", "МГЗ", "MSFL", "MINV", "MNOR", "MLL",
+    "RXO", "BMK", "БМК", "GZ", "ГЗ", "GZ1", "GZ2", "GZ3", "GZ4", "GZ5",
+    "LLS", "ILM", "RILM", "CILM", "RLA1", "RLA2", "RLA3", "AT60",
 }
 
 
@@ -47,6 +75,17 @@ def method_key(mnemonic: str) -> Optional[str]:
     """Ключ метода для мнемоники (GK_500 → GK, ЛИТОЛОГИЯ → LITH)."""
     meth = method_for_mnemonic(mnemonic or "")
     return meth.key if meth else None
+
+
+def _base_mnemonic(name: str) -> str:
+    """Мнемоника без суффиксов рейса: MGZ_500_2 → MGZ, GK_1 → GK."""
+    base = (name or "").strip().upper()
+    while True:
+        head, sep, tail = base.rpartition("_")
+        if sep and (tail.isdigit() or tail in {"W", "500"}):
+            base = head
+            continue
+        return base
 
 
 def _wanted(keys: Iterable[str]) -> set:
@@ -70,15 +109,31 @@ def find_curve(db, log_run_id: int, *keys: str) -> Optional[CurveData]:
     if not wanted:
         return None
     rows = db.query(CurveData).filter(CurveData.log_run_id == log_run_id).all()
-    best = None
-    for cd in rows:
-        name = (cd.mnemonic or "").strip()
-        if name.upper() in DEPTH_NAMES:
-            continue
-        mk = method_key(name)
-        if mk and mk in wanted:
-            if best is None or (cd.num_points or 0) > (best.num_points or 0):
-                best = cd
+
+    # Для Rt микрозонды отсекаем: они читают промытую зону, а не пласт
+    drop_shallow = any((k or "").upper() == "RT" for k in keys)
+
+    def _pick(allowed: set) -> Optional[CurveData]:
+        best = None
+        for cd in rows:
+            name = (cd.mnemonic or "").strip()
+            if name.upper() in DEPTH_NAMES:
+                continue
+            if drop_shallow and _base_mnemonic(name) in SHALLOW_PROBES:
+                continue
+            mk = method_key(name)
+            if mk and mk in allowed:
+                if best is None or (cd.num_points or 0) > (best.num_points or 0):
+                    best = cd
+        return best
+
+    # сначала — методы в порядке предпочтения, затем всё остальное семейство
+    for k in keys:
+        for meth in PREFERRED.get((k or "").upper(), ()):
+            got = _pick({meth})
+            if got is not None:
+                return got
+    best = _pick(wanted)
     if best is not None:
         return best
     # прямое совпадение по имени — на случай мнемоник вне справочника
@@ -95,8 +150,17 @@ def find_curve_in_well(db, well, *keys: str):
     активному рейсу, но сам метод записан в соседнем: у заказчика ГК лежит в
     рейсе ГИС, а выбран может быть рейс РИГИС.
     """
+    import datetime as _dt
+
+    # От НОВЫХ рейсов к старым: если на тот же интервал легла свежая версия
+    # РИГИС отдельным рейсом, расчёт обязан взять её. Число точек остаётся
+    # главным критерием (рядом лежат пустая и рабочая записи), а порядок
+    # решает ничью в пользу свежей.
+    runs = sorted(getattr(well, "log_runs", []) or [],
+                  key=lambda r: (r.uploaded_at or _dt.datetime.min, r.id),
+                  reverse=True)
     best = None
-    for run in getattr(well, "log_runs", []) or []:
+    for run in runs:
         cd = find_curve(db, run.id, *keys)
         if cd is not None and (best is None or (cd.num_points or 0) > (best[0].num_points or 0)):
             best = (cd, run.id)
@@ -111,3 +175,127 @@ def find_depth(db, log_run_id: int) -> Optional[CurveData]:
             if (cd.mnemonic or "").strip().upper() == name:
                 return cd
     return None
+
+
+# Единицы, в которых значение действительно является пористостью.
+_POROSITY_FRACTION_UNITS = {"V/V", "VV", "DEC", "FRAC", "Д.ЕД", "Д.ЕД.", "ДЕК",
+                            "ДОЛ.ЕД", "ДОЛ.ЕД.", "ДОЛИ", "M3/M3", "М3/М3"}
+_POROSITY_PERCENT_UNITS = {"%", "PU", "P.U.", "PERC", "PCT", "PERCENT", "%V/V", "ПРОЦ"}
+
+
+# Единицы, в которых записана ПРОВОДИМОСТЬ, а не сопротивление.
+_CONDUCTIVITY_UNITS = {"МСМ/М", "MS/M", "MMHO/M", "MMHOS/M", "СМ/М", "S/M",
+                       "МСИМ/М", "MSIM/M"}
+
+
+def as_resistivity(values, unit: str, mnemonic: str = ""):
+    """Привести кривую к сопротивлению в Ом·м.
+
+    ИК измеряет проводимость, и часть выгрузок отдаёт её как есть. Подстановка
+    мСм/м вместо Ом·м в формулу Архи даёт Кв, ошибочный на порядки, причём
+    молча — числа остаются «правдоподобными». Возвращает ``(значения, подпись)``;
+    при отказе значения равны None, а подпись объясняет причину.
+    """
+    import numpy as np
+
+    if values is None:
+        return None, "кривая пуста"
+    arr = np.asarray(values, dtype=np.float64)
+    u = (unit or "").strip().upper().replace(" ", "").replace(".", "")
+    if u in _CONDUCTIVITY_UNITS:
+        with np.errstate(divide="ignore", invalid="ignore"):
+            res = np.where(arr > 0, 1000.0 / arr, np.nan)
+        return res, f"{mnemonic or 'ИК'}: {unit} → Ом·м (1000/C)"
+    # Отрицательное сопротивление физически невозможно: в промысловых файлах
+    # так выглядят необработанные пропуски. Гасим, иначе Архи считает по ним.
+    bad = np.isfinite(arr) & (arr <= 0)
+    if bad.any():
+        arr = arr.copy()
+        arr[bad] = np.nan
+    return arr, (f"{mnemonic or 'Rt'} ({unit})" if unit else (mnemonic or "Rt"))
+
+
+def water_saturation(db, well, log_run_id=None):
+    """Кв для расчётов: своя кривая либо явный пересчёт из Кнг (Кв = 1 − Кнг).
+
+    РИГИС отдаёт нефтегазонасыщенность, а формулы просят водонасыщенность.
+    Пересчёт именно ЯВНЫЙ и подписывается в ответе: молчаливая подстановка Кнг
+    вместо Кв инвертирует отбор коллектора (в пласт попадают обводнённые
+    интервалы). Возвращает ``(значения, подпись, log_run_id)``.
+    """
+    import numpy as np
+
+    def _vals(cd):
+        """Значения кривой в ДОЛЯХ единицы.
+
+        Насыщенность в РИГИС пишут и в долях, и в процентах. Без приведения
+        Кв = 1 − Кнг при Кнг = 45 % давало −44 и после clip — ноль, то есть
+        полностью обводнённый пласт вместо нефтенасыщенного.
+        """
+        if cd is None or not cd.data_binary:
+            return None
+        v = np.frombuffer(cd.data_binary, dtype=np.float64).copy()
+        u = (cd.unit or "").strip().upper().replace(" ", "")
+        fin = v[np.isfinite(v)]
+        if u in _POROSITY_PERCENT_UNITS or (u not in _POROSITY_FRACTION_UNITS
+                                            and fin.size and np.nanmax(fin) > 1.5):
+            v = v / 100.0
+        return v
+
+    if log_run_id is not None:
+        cd = find_curve(db, log_run_id, "SW")
+        if cd is not None:
+            return _vals(cd), cd.mnemonic, log_run_id
+        cd = find_curve(db, log_run_id, "KNG")
+        if cd is not None:
+            v = _vals(cd)
+            return (np.clip(1.0 - v, 0.0, 1.0) if v is not None else None,
+                    f"1 - {cd.mnemonic}", log_run_id)
+        return None, None, None
+
+    cd, rid = find_curve_in_well(db, well, "SW")
+    if cd is not None:
+        return _vals(cd), cd.mnemonic, rid
+    cd, rid = find_curve_in_well(db, well, "KNG")
+    if cd is not None:
+        v = _vals(cd)
+        return (np.clip(1.0 - v, 0.0, 1.0) if v is not None else None,
+                f"1 - {cd.mnemonic}", rid)
+    return None, None, None
+
+
+def as_porosity(values, unit=""):
+    """Привести кривую к пористости в долях единицы или отказаться.
+
+    НГК в усл. ед. (значения 1–5) — это НЕ пористость: если подставить его в
+    формулы напрямую, Кп упирается в верхнюю отсечку 0.6 и Sw считается по
+    мусору. Поэтому кривая принимается, только когда единицы прямо говорят о
+    пористости либо диапазон значений сам по себе допустим.
+
+    Возвращает ``(массив|None, подпись)``.
+    """
+    import numpy as np
+
+    if values is None:
+        return None, "нет кривой"
+    arr = np.asarray(values, dtype=float)
+    if not np.any(np.isfinite(arr)):
+        return None, "пусто"
+    u = (unit or "").strip().upper().replace(" ", "")
+    hi = float(np.nanmax(arr[np.isfinite(arr)]))
+
+    if u in _POROSITY_PERCENT_UNITS:
+        return arr / 100.0, f"{unit} → д.ед."
+    if u in _POROSITY_FRACTION_UNITS:
+        return arr, unit or "д.ед."
+    # Единицы не указаны (обычное дело в промысловых LAS) — решаем по диапазону
+    med = float(np.nanmedian(arr[np.isfinite(arr)]))
+    if hi <= 1.0:
+        return arr, "д.ед. (по диапазону)"
+    if hi <= 2.0 and med <= 1.0:
+        # доли единицы с редкими выбросами чуть выше 1 — обрезаем, а не бракуем
+        return np.clip(arr, 0.0, 1.0), "д.ед. (выбросы обрезаны)"
+    if hi <= 100.0 and med > 1.0 and hi > 5.0:
+        # 1–100 без единиц: проценты только если и медиана выше единицы
+        return arr / 100.0, "% (по диапазону) → д.ед."
+    return None, f"единицы «{unit or 'не заданы'}», диапазон до {hi:g} — не пористость"

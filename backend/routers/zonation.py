@@ -1,5 +1,10 @@
 """Zonation + Net Pay Report router for GeoLog."""
 from fastapi import APIRouter, Depends, HTTPException
+
+try:
+    from http_files import file_headers as _file_headers
+except ImportError:  # запуск пакетом backend.*
+    from backend.http_files import file_headers as _file_headers
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 import numpy as np
@@ -12,10 +17,17 @@ import datetime
 try:
     from database import get_db
     from models import Well, LogRun, CurveData, FormationTop, Zone, PetroParams
+    from curve_lookup import (find_curve as _find_curve,
+                              find_curve_in_well as _find_curve_in_well,
+                              find_depth as _find_depth,
+                              water_saturation as _water_saturation)
 except ImportError:
     from backend.database import get_db
     from backend.models import Well, LogRun, CurveData, FormationTop, Zone, PetroParams
-    from backend.curve_lookup import find_depth as _find_depth
+    from backend.curve_lookup import (find_curve as _find_curve,
+                                      find_curve_in_well as _find_curve_in_well,
+                                      find_depth as _find_depth,
+                                      water_saturation as _water_saturation)
 
 router = APIRouter(prefix="/api/wells/{wid}", tags=["zonation"])
 
@@ -24,18 +36,22 @@ def _get_latest_run(wid: int, db: Session):
     return db.query(LogRun).filter(LogRun.well_id == wid).order_by(LogRun.id.desc()).first()
 
 
-def _extract_curve(db, lr_id, mnemonics):
-    """Try mnemonics in order, return (array, mnemonic) or (None, None)."""
+def _extract_curve(db, lr_id, mnemonics, well=None):
+    """Кривая по МЕТОДУ: ("VSH","VCL") найдёт Кгл, ("PHIE",) — Кп_W.
+
+    Точного имени из списка в промысловом файле обычно нет, поэтому поиск идёт
+    через справочник методов; при передаче `well` — по всем рейсам скважины
+    (ГИС и РИГИС у заказчика лежат в разных рейсах).
+    """
     if isinstance(mnemonics, str):
         mnemonics = [mnemonics]
-    for mn in mnemonics:
-        cd = db.query(CurveData).filter(
-            CurveData.log_run_id == lr_id, CurveData.mnemonic == mn
-        ).first()
-        if cd and cd.data_binary:
-            arr = np.frombuffer(cd.data_binary, dtype=np.float32).copy()
-            if len(arr) > 0:
-                return arr, mn
+    cd = _find_curve(db, lr_id, *mnemonics)
+    if cd is None and well is not None:
+        cd, _rid = _find_curve_in_well(db, well, *mnemonics)
+    if cd is not None and cd.data_binary:
+        arr = np.frombuffer(cd.data_binary, dtype=np.float64).copy()
+        if len(arr) > 0:
+            return arr, (cd.mnemonic or mnemonics[0])
     return None, None
 
 
@@ -134,6 +150,9 @@ def _compute_zone_stats(intervals, depth, vsh, phie, sw, step):
 @router.post("/auto-zone")
 def auto_zone(wid: int, data: dict, db: Session = Depends(get_db)):
     """Auto-generate zones from petrophysical cutoffs."""
+    well = db.query(Well).filter(Well.id == wid).first()
+    if not well:
+        raise HTTPException(404, "Well not found")
     lr = _get_latest_run(wid, db)
     if not lr:
         raise HTTPException(404, "No log run found for well")
@@ -150,20 +169,25 @@ def auto_zone(wid: int, data: dict, db: Session = Depends(get_db)):
     gap_merge_ft = float(data.get("gap_merge_ft", 2.0))
 
     # Extract curves with fallback chains
-    vsh_arr, vsh_mn = _extract_curve(db, lr.id, ["VSH", "VCL", "VSH_GR", "VSH_LARIONOV"])
-    phie_arr, phie_mn = _extract_curve(db, lr.id, ["PHIE", "PHID", "PHI_E"])
-    sw_arr, sw_mn = _extract_curve(db, lr.id, ["SW", "SWE"])
+    vsh_arr, vsh_mn = _extract_curve(db, lr.id, ["VSH", "VCL", "VSH_GR", "VSH_LARIONOV"], well)
+    phie_arr, phie_mn = _extract_curve(db, lr.id, ["PHIE", "PHID", "PHI_E"], well)
+    sw_arr, sw_mn = _extract_curve(db, lr.id, ["SW", "SWE"], well)
+    if sw_arr is None:
+        # РИГИС отдаёт Кнг; Кв = 1 − Кнг — пересчёт ЯВНЫЙ и подписан в ответе
+        sw_arr, sw_mn, _rid = _water_saturation(db, well, lr.id)
+        if sw_arr is None:
+            sw_arr, sw_mn, _rid = _water_saturation(db, well)
 
     # Fallback: compute PHIE from RHOB if missing
     if phie_arr is None:
-        rhob_arr, _ = _extract_curve(db, lr.id, ["RHOB", "ZDEN", "DEN"])
+        rhob_arr, _ = _extract_curve(db, lr.id, ["RHOB", "ZDEN", "DEN"], well)
         if rhob_arr is not None:
             phie_arr = np.clip((2.65 - rhob_arr) / (2.65 - 1.0), 0, 1)
             phie_mn = "PHIE_from_RHOB"
 
     # Fallback: compute SW from Archie if missing
     if sw_arr is None and phie_arr is not None:
-        rt_arr, _ = _extract_curve(db, lr.id, ["RT", "RILD", "RILM", "RMED", "RES"])
+        rt_arr, _ = _extract_curve(db, lr.id, ["RT", "RILD", "RILM", "RMED", "RES"], well)
         if rt_arr is not None:
             params = db.query(PetroParams).filter(PetroParams.well_id == wid).first()
             a = params.a if params else 1.0
@@ -360,7 +384,7 @@ def zone_report_csv(wid: int, db: Session = Depends(get_db)):
     return StreamingResponse(
         io.BytesIO(output.getvalue().encode()),
         media_type="text/csv",
-        headers={"Content-Disposition": f"attachment; filename=zone_report_well_{wid}.csv"},
+        headers=_file_headers(f"zone_report_well_{wid}.csv"),
     )
 
 
@@ -420,5 +444,5 @@ def zone_report_pdf(wid: int, db: Session = Depends(get_db)):
     return StreamingResponse(
         buf,
         media_type="application/pdf",
-        headers={"Content-Disposition": f"attachment; filename=zone_report_well_{wid}.pdf"},
+        headers=_file_headers(f"zone_report_well_{wid}.pdf"),
     )

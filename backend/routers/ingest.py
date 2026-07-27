@@ -19,6 +19,7 @@
 """
 from __future__ import annotations
 
+import datetime
 import json
 import math
 import os
@@ -192,6 +193,120 @@ def _persist_run(db: Session, well: Well, las, filename: str,
     return run
 
 
+# Варианты решения при совпадении методов и интервала. Отдаются вместе с
+# конфликтом, чтобы интерфейс не хранил их отдельным списком и не разошёлся
+# с сервером.
+_CONFLICT_CHOICES = [
+    {"value": "replace", "title": "Заменить",
+     "hint": "Старые кривые рейса удаляются, остаётся только новая версия. "
+             "Поправка глубины рейса сохраняется."},
+    {"value": "merge", "title": "Дополнить",
+     "hint": "В рейс добавляются только те кривые, которых в нём не было. "
+             "Имеющиеся значения не трогаются."},
+    {"value": "copy", "title": "Сделать копию",
+     "hint": "Новая версия ложится отдельным рейсом с пометкой «(версия N)». "
+             "Обе версии остаются, для карт и расчётов берётся новейшая."},
+    {"value": "skip", "title": "Пропустить",
+     "hint": "Файл не загружается, в скважине остаётся прежняя версия."},
+]
+
+
+def _replace_run(db: Session, run: LogRun, las, filename: str, run_name: str, kind: str) -> LogRun:
+    """Переписать существующий рейс новой версией, СОХРАНИВ его id.
+
+    Идентификатор не меняется намеренно: к рейсу привязана поправка глубины
+    (log_run_depth_shifts), и пересоздание рейса потеряло бы увязку, которую
+    интерпретатор выставил руками.
+    """
+    db.query(CurveData).filter(CurveData.log_run_id == run.id).delete(synchronize_session=False)
+    run.filename = filename
+    run.name = run_name
+    run.kind = kind
+    run.depth_unit = las.well.depth_unit or run.depth_unit or "M"
+    run.las_version = las.version
+    run.start_depth = las.well.start
+    run.stop_depth = las.well.stop
+    run.step = las.well.step
+    run.null_value = las.well.null
+    run.num_points = len(las.depth)
+    run.curves_json = json.dumps(
+        [{"mnemonic": c.mnemonic, "unit": c.unit, "description": c.description,
+          "canonical": c.canonical or c.mnemonic} for c in las.curves],
+        ensure_ascii=False)
+    run.parameters_json = json.dumps(
+        [{"mnemonic": p.mnemonic, "unit": p.unit, "value": p.value} for p in las.parameters],
+        ensure_ascii=False)
+    run.uploaded_at = datetime.datetime.utcnow()
+    for curve in las.curves:
+        arr = las.data.get(curve.mnemonic)
+        if arr is None:
+            continue
+        valid = arr[np.isfinite(arr)]
+        db.add(CurveData(
+            log_run_id=run.id, mnemonic=curve.mnemonic, unit=curve.unit,
+            description=curve.description, num_points=len(arr),
+            min_value=float(np.min(valid)) if valid.size else None,
+            max_value=float(np.max(valid)) if valid.size else None,
+            data_binary=arr.tobytes(),
+        ))
+    return run
+
+
+def _merge_into_run(db: Session, run: LogRun, las) -> List[str]:
+    """Дополнить рейс кривыми, которых в нём ещё нет. Имеющиеся не трогаем.
+
+    Возвращает список добавленных мнемоник: пустой означает, что новых
+    методов в файле не было и дополнять нечем.
+    """
+    have = {(cd.mnemonic or "").strip().upper()
+            for cd in db.query(CurveData).filter(CurveData.log_run_id == run.id).all()}
+    added: List[str] = []
+    for curve in las.curves:
+        mn = (curve.mnemonic or "").strip()
+        if not mn or mn.upper() in have:
+            continue
+        arr = las.data.get(curve.mnemonic)
+        if arr is None:
+            continue
+        valid = arr[np.isfinite(arr)]
+        db.add(CurveData(
+            log_run_id=run.id, mnemonic=mn, unit=curve.unit,
+            description=curve.description, num_points=len(arr),
+            min_value=float(np.min(valid)) if valid.size else None,
+            max_value=float(np.max(valid)) if valid.size else None,
+            data_binary=arr.tobytes(),
+        ))
+        added.append(mn)
+    if added:
+        try:
+            defs = json.loads(run.curves_json or "[]")
+        except (ValueError, TypeError):
+            defs = []
+        known = {(d.get("mnemonic") or "").strip().upper() for d in defs}
+        for curve in las.curves:
+            mn = (curve.mnemonic or "").strip()
+            if mn and mn.upper() in {a.upper() for a in added} and mn.upper() not in known:
+                defs.append({"mnemonic": mn, "unit": curve.unit,
+                             "description": curve.description,
+                             "canonical": curve.canonical or mn})
+        run.curves_json = json.dumps(defs, ensure_ascii=False)
+        run.uploaded_at = datetime.datetime.utcnow()
+    return added
+
+
+def _copy_run_name(db: Session, well: Well, base_name: str) -> str:
+    """Имя для копии: «Азево-Салаушское_С1 (версия 2)».
+
+    Без пометки в списке рейсов оказывались две строки с одинаковым именем и
+    одинаковым интервалом — выбрать нужную было невозможно.
+    """
+    existing = {(r.name or "").strip() for r in well.log_runs}
+    n = 2
+    while f"{base_name} (версия {n})" in existing:
+        n += 1
+    return f"{base_name} (версия {n})"
+
+
 def _find_duplicate_run(db: Session, well: Well, las, mnemonics: List[str]):
     """Есть ли в скважине рейс с тем же набором методов и тем же интервалом.
 
@@ -215,7 +330,16 @@ def _find_duplicate_run(db: Session, well: Well, las, mnemonics: List[str]):
         old_keys = {
             m.key for m in (method_for_mnemonic(d.get("mnemonic", "")) for d in defs) if m
         }
-        if not old_keys or old_keys != new_keys:
+        if not old_keys:
+            continue
+        common = old_keys & new_keys
+        if not common:
+            continue
+        # Совпадение НЕ обязано быть точным: новая версия РИГИС обычно
+        # добавляет кривую (появился Кпр) или, наоборот, что-то в ней не
+        # посчитали. Пока пересечение покрывает большую часть меньшего
+        # набора, это тот же материал на тот же интервал.
+        if len(common) * 2 < min(len(old_keys), len(new_keys)):
             continue
         o_lo, o_hi = float(run.start_depth or 0), float(run.stop_depth or 0)
         if not (o_hi > o_lo):
@@ -228,7 +352,9 @@ def _find_duplicate_run(db: Session, well: Well, las, mnemonics: List[str]):
                 "id": run.id,
                 "run": run.name or run.filename,
                 "overlap": round(share * 100, 1),
-                "methods": sorted(new_keys),
+                "methods": sorted(common),
+                "methods_new": sorted(new_keys - old_keys),
+                "methods_missing": sorted(old_keys - new_keys),
             }
     return None
 
@@ -260,7 +386,10 @@ async def bulk_import(
     paths: str = Form("[]"),
     run_name_mode: str = Form("folder"),   # folder | file | fixed
     run_name: str = Form(""),
-    on_duplicate: str = Form("load"),      # load — загрузить и пометить, skip — пропустить
+    # ask — не грузить, вернуть конфликт на решение пользователя (по умолчанию);
+    # replace — заменить данные рейса; merge — дополнить недостающими кривыми;
+    # copy — отдельным рейсом с пометкой версии; skip — пропустить
+    on_duplicate: str = Form("ask"),
     db: Session = Depends(get_db),
 ):
     """Импорт множества LAS: скважина определяется из шапки, рейс — из папки."""
@@ -326,16 +455,50 @@ async def bulk_import(
             dup = None
             if kind != "inkl" and well.id not in created_ids:
                 dup = _find_duplicate_run(db, well, las, mnems)
-            if dup is not None and on_duplicate == "skip":
-                # Пропускаем только по явному требованию: молча терять данные
-                # нельзя, поэтому по умолчанию повтор грузится и помечается.
-                row.update(status="duplicate", well=well.name, run=rname,
+            if dup is not None and on_duplicate in ("ask", "skip"):
+                # По умолчанию НЕ решаем за пользователя: те же методы в том же
+                # интервале — это либо повторная загрузка, либо новая версия
+                # РИГИС, и разница между «заменить», «дополнить» и «копия»
+                # меняет и карты, и расчёты. Файл не грузится, конфликт
+                # возвращается на решение.
+                row.update(status="conflict" if on_duplicate == "ask" else "duplicate",
+                           well=well.name, well_id=well.id, run=rname,
                            kind=kind, duplicate_of=dup["run"],
                            duplicate_id=dup["id"], overlap=dup["overlap"],
-                           methods=dup["methods"])
+                           methods=dup["methods"],
+                           methods_new=dup.get("methods_new", []),
+                           methods_missing=dup.get("methods_missing", []),
+                           choices=_CONFLICT_CHOICES)
                 db.rollback()
                 results.append(row)
                 continue
+
+            if dup is not None and on_duplicate == "replace":
+                old_run = db.query(LogRun).filter(LogRun.id == dup["id"]).first()
+                run = _replace_run(db, old_run, las, fname, rname, kind)
+                row.update(status="ok", well=well.name, run=rname, kind=kind,
+                           curves=len(las.curves), run_id=run.id,
+                           action="replaced", duplicate_of=dup["run"],
+                           duplicate_id=dup["id"])
+                db.commit()
+                results.append(row)
+                continue
+
+            if dup is not None and on_duplicate == "merge":
+                old_run = db.query(LogRun).filter(LogRun.id == dup["id"]).first()
+                added = _merge_into_run(db, old_run, las)
+                row.update(status="ok", well=well.name, run=old_run.name, kind=kind,
+                           curves=len(added), run_id=old_run.id,
+                           action="merged", added=added,
+                           duplicate_of=dup["run"], duplicate_id=dup["id"])
+                db.commit()
+                results.append(row)
+                continue
+
+            if dup is not None and on_duplicate in ("copy", "load"):
+                # отдельный рейс с пометкой версии, иначе в списке две
+                # неразличимые строки с одинаковым именем и интервалом
+                rname = _copy_run_name(db, well, rname)
 
             if kind == "inkl":
                 n = _store_deviation(db, well, las)
@@ -358,12 +521,16 @@ async def bulk_import(
 
     ok = sum(1 for r in results if r["status"] == "ok")
     dups = sum(1 for r in results if r["status"] == "duplicate")
+    conflicts = [r for r in results if r["status"] == "conflict"]
     return {
         "project_id": pid,
         "files": len(results),
         "imported": ok,
         "duplicates": dups,
-        "failed": len(results) - ok - dups,
+        "conflicts": len(conflicts),
+        "needs_decision": conflicts,
+        "choices": _CONFLICT_CHOICES if conflicts else [],
+        "failed": len(results) - ok - dups - len(conflicts),
         "wells_created": created_wells,
         "results": results,
     }

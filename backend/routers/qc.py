@@ -65,10 +65,11 @@ def _get_latest_log_run(db: Session, wid: int) -> LogRun:
 
 def _curve_array(cd: CurveData, n: int) -> np.ndarray:
     if not cd or not cd.data_binary:
-        return np.full(n, np.nan, dtype=np.float32)
-    arr = np.frombuffer(cd.data_binary, dtype=np.float32)
+        return np.full(n, np.nan, dtype=np.float64)
+    # Кривые хранятся как float64 — читать иначе значит получить мусор
+    arr = np.frombuffer(cd.data_binary, dtype=np.float64)
     if arr.size < n:
-        padded = np.full(n, np.nan, dtype=np.float32)
+        padded = np.full(n, np.nan, dtype=np.float64)
         padded[: arr.size] = arr
         return padded
     if arr.size > n:
@@ -230,7 +231,7 @@ def _environment_flags(curves: Dict[str, np.ndarray], depth: np.ndarray, step: f
         s = shallow[:n]
         valid = (~np.isnan(d)) & (~np.isnan(s)) & (d > 0) & (s > 0)
         sep_mask = np.zeros(n, dtype=bool)
-        ratio = np.full(n, np.nan, dtype=np.float32)
+        ratio = np.full(n, np.nan, dtype=np.float64)
         ratio[valid] = d[valid] / s[valid]
         sep_mask[valid] = (ratio[valid] > 1.5) | (ratio[valid] < 0.67)
         vcount = int(np.sum(valid))
@@ -286,7 +287,8 @@ def _run_advanced_qc(wid: int, db: Session) -> Dict[str, Any]:
     if not lr.num_points or lr.num_points <= 0:
         raise HTTPException(status_code=400, detail="Log run has no data points")
 
-    depth = np.linspace(float(lr.start_depth), float(lr.stop_depth), int(lr.num_points), dtype=np.float32)
+    # float64: в float32 глубина 543.1 превращается в 543.0999755859375
+    depth = np.linspace(float(lr.start_depth), float(lr.stop_depth), int(lr.num_points), dtype=np.float64)
     step = float(lr.step) if lr.step not in (None, 0) else float((lr.stop_depth - lr.start_depth) / max(1, lr.num_points - 1))
 
     cds = db.query(CurveData).filter(CurveData.log_run_id == lr.id).all()

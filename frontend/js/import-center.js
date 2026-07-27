@@ -9,7 +9,8 @@
   function app() { return (typeof window.app !== 'undefined') ? window.app : null; }
   function pid() {
     var a = app();
-    return (a && a.projects && a.projects[0]) ? a.projects[0].id : null;
+    return (a && typeof a._pid === 'function') ? a._pid()
+         : ((a && a.projects && a.projects[0]) ? a.projects[0].id : null);
   }
   function role() {
     var a = app();
@@ -204,7 +205,12 @@
 
       // Крупные выгрузки режем на пачки — иначе один запрос на сотни мегабайт.
       var BATCH = 25;
-      var total = { imported: 0, failed: 0, wells: 0, errors: [], runs: {}, dups: [], marked: [] };
+      var total = { imported: 0, failed: 0, wells: 0, errors: [], runs: {},
+                    dups: [], marked: [], conflicts: [], choices: [] };
+      // файл конфликта нужен целиком: решение пользователя отправляется
+      // повторной загрузкой именно этих файлов, а не всей папки
+      var byPath = {};
+      files.forEach(function (f) { byPath[f.webkitRelativePath || f.name] = f; });
       for (var i = 0; i < files.length; i += BATCH) {
         var chunk = files.slice(i, i + BATCH);
         var fd = new FormData();
@@ -215,17 +221,19 @@
         });
         fd.append('paths', JSON.stringify(paths));
         fd.append('run_name_mode', 'folder');
-        fd.append('on_duplicate', this._dupPolicy || 'load');
+        fd.append('on_duplicate', this._dupPolicy || 'ask');
         this._result('las', 'импорт ' + Math.min(i + BATCH, files.length) + ' из ' + files.length + '…', '');
         var r = await this._post('/api/projects/' + p + '/bulk-import', fd);
         total.imported += r.imported;
         total.failed += r.failed;
         total.wells += r.wells_created;
+        if (r.choices && r.choices.length) total.choices = r.choices;
         (r.results || []).forEach(function (row) {
           if (row.status === 'ok') {
             total.runs[row.run] = (total.runs[row.run] || 0) + 1;
             if (row.duplicate_of) total.marked.push(row);
           }
+          else if (row.status === 'conflict') total.conflicts.push(row);
           else if (row.status === 'duplicate') total.dups.push(row);
           else if (total.errors.length < 8) total.errors.push(row.file + ' — ' + row.error);
         });
@@ -263,6 +271,9 @@
         + (total.dups.length ? ', пропущено повторов: ' + total.dups.length : ''));
 
       var self = this;
+      if (total.conflicts.length) {
+        this._askConflicts(p, total.conflicts, total.choices, byPath);
+      }
       var force = document.getElementById('impForceDup');
       if (force) {
         force.onclick = async function () {
@@ -274,8 +285,97 @@
       var a = app();
       if (a) {
         await a.loadProjects();
-        if (a.projects && a.projects.length) await a.loadWells(a.projects[0].id);
+        if (a.projects && a.projects.length) await a.loadWells(a._pid());
       }
+    },
+
+    // Те же методы на тот же интервал — это либо повторная загрузка, либо
+    // новая версия РИГИС. Решение меняет и карты, и расчёты, поэтому
+    // спрашиваем, а не выбираем за пользователя.
+    _askConflicts: function (pid, rows, choices, byPath) {
+      var self = this;
+      var host = document.getElementById('impConflictBack');
+      if (host) host.remove();
+      var box = document.createElement('div');
+      box.id = 'impConflictDlg';
+      box.className = 'imp-conflict-dlg';
+
+      var list = rows.slice(0, 12).map(function (r) {
+        var extra = [];
+        if ((r.methods_new || []).length) {
+          extra.push('новые методы: <b>' + esc(r.methods_new.join(', ')) + '</b>');
+        }
+        if ((r.methods_missing || []).length) {
+          extra.push('нет в новом файле: <b>' + esc(r.methods_missing.join(', ')) + '</b>');
+        }
+        return '<div class="imp-conflict-row"><b>' + esc(r.well) + '</b> · '
+          + esc(r.file) + '<br><span class="imp-dim">совпадает с рейсом «'
+          + esc(r.duplicate_of) + '», перекрытие ' + r.overlap + ' %'
+          + (extra.length ? ' · ' + extra.join(' · ') : '') + '</span></div>';
+      }).join('');
+
+      var btns = (choices || []).map(function (c) {
+        return '<button class="btn-sm imp-choice" data-act="' + esc(c.value) + '" title="'
+          + esc(c.hint) + '">' + esc(c.title) + '</button>';
+      }).join(' ');
+
+      box.innerHTML = '<div class="imp-conflict-head">Такие данные уже есть в скважине ('
+        + rows.length + ')</div>' + list
+        + (rows.length > 12 ? '<div class="imp-dim">…и ещё ' + (rows.length - 12) + '</div>' : '')
+        + '<div class="imp-conflict-hint">' + (choices || []).map(function (c) {
+            return '<b>' + esc(c.title) + '</b> — ' + esc(c.hint);
+          }).join('<br>') + '</div>'
+        + '<div class="imp-conflict-acts">' + btns + '</div>';
+
+      // Модальное окно поверх всего: врезка внутрь панели импорта визуально
+      // работала, но кнопки перекрывались сайдбаром и строкой состояния —
+      // нажать вариант было нельзя.
+      var back = document.createElement('div');
+      back.id = 'impConflictBack';
+      back.className = 'imp-conflict-back';
+      back.appendChild(box);
+      document.body.appendChild(back);
+
+      box.querySelectorAll('.imp-choice').forEach(function (b) {
+        b.onclick = async function () {
+          var act = b.getAttribute('data-act');
+          box.querySelectorAll('.imp-choice').forEach(function (x) { x.disabled = true; });
+          if (act === 'skip') { back.remove(); toast('info', 'Файлы пропущены'); return; }
+          try {
+            await self._resolveConflicts(pid, rows, act, byPath);
+            back.remove();
+          } catch (e) {
+            toast('error', 'Не удалось применить решение: ' + (e.message || e));
+            box.querySelectorAll('.imp-choice').forEach(function (x) { x.disabled = false; });
+          }
+        };
+      });
+    },
+
+    // Повторная отправка ТОЛЬКО спорных файлов с выбранным решением.
+    _resolveConflicts: async function (pid, rows, act, byPath) {
+      var fd = new FormData();
+      var paths = [];
+      var missing = 0;
+      rows.forEach(function (r) {
+        var f = byPath[r.file];
+        if (!f) { missing++; return; }
+        fd.append('files', f, f.name);
+        paths.push(r.file);
+      });
+      if (!paths.length) throw new Error('файлы больше недоступны, повторите выбор папки');
+      fd.append('paths', JSON.stringify(paths));
+      fd.append('run_name_mode', 'folder');
+      fd.append('on_duplicate', act);
+      var r = await this._post('/api/projects/' + pid + '/bulk-import', fd);
+      var acted = (r.results || []).filter(function (x) { return x.status === 'ok'; });
+      var added = acted.reduce(function (n, x) { return n + ((x.added || []).length); }, 0);
+      var word = { replace: 'заменено', merge: 'дополнено', copy: 'скопировано' }[act] || 'обработано';
+      toast('success', word + ' рейсов: ' + acted.length
+        + (act === 'merge' ? ', добавлено кривых: ' + added : '')
+        + (missing ? ' (недоступно файлов: ' + missing + ')' : ''));
+      var a = app();
+      if (a) { await a.loadProjects(); if (a._pid()) await a.loadWells(a._pid()); }
     },
   };
 })();

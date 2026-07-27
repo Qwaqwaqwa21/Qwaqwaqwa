@@ -25,9 +25,14 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, UploadFile
+
+try:
+    from http_files import file_headers as _file_headers
+except ImportError:  # запуск пакетом backend.*
+    from backend.http_files import file_headers as _file_headers
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 try:
     from database import get_db
@@ -329,10 +334,48 @@ def apply_mnemonics(
 
 
 # ── Research coverage map ────────────────────────────────────────────────────
+def _page_wells(wells, limit: int, offset: int):
+    """Страница скважин плюс сведения для навигации.
+
+    На 3000 скважин сводка считается по всем и весит десятки мегабайт, а
+    прочесть три тысячи строк разом всё равно нельзя. Считаем и отдаём
+    страницу; ``limit=0`` возвращает всё — на случай выгрузки.
+    """
+    total = len(wells)
+    if limit and limit > 0:
+        page = wells[offset:offset + limit]
+    else:
+        page = wells[offset:] if offset else wells
+    return page, {"total_wells": total, "offset": offset,
+                  "limit": limit, "returned": len(page),
+                  "has_more": offset + len(page) < total}
+
+
+def _bulk_curves_for_wells(db, well_ids):
+    """Кривые перечисленных скважин одним запросом — для страницы сводки."""
+    try:
+        from bulk_curves import load_wells_curves
+    except ImportError:  # pragma: no cover — запуск пакетом backend.*
+        from backend.bulk_curves import load_wells_curves
+    return load_wells_curves(db, well_ids)
+
+
+def _bulk_curves(db, pid: int):
+    """Кривые проекта одним запросом: {well_id: {run_id: RunCurves}}."""
+    try:
+        from bulk_curves import load_project_curves
+    except ImportError:  # pragma: no cover — запуск пакетом backend.*
+        from backend.bulk_curves import load_project_curves
+    return load_project_curves(db, pid)
+
+
 @router.get("/api/projects/{pid}/research-coverage")
 def research_coverage(
     pid: int,
     depth_bins: int = Query(24, ge=4, le=200),
+    limit: int = Query(300, ge=0, le=5000,
+                       description="сколько скважин вернуть; 0 — все"),
+    offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """Coverage of logging methods across every well in a project.
@@ -341,7 +384,9 @@ def research_coverage(
     run, the fraction of the well's logged interval that carries valid samples,
     the depth interval covered, and the contributing raw mnemonics.
     """
-    wells = db.query(Well).filter(Well.project_id == pid).all()
+    wells = (db.query(Well).filter(Well.project_id == pid)
+             .options(selectinload(Well.log_runs),
+                      selectinload(Well.formation_tops)).all())
     if not wells:
         raise HTTPException(404, "Project has no wells")
 
@@ -354,6 +399,9 @@ def research_coverage(
 
     well_rows: List[dict] = []
     method_present_count = {k: 0 for k in method_keys}
+
+    wells, page_info = _page_wells(wells, limit, offset)
+    bulk = _bulk_curves_for_wells(db, [w.id for w in wells])
 
     for w in wells:
         # well depth extent from runs
@@ -370,21 +418,24 @@ def research_coverage(
 
         # accumulate per-method coverage across runs
         agg: Dict[str, dict] = {}
+        w_bulk = bulk.get(w.id, {})
         for run in w.log_runs:
             null_value = run.null_value
+            rc = w_bulk.get(run.id)
+            if rc is None:
+                continue
+            pairs = [(m, arr) for m, (_u, _n, arr) in rc.items()]
             depth_arr = None
-            for cd in run.curve_data:
-                if (cd.mnemonic or "").strip().upper() in _DEPTH_MNEMONICS:
-                    depth_arr = _decode(cd)
+            for m, arr in pairs:
+                if m in _DEPTH_MNEMONICS:
+                    depth_arr = arr
                     break
-            for cd in run.curve_data:
-                mnem = (cd.mnemonic or "").strip()
-                if not mnem or mnem.upper() in _DEPTH_MNEMONICS:
+            for mnem, arr in pairs:
+                if not mnem or mnem in _DEPTH_MNEMONICS:
                     continue
                 meth = method_for_mnemonic(mnem)
                 if meth is None:
                     continue
-                arr = _decode(cd)
                 if arr is None or arr.size == 0:
                     continue
                 mask = _valid_mask(arr, null_value)
@@ -397,7 +448,7 @@ def research_coverage(
                 })
                 slot["valid"] += valid
                 slot["total"] += int(arr.size)
-                slot["mnems"].add(mnem.upper())
+                slot["mnems"].add(mnem)
                 if depth_arr is not None and depth_arr.size == arr.size:
                     dvalid = depth_arr[mask]
                     dvalid = dvalid[np.isfinite(dvalid)]
@@ -453,6 +504,7 @@ def research_coverage(
         "well_count": n_wells,
         "methods": method_summary,
         "wells": well_rows,
+        "page": page_info,
     }
 
 
@@ -461,6 +513,9 @@ def research_coverage(
 def coverage_log(
     pid: int,
     bins: int = Query(240, ge=20, le=2000),
+    limit: int = Query(100, ge=0, le=5000,
+                       description="сколько скважин вернуть; 0 — все"),
+    offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """Depth-resolved method coverage (планшет охвата) for a project.
@@ -470,7 +525,11 @@ def coverage_log(
     so overlapping repeat surveys of the same method render in another colour.
     Formation tops (горизонты) are included for the planshet overlay.
     """
-    wells = db.query(Well).filter(Well.project_id == pid).all()
+    # Связи пакетно: обращение к w.log_runs в цикле давало запрос на каждую
+    # скважину — на трёх тысячах это 4.6 с вместо 0.5 с.
+    wells = (db.query(Well).filter(Well.project_id == pid)
+             .options(selectinload(Well.log_runs),
+                      selectinload(Well.formation_tops)).all())
     if not wells:
         raise HTTPException(404, "Project has no wells")
 
@@ -489,31 +548,42 @@ def coverage_log(
     present_union = set()
     well_rows: List[dict] = []
 
+    # Шкала глубин считается по ВСЕМ скважинам проекта — она общая для
+    # планшета. Разбор кривых идёт только по странице: разница между
+    # 3000 и 300 скважинами здесь линейная.
+    wells_all = wells
+    wells, page_info = _page_wells(wells, limit, offset)
+
+    bulk = _bulk_curves_for_wells(db, [w.id for w in wells])
+
     for w in wells:
         counts: Dict[str, np.ndarray] = {}     # method -> per-bin curve count
         mnems: Dict[str, set] = {}
         w_top, w_bot = None, None
+        w_bulk = bulk.get(w.id, {})
         for run in w.log_runs:
             null_value = run.null_value
+            rc = w_bulk.get(run.id)
+            if rc is None:
+                continue
+            pairs = [(m, arr) for m, (_u, _n, arr) in rc.items()]
             depth_arr = None
-            for cd in run.curve_data:
-                if (cd.mnemonic or "").strip().upper() in _DEPTH_MNEMONICS:
-                    depth_arr = _decode(cd)
+            for m, arr in pairs:
+                if m in _DEPTH_MNEMONICS:
+                    depth_arr = arr
                     break
-            if depth_arr is None:
+            if depth_arr is None or depth_arr.size == 0:
                 continue
             # Счёт ведётся ПО РЕЙСАМ: несколько каналов одного метода в одном
             # рейсе (например зенит+азимут инклинометрии) — это один замер;
             # повтором считается тот же метод, записанный в другом рейсе.
             run_hits: Dict[str, np.ndarray] = {}
-            for cd in run.curve_data:
-                mnem = (cd.mnemonic or "").strip()
-                if not mnem or mnem.upper() in _DEPTH_MNEMONICS:
+            for mnem, arr in pairs:
+                if not mnem or mnem in _DEPTH_MNEMONICS:
                     continue
                 meth = method_for_mnemonic(mnem)
                 if meth is None:
                     continue
-                arr = _decode(cd)
                 if arr is None or arr.size != depth_arr.size:
                     continue
                 mask = _valid_mask(arr, null_value) & np.isfinite(depth_arr)
@@ -555,19 +625,26 @@ def coverage_log(
         "depth_top": round(g_top, 2), "depth_bottom": round(g_bot, 2),
         "bins": bins, "bin_size": round(bin_size, 4),
         "columns": columns, "wells": well_rows,
+        "page": page_info,
     }
 
 
 # ── Охват по горизонтам (таблица + экспорт) ──────────────────────────────────
-def _coverage_by_horizon(pid: int, db: Session) -> Dict[str, Any]:
+def _coverage_by_horizon(pid: int, db: Session, limit: int = 0,
+                        offset: int = 0) -> Dict[str, Any]:
     """Which methods cover which formation (горизонт) in each well."""
-    wells = db.query(Well).filter(Well.project_id == pid).all()
+    wells = (db.query(Well).filter(Well.project_id == pid)
+             .options(selectinload(Well.log_runs),
+                      selectinload(Well.formation_tops)).all())
     if not wells:
         raise HTTPException(404, "Project has no wells")
 
     method_keys = [m.key for m in METHODS]
     rows: List[dict] = []
     horizons: List[str] = []
+
+    wells, page_info = _page_wells(wells, limit, offset)
+    bulk = _bulk_curves_for_wells(db, [w.id for w in wells])
 
     for w in wells:
         tops = sorted([t for t in w.formation_tops if t.depth is not None],
@@ -576,29 +653,32 @@ def _coverage_by_horizon(pid: int, db: Session) -> Dict[str, Any]:
             continue
         # collect (method -> list of (depth_min, depth_max, mnemonic))
         seg: Dict[str, List[tuple]] = {}
+        w_bulk = bulk.get(w.id, {})
         for run in w.log_runs:
-            depth_arr = None
-            for cd in run.curve_data:
-                if (cd.mnemonic or "").strip().upper() in _DEPTH_MNEMONICS:
-                    depth_arr = _decode(cd)
-                    break
-            if depth_arr is None:
+            rc = w_bulk.get(run.id)
+            if rc is None:
                 continue
-            for cd in run.curve_data:
-                mnem = (cd.mnemonic or "").strip()
-                if not mnem or mnem.upper() in _DEPTH_MNEMONICS:
+            pairs = [(m, arr) for m, (_u, _n, arr) in rc.items()]
+            depth_arr = None
+            for m, arr in pairs:
+                if m in _DEPTH_MNEMONICS:
+                    depth_arr = arr
+                    break
+            if depth_arr is None or depth_arr.size == 0:
+                continue
+            for mnem, arr in pairs:
+                if not mnem or mnem in _DEPTH_MNEMONICS:
                     continue
                 meth = method_for_mnemonic(mnem)
                 if meth is None:
                     continue
-                arr = _decode(cd)
                 if arr is None or arr.size != depth_arr.size:
                     continue
                 mask = _valid_mask(arr, run.null_value) & np.isfinite(depth_arr)
                 if not mask.any():
                     continue
                 seg.setdefault(meth.key, {}).setdefault(run.id, []).append(
-                    (depth_arr[mask], mnem.upper()))
+                    (depth_arr[mask], mnem))
 
         for i, t in enumerate(tops):
             h_top = t.depth
@@ -639,12 +719,19 @@ def _coverage_by_horizon(pid: int, db: Session) -> Dict[str, Any]:
     for m in METHODS:
         if any(m.key in r["methods"] for r in rows):
             used.append({"key": m.key, "abbr": m.canonical, "name": m.name})
-    return {"project_id": pid, "horizons": horizons, "methods": used, "rows": rows}
+    return {"project_id": pid, "horizons": horizons, "methods": used,
+            "rows": rows, "page": page_info}
 
 
 @router.get("/api/projects/{pid}/coverage-by-horizon")
-def coverage_by_horizon(pid: int, db: Session = Depends(get_db)) -> Dict[str, Any]:
-    return _coverage_by_horizon(pid, db)
+def coverage_by_horizon(
+    pid: int,
+    limit: int = Query(300, ge=0, le=5000,
+                       description="сколько скважин вернуть; 0 — все"),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    return _coverage_by_horizon(pid, db, limit, offset)
 
 
 @router.get("/api/projects/{pid}/coverage-by-horizon/export")
@@ -696,7 +783,7 @@ def coverage_by_horizon_export(
         return StreamingResponse(
             buf,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            headers={"Content-Disposition": f'attachment; filename="coverage_by_horizon_{pid}.xlsx"'})
+            headers=_file_headers(f"coverage_by_horizon_{pid}.xlsx"))
 
     out = io.StringIO()
     wr = csv.writer(out, delimiter=";")
@@ -704,7 +791,7 @@ def coverage_by_horizon_export(
     wr.writerows(body)
     return StreamingResponse(
         io.BytesIO(out.getvalue().encode("utf-8-sig")), media_type="text/csv",
-        headers={"Content-Disposition": f'attachment; filename="coverage_by_horizon_{pid}.csv"'})
+        headers=_file_headers(f"coverage_by_horizon_{pid}.csv"))
 
 
 # ── Справочники кодов РИГИС ──────────────────────────────────────────────────

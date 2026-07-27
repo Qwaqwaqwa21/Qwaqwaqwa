@@ -54,6 +54,22 @@ CURVE_ALIASES = {
     'SPCG': 'SP',       # KGS: SP corrected
     'SPRL': 'SP',       # KGS: SP
 
+    # Инклинометрия: зенит и азимут — РАЗНЫЕ величины одного метода, поэтому
+    # каждая роль канонизируется отдельно и не зависит от порядка колонок.
+    'ЗЕНИТ': 'INKL',
+    'ЗЕН': 'INKL',
+    'УГОЛ': 'INKL',
+    'ZENIT': 'INKL',
+    'ZENITH': 'INKL',
+    'INCL': 'INKL',
+    'DEVI': 'INKL',
+    'INKL': 'INKL',
+    'АЗИМУТ': 'AZ',
+    'АЗ': 'AZ',
+    'AZIM': 'AZ',
+    'AZIMUTH': 'AZ',
+    'AZ': 'AZ',
+
     # Misc
     'CLDC': 'CAL',      # KGS: Caliper
     'DCOR': 'DRHO',     # KGS: Density correction
@@ -632,7 +648,7 @@ CURVE_TRACKS.update({
     'GK':   {'track': 2, 'color': '#e74c3c', 'scale': (0, 20),   'unit': 'мкР/ч',   'name': 'ГК'},
     'NGK':  {'track': 2, 'color': '#000000', 'scale': (0, 10),   'unit': 'усл.ед.', 'name': 'НГК'},
 
-    'IK':   {'track': 3, 'color': '#2ecc71', 'scale': (0.2, 2000), 'log': True, 'unit': 'мСм/м', 'name': 'ИК'},
+    'IK':   {'track': 3, 'color': '#2ecc71', 'scale': (0.2, 2000), 'log': True, 'unit': 'Ом·м', 'name': 'ИК'},
     'BK':   {'track': 3, 'color': '#2980b9', 'scale': (0.2, 2000), 'log': True, 'unit': 'Ом·м', 'name': 'БК'},
     'BKZ':  {'track': 3, 'color': '#f39c12', 'scale': (0.2, 2000), 'log': True, 'unit': 'Ом·м', 'name': 'БКЗ (ГЗ)'},
 
