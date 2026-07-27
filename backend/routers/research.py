@@ -334,6 +334,15 @@ def apply_mnemonics(
 
 
 # ── Research coverage map ────────────────────────────────────────────────────
+def _bulk_curves(db, pid: int):
+    """Кривые проекта одним запросом: {well_id: {run_id: RunCurves}}."""
+    try:
+        from bulk_curves import load_project_curves
+    except ImportError:  # pragma: no cover — запуск пакетом backend.*
+        from backend.bulk_curves import load_project_curves
+    return load_project_curves(db, pid)
+
+
 @router.get("/api/projects/{pid}/research-coverage")
 def research_coverage(
     pid: int,
@@ -360,6 +369,9 @@ def research_coverage(
     well_rows: List[dict] = []
     method_present_count = {k: 0 for k in method_keys}
 
+    # Одним запросом на проект — см. пояснение в _bulk_curves
+    bulk = _bulk_curves(db, pid)
+
     for w in wells:
         # well depth extent from runs
         starts, stops = [], []
@@ -375,21 +387,24 @@ def research_coverage(
 
         # accumulate per-method coverage across runs
         agg: Dict[str, dict] = {}
+        w_bulk = bulk.get(w.id, {})
         for run in w.log_runs:
             null_value = run.null_value
+            rc = w_bulk.get(run.id)
+            if rc is None:
+                continue
+            pairs = [(m, arr) for m, (_u, _n, arr) in rc.items()]
             depth_arr = None
-            for cd in run.curve_data:
-                if (cd.mnemonic or "").strip().upper() in _DEPTH_MNEMONICS:
-                    depth_arr = _decode(cd)
+            for m, arr in pairs:
+                if m in _DEPTH_MNEMONICS:
+                    depth_arr = arr
                     break
-            for cd in run.curve_data:
-                mnem = (cd.mnemonic or "").strip()
-                if not mnem or mnem.upper() in _DEPTH_MNEMONICS:
+            for mnem, arr in pairs:
+                if not mnem or mnem in _DEPTH_MNEMONICS:
                     continue
                 meth = method_for_mnemonic(mnem)
                 if meth is None:
                     continue
-                arr = _decode(cd)
                 if arr is None or arr.size == 0:
                     continue
                 mask = _valid_mask(arr, null_value)
@@ -402,7 +417,7 @@ def research_coverage(
                 })
                 slot["valid"] += valid
                 slot["total"] += int(arr.size)
-                slot["mnems"].add(mnem.upper())
+                slot["mnems"].add(mnem)
                 if depth_arr is not None and depth_arr.size == arr.size:
                     dvalid = depth_arr[mask]
                     dvalid = dvalid[np.isfinite(dvalid)]
@@ -494,31 +509,39 @@ def coverage_log(
     present_union = set()
     well_rows: List[dict] = []
 
+    # Кривые всего проекта — ОДНИМ запросом. Обход связями ORM давал запрос на
+    # каждый рейс: на 1500 рейсах это 21 секунда, причём почти всё время
+    # уходило не на чтение, а на создание объектов SQLAlchemy.
+    bulk = _bulk_curves(db, pid)
+
     for w in wells:
         counts: Dict[str, np.ndarray] = {}     # method -> per-bin curve count
         mnems: Dict[str, set] = {}
         w_top, w_bot = None, None
+        w_bulk = bulk.get(w.id, {})
         for run in w.log_runs:
             null_value = run.null_value
+            rc = w_bulk.get(run.id)
+            if rc is None:
+                continue
+            pairs = [(m, arr) for m, (_u, _n, arr) in rc.items()]
             depth_arr = None
-            for cd in run.curve_data:
-                if (cd.mnemonic or "").strip().upper() in _DEPTH_MNEMONICS:
-                    depth_arr = _decode(cd)
+            for m, arr in pairs:
+                if m in _DEPTH_MNEMONICS:
+                    depth_arr = arr
                     break
-            if depth_arr is None:
+            if depth_arr is None or depth_arr.size == 0:
                 continue
             # Счёт ведётся ПО РЕЙСАМ: несколько каналов одного метода в одном
             # рейсе (например зенит+азимут инклинометрии) — это один замер;
             # повтором считается тот же метод, записанный в другом рейсе.
             run_hits: Dict[str, np.ndarray] = {}
-            for cd in run.curve_data:
-                mnem = (cd.mnemonic or "").strip()
-                if not mnem or mnem.upper() in _DEPTH_MNEMONICS:
+            for mnem, arr in pairs:
+                if not mnem or mnem in _DEPTH_MNEMONICS:
                     continue
                 meth = method_for_mnemonic(mnem)
                 if meth is None:
                     continue
-                arr = _decode(cd)
                 if arr is None or arr.size != depth_arr.size:
                     continue
                 mask = _valid_mask(arr, null_value) & np.isfinite(depth_arr)
@@ -574,6 +597,9 @@ def _coverage_by_horizon(pid: int, db: Session) -> Dict[str, Any]:
     rows: List[dict] = []
     horizons: List[str] = []
 
+    # Одним запросом на проект — см. пояснение в _bulk_curves
+    bulk = _bulk_curves(db, pid)
+
     for w in wells:
         tops = sorted([t for t in w.formation_tops if t.depth is not None],
                       key=lambda t: t.depth)
@@ -581,29 +607,32 @@ def _coverage_by_horizon(pid: int, db: Session) -> Dict[str, Any]:
             continue
         # collect (method -> list of (depth_min, depth_max, mnemonic))
         seg: Dict[str, List[tuple]] = {}
+        w_bulk = bulk.get(w.id, {})
         for run in w.log_runs:
-            depth_arr = None
-            for cd in run.curve_data:
-                if (cd.mnemonic or "").strip().upper() in _DEPTH_MNEMONICS:
-                    depth_arr = _decode(cd)
-                    break
-            if depth_arr is None:
+            rc = w_bulk.get(run.id)
+            if rc is None:
                 continue
-            for cd in run.curve_data:
-                mnem = (cd.mnemonic or "").strip()
-                if not mnem or mnem.upper() in _DEPTH_MNEMONICS:
+            pairs = [(m, arr) for m, (_u, _n, arr) in rc.items()]
+            depth_arr = None
+            for m, arr in pairs:
+                if m in _DEPTH_MNEMONICS:
+                    depth_arr = arr
+                    break
+            if depth_arr is None or depth_arr.size == 0:
+                continue
+            for mnem, arr in pairs:
+                if not mnem or mnem in _DEPTH_MNEMONICS:
                     continue
                 meth = method_for_mnemonic(mnem)
                 if meth is None:
                     continue
-                arr = _decode(cd)
                 if arr is None or arr.size != depth_arr.size:
                     continue
                 mask = _valid_mask(arr, run.null_value) & np.isfinite(depth_arr)
                 if not mask.any():
                     continue
                 seg.setdefault(meth.key, {}).setdefault(run.id, []).append(
-                    (depth_arr[mask], mnem.upper()))
+                    (depth_arr[mask], mnem))
 
         for i, t in enumerate(tops):
             h_top = t.depth

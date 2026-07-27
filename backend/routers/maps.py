@@ -231,6 +231,19 @@ def _decode(cd) -> Optional[np.ndarray]:
         return None
 
 
+def _bulk_project_curves(db, pid: int):
+    """Кривые проекта, нужные картам, — одним запросом.
+
+    Ограничиваемся именами колонок РИГИС и индексными: поднимать с диска весь
+    ГИС ради карты пористости незачем.
+    """
+    try:
+        from bulk_curves import load_project_curves
+    except ImportError:  # pragma: no cover — запуск пакетом backend.*
+        from backend.bulk_curves import load_project_curves
+    return load_project_curves(db, pid)
+
+
 def _runs_newest_first(well: Well):
     """Рейсы скважины от новых к старым.
 
@@ -244,39 +257,54 @@ def _runs_newest_first(well: Well):
     )
 
 
-def _well_curves(well: Well) -> Dict[str, List[Tuple[np.ndarray, np.ndarray]]]:
+_MAP_METHODS = {"COLL", "SAT", "KP", "KGL", "KNG"}
+
+
+def _well_curves(well: Well, preloaded=None) -> Dict[str, List[Tuple[np.ndarray, np.ndarray]]]:
     """{мнемоника: [(глубины, значения), …]} — все рейсы, т.к. РИГИС С1/С2
-    покрывают РАЗНЫЕ интервалы и нужный выбирается по горизонту."""
+    покрывают РАЗНЫЕ интервалы и нужный выбирается по горизонту.
+
+    ``preloaded`` — уже прочитанные кривые скважины ({run_id: RunCurves} из
+    bulk_curves). Без него данные подтягиваются связями ORM, и на проекте в
+    сотни скважин это отдельный запрос на каждый рейс.
+    """
     # Ключ — МЕТОД, а не имя колонки: в промысловых РИГИС кривые называются
     # КОЛЛЕКТОР / НАСЫЩЕНИЕ / КП_W / КГЛ / КНГ_W, а не COLL / SAT / KP.
-    wanted = {"COLL", "SAT", "KP", "KGL", "KNG"}
+    wanted = _MAP_METHODS
     out: Dict[str, List[Tuple[np.ndarray, np.ndarray]]] = {}
     # Рейсы перебираем от НОВЫХ к старым: если пользователь загрузил новую
     # версию РИГИС на тот же интервал отдельным рейсом, карта обязана считать
     # по ней. При равном перекрытии выигрывает первый в этом порядке.
     for run in _runs_newest_first(well):
+        if preloaded is not None:
+            rc = preloaded.get(run.id)
+            if rc is None:
+                continue
+            pairs = [(m, arr) for m, (_u, _n, arr) in rc.items()]
+        else:
+            pairs = [((cd.mnemonic or "").strip().upper(), _decode(cd))
+                     for cd in run.curve_data]
+
         depth = None
-        for cd in run.curve_data:
-            if (cd.mnemonic or "").strip().upper() in _DEPTH:
-                depth = _decode(cd)
+        for m, arr in pairs:
+            if m in _DEPTH:
+                depth = arr
                 break
-        if depth is None:
+        if depth is None or depth.size == 0:
             continue
-        for cd in run.curve_data:
-            m = (cd.mnemonic or "").strip().upper()
+        for m, arr in pairs:
             if m in _DEPTH:
                 continue
             key = m if m in wanted else _method_key(m)
             if key not in wanted:
                 continue
-            arr = _decode(cd)
             if arr is None or arr.size != depth.size:
                 continue
             out.setdefault(key, []).append((depth, arr))
     return out
 
 
-def horizon_value(well: Well, horizon: str, param: str) -> Optional[float]:
+def horizon_value(well: Well, horizon: str, param: str, preloaded=None) -> Optional[float]:
     """Значение параметра для скважины в интервале горизонта.
 
     Возвращает None, если горизонта нет / нет РИГИС-кривых (скважина не
@@ -294,7 +322,7 @@ def horizon_value(well: Well, horizon: str, param: str) -> Optional[float]:
             break
     if h is None:
         return None
-    cur = _well_curves(well)
+    cur = _well_curves(well, preloaded)
     if "COLL" not in cur:
         return None
     # выбираем рейс, реально перекрывающий интервал горизонта
@@ -432,14 +460,20 @@ def map_grid(
     if len(wells) < 3:
         raise HTTPException(400, "Нужно не менее 3 скважин с координатами")
 
+    # Кривые всего проекта берём одним запросом: обход связями ORM давал
+    # запрос на каждый рейс и 20 секунд на трёхстах скважинах.
+    preloaded = {}
+    if param != "altitude":
+        if not horizon:
+            raise HTTPException(400, "Укажите горизонт")
+        preloaded = _bulk_project_curves(db, pid)
+
     pts = []
     for w in wells:
         if param == "altitude":
             v = w.elevation
         else:
-            if not horizon:
-                raise HTTPException(400, "Укажите горизонт")
-            v = horizon_value(w, horizon, param)
+            v = horizon_value(w, horizon, param, preloaded.get(w.id))
         pts.append({"id": w.id, "name": w.name, "x": w.x_coord, "y": w.y_coord,
                     "value": v, "excluded": w.id in excluded})
 
@@ -579,26 +613,36 @@ def project_inventory(pid: int, db: Session = Depends(get_db)) -> Dict[str, Any]
               "ЗЕНИТ", "ЗЕН", "УГОЛ", "АЗИМУТ", "АЗ"}
     RIGIS_M = {"KP", "KGL", "KNG", "KPR", "LITH", "COLL", "SAT"}
 
+    try:
+        from bulk_curves import load_project_curve_meta, deviation_counts
+    except ImportError:  # pragma: no cover — запуск пакетом backend.*
+        from backend.bulk_curves import load_project_curve_meta, deviation_counts
+
     wells = db.query(Well).filter(Well.project_id == pid).order_by(Well.name).all()
+    # Инвентаризации нужен только СОСТАВ кривых, не их значения: читаем
+    # метаданные одним запросом и не поднимаем с диска сотни мегабайт.
+    meta = load_project_curve_meta(db, pid)
+    inkl_by_well = deviation_counts(db, pid)
+
     rows: List[dict] = []
     for w in wells:
         gis, rigis, inkl_pts = set(), set(), 0
         pts_total, depth_min, depth_max = 0, None, None
+        w_meta = meta.get(w.id, {})
         for run in w.log_runs:
             pts_total += run.num_points or 0
             if run.start_depth is not None:
                 depth_min = run.start_depth if depth_min is None else min(depth_min, run.start_depth)
             if run.stop_depth is not None:
                 depth_max = run.stop_depth if depth_max is None else max(depth_max, run.stop_depth)
-            for cd in run.curve_data:
-                m = (cd.mnemonic or "").strip().upper()
+            for m, npts in w_meta.get(run.id, ()):
                 if m in _DEPTH:
                     continue
                 # Сверяем МЕТОД, а не имя колонки: в промысловых файлах пишут
                 # КП_W и КОЛЛЕКТОР, поэтому счёт по мнемоникам давал «РИГИС 0».
                 key = _method_key(m) or m
                 if key in INKL_M:
-                    inkl_pts = max(inkl_pts, cd.num_points or 0)
+                    inkl_pts = max(inkl_pts, npts)
                     continue
                 if key in RIGIS_M:
                     rigis.add(key)
@@ -609,8 +653,7 @@ def project_inventory(pid: int, db: Session = Depends(get_db)) -> Dict[str, Any]
 
         # Инклинометрия чаще приходит отдельным файлом и лежит в таблице замеров
         if inkl_pts == 0:
-            inkl_pts = (db.query(DeviationSurvey)
-                        .filter(DeviationSurvey.well_id == w.id).count())
+            inkl_pts = inkl_by_well.get(w.id, 0)
 
         rows.append({
             "well_id": w.id, "well_name": w.name,

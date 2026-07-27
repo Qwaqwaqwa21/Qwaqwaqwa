@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
-from sqlalchemy import text
+from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 import numpy as np
 import json
@@ -5547,33 +5547,43 @@ def project_summary(pid: int, db: Session = Depends(get_db)):
     unique_formations = set()
     well_rows = []
 
+    # Всё считаем группировкой на стороне базы. Прежде на каждую скважину
+    # уходило четыре запроса плюс COUNT на каждый рейс: на трёхстах скважинах
+    # это тысячи запросов и двадцать секунд ожидания.
+    wids = [w.id for w in wells]
+    runs_by_well = dict(db.query(LogRun.well_id, func.count(LogRun.id))
+                        .filter(LogRun.well_id.in_(wids))
+                        .group_by(LogRun.well_id).all()) if wids else {}
+    tops_by_well = dict(db.query(FormationTop.well_id, func.count(FormationTop.id))
+                        .filter(FormationTop.well_id.in_(wids))
+                        .group_by(FormationTop.well_id).all()) if wids else {}
+    zones_by_well = dict(db.query(Zone.well_id, func.count(Zone.id))
+                         .filter(Zone.well_id.in_(wids))
+                         .group_by(Zone.well_id).all()) if wids else {}
+    curves_by_well = dict(db.query(LogRun.well_id, func.count(CurveData.id))
+                          .join(CurveData, CurveData.log_run_id == LogRun.id)
+                          .filter(LogRun.well_id.in_(wids))
+                          .group_by(LogRun.well_id).all()) if wids else {}
+    gross_by_well: Dict[int, float] = {}
+    if wids:
+        for zw, ztop, zbot in db.query(Zone.well_id, Zone.top_depth, Zone.bottom_depth) \
+                                .filter(Zone.well_id.in_(wids)).all():
+            if ztop is not None and zbot is not None:
+                gross_by_well[zw] = gross_by_well.get(zw, 0.0) + abs(float(zbot) - float(ztop))
+        for (fname,) in db.query(FormationTop.formation_name) \
+                          .filter(FormationTop.well_id.in_(wids)).distinct().all():
+            if fname:
+                unique_formations.add(fname)
+
     for w in wells:
-        log_runs = db.query(LogRun).filter(LogRun.well_id == w.id).all()
-        tops = db.query(FormationTop).filter(FormationTop.well_id == w.id).all()
-        zones = db.query(Zone).filter(Zone.well_id == w.id).all()
-
-        log_runs_count = len(log_runs)
-        tops_count = len(tops)
-        zones_count = len(zones)
-
-        curve_count = 0
-        for lr in log_runs:
-            curve_count += db.query(CurveData).filter(CurveData.log_run_id == lr.id).count()
-
-        for t in tops:
-            if t.formation_name:
-                unique_formations.add(t.formation_name)
-
-        gross_ft = 0.0
-        for z in zones:
-            if z.top_depth is not None and z.bottom_depth is not None:
-                gross_ft += abs(float(z.bottom_depth) - float(z.top_depth))
+        log_runs_count = int(runs_by_well.get(w.id, 0))
+        tops_count = int(tops_by_well.get(w.id, 0))
+        zones_count = int(zones_by_well.get(w.id, 0))
+        curve_count = int(curves_by_well.get(w.id, 0))
+        gross_ft = gross_by_well.get(w.id, 0.0)
 
         avg_thickness = (gross_ft / zones_count) if zones_count > 0 else 0.0
         net_ft = float(zones_count) * avg_thickness
-
-        petro = db.query(PetroParams).filter(PetroParams.well_id == w.id).first()
-        _avg_porosity = float(petro.phie_cutoff) if petro and petro.phie_cutoff is not None else None
 
         total_log_runs += log_runs_count
         total_tops += tops_count
