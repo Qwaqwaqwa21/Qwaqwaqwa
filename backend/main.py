@@ -159,6 +159,39 @@ OBS_METRICS = {
 Base.metadata.create_all(bind=engine)
 
 
+def _ensure_foreign_key_indexes():
+    """Индексы на внешние ключи для БАЗ, созданных раньше.
+
+    create_all добавляет индексы только в новые таблицы, а у заказчика база
+    уже существует. Без них каждый запрос «кривые рейса» или «замеры
+    скважины» просматривает таблицу целиком: на 48 000 кривых и 6 млн
+    замеров это секунды на ровном месте.
+    """
+    idx = [
+        ("ix_wells_project_id", "wells", "project_id"),
+        ("ix_log_runs_well_id", "log_runs", "well_id"),
+        ("ix_curve_data_log_run_id", "curve_data", "log_run_id"),
+        ("ix_formation_tops_well_id", "formation_tops", "well_id"),
+        ("ix_deviation_surveys_well_id", "deviation_surveys", "well_id"),
+        ("ix_zones_well_id", "zones", "well_id"),
+        ("ix_core_data_well_id", "core_data", "well_id"),
+    ]
+    with engine.begin() as conn:
+        existing = {r[0] for r in conn.exec_driver_sql(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+        for name, table, col in idx:
+            if table not in existing:
+                continue
+            try:
+                conn.exec_driver_sql(
+                    f"CREATE INDEX IF NOT EXISTS {name} ON {table} ({col})")
+            except Exception:      # колонки может не быть в старой схеме
+                pass
+
+
+_ensure_foreign_key_indexes()
+
+
 def _ensure_well_coordinate_columns():
     """Add latitude/longitude columns if missing (idempotent)."""
     with engine.begin() as conn:

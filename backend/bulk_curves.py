@@ -17,6 +17,9 @@ from typing import Dict, Iterable, List, Optional, Tuple
 import numpy as np
 from sqlalchemy import text
 
+# Имена индексных кривых: нужны всегда, по ним строится глубина
+DEPTH_NAMES = {"DEPT", "DEPTH", "MD", "TVD", "ГЛУБ", "ГЛУБИНА"}
+
 
 class RunCurves:
     """Кривые одного рейса: мнемоника → (единица, число точек, массив)."""
@@ -147,3 +150,89 @@ def deviation_counts(db, pid: int) -> Dict[int, int]:
         GROUP BY ds.well_id
     """)
     return {int(wid): int(n) for wid, n in db.execute(sql, {"pid": pid})}
+
+
+def load_curve_arrays(db, curve_ids: Iterable[int]) -> Dict[int, np.ndarray]:
+    """{curve_id: массив} только для перечисленных кривых.
+
+    Порциями, потому что SQLite ограничивает число параметров запроса.
+    """
+    ids = [int(c) for c in curve_ids]
+    out: Dict[int, np.ndarray] = {}
+    CHUNK = 400
+    for i in range(0, len(ids), CHUNK):
+        part = ids[i:i + CHUNK]
+        keys = [f"c{j}" for j in range(len(part))]
+        sql = text("SELECT id, data_binary FROM curve_data WHERE id IN (%s)"
+                   % ", ".join(f":{k}" for k in keys))
+        for cid, blob in db.execute(sql, dict(zip(keys, part))):
+            out[int(cid)] = np.frombuffer(blob, dtype=np.float64) if blob else np.empty(0)
+    return out
+
+
+def load_project_curves_for(db, pid: int, wanted_methods,
+                            method_key) -> Dict[int, Dict[int, RunCurves]]:
+    """Кривые проекта ТОЛЬКО нужных методов — плюс индексные.
+
+    Сначала читается состав (без данных, доли секунды), затем поднимаются
+    блобы одних лишь подходящих кривых. На проекте в 3000 скважин это разница
+    между 1.3 ГБ и парой сотен мегабайт: карте пористости незачем поднимать
+    с диска весь ГИС.
+
+    ``method_key`` — функция «мнемоника → ключ метода» из вызывающего модуля,
+    чтобы отбор шёл ровно по тем же правилам, что и сам расчёт.
+    """
+    meta_sql = text("""
+        SELECT lr.well_id, cd.log_run_id, cd.id, cd.mnemonic, cd.unit, cd.num_points
+        FROM curve_data cd
+        JOIN log_runs lr ON lr.id = cd.log_run_id
+        JOIN wells w ON w.id = lr.well_id
+        WHERE w.project_id = :pid
+    """)
+    wanted = {(k or "").strip().upper() for k in wanted_methods}
+    picked: List[tuple] = []
+    for well_id, run_id, cid, mnem, unit, npts in db.execute(meta_sql, {"pid": pid}):
+        m = (mnem or "").strip().upper()
+        if m in DEPTH_NAMES or (method_key(m) or m) in wanted:
+            picked.append((well_id, run_id, int(cid), m, unit or "", int(npts or 0)))
+
+    arrays = load_curve_arrays(db, [p[2] for p in picked])
+    out: Dict[int, Dict[int, RunCurves]] = {}
+    for well_id, run_id, cid, m, unit, npts in picked:
+        by_run = out.setdefault(well_id, {})
+        rc = by_run.get(run_id)
+        if rc is None:
+            rc = by_run[run_id] = RunCurves(run_id, well_id)
+        rc.curves[m] = (unit, npts, arrays.get(cid, np.empty(0)))
+    return out
+
+
+def load_wells_curves(db, well_ids: Iterable[int]) -> Dict[int, Dict[int, RunCurves]]:
+    """{well_id: {run_id: RunCurves}} для перечисленных скважин.
+
+    Нужна сводкам со страничной выдачей: считать три тысячи скважин ради
+    трёхсот показанных — впустую поднимать с диска гигабайт данных.
+    """
+    ids = [int(w) for w in well_ids]
+    if not ids:
+        return {}
+    out: Dict[int, Dict[int, RunCurves]] = {}
+    CHUNK = 400
+    for i in range(0, len(ids), CHUNK):
+        part = ids[i:i + CHUNK]
+        keys = [f"w{j}" for j in range(len(part))]
+        sql = text("""
+            SELECT lr.well_id, cd.log_run_id, cd.mnemonic, cd.unit,
+                   cd.num_points, cd.data_binary
+            FROM curve_data cd
+            JOIN log_runs lr ON lr.id = cd.log_run_id
+            WHERE lr.well_id IN (%s)
+        """ % ", ".join(f":{k}" for k in keys))
+        for well_id, run_id, mnem, unit, npts, blob in db.execute(sql, dict(zip(keys, part))):
+            by_run = out.setdefault(well_id, {})
+            rc = by_run.get(run_id)
+            if rc is None:
+                rc = by_run[run_id] = RunCurves(run_id, well_id)
+            arr = np.frombuffer(blob, dtype=np.float64) if blob else np.empty(0)
+            rc.curves[(mnem or "").strip().upper()] = (unit or "", int(npts or arr.size), arr)
+    return out

@@ -1673,3 +1673,19 @@ tr:hover td {
     overflow-y: auto;
     box-shadow: 0 12px 40px rgba(0, 0, 0, .5);
 }
+
+/* Навигация по страницам сводок охвата: без неё непонятно, показана вся
+   выборка или только её часть. */
+.coverage-pager {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 10px 0 4px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    background: var(--bg-tertiary, #21262d);
+    color: #8b949e;
+    font-size: 12px;
+}
+.coverage-pager b { color: var(--text-primary, #c9d1d9); }
+.coverage-pager button[disabled] { opacity: .4; cursor: default; }
