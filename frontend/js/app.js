@@ -6,7 +6,19 @@
 const GeoModal = {
     _resolve: null,
     _confirmed: false,
-    show({ title, fields, onConfirm }) {
+    show(arg) {
+        if (typeof arg === 'string') {
+            return new Promise(resolve => {
+                this._resolve = resolve;
+                this._confirmed = false;
+                document.getElementById('modalTitle').textContent = '';
+                const body = document.getElementById('modalBody');
+                body.innerHTML = arg;
+                document.getElementById('modalFooter').innerHTML = '';
+                document.getElementById('modalOverlay').style.display = 'flex';
+            });
+        }
+        const { title, fields, onConfirm } = arg;
         return new Promise(resolve => {
             this._resolve = resolve;
             this._confirmed = false;
