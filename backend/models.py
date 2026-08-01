@@ -66,6 +66,7 @@ class LogRun(Base):
     stop_depth = Column(Float, nullable=True)
     step = Column(Float, nullable=True)
     null_value = Column(Float, default=-999.25)
+    depth_unit = Column(String(10), default="FT")  # FT or M, from the source file's index curve
     num_points = Column(Integer, default=0)
     curves_json = Column(Text, default="[]")  # JSON array of curve definitions
     parameters_json = Column(Text, default="[]")

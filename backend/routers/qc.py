@@ -52,10 +52,14 @@ def _get_latest_log_run(db: Session, wid: int) -> LogRun:
     if not well:
         raise HTTPException(status_code=404, detail="Well not found")
 
+    # A well can also carry a small deviation-survey run (MD/INKL/AZ) uploaded
+    # after the main curve set; "latest uploaded" would pick that instead of
+    # the actual log data. Prefer the run with the most points/curves, same
+    # heuristic already used by the LAS/bundle export endpoints.
     lr = (
         db.query(LogRun)
         .filter(LogRun.well_id == wid)
-        .order_by(LogRun.uploaded_at.desc(), LogRun.id.desc())
+        .order_by(LogRun.num_points.desc(), LogRun.id.desc())
         .first()
     )
     if not lr:
@@ -65,10 +69,10 @@ def _get_latest_log_run(db: Session, wid: int) -> LogRun:
 
 def _curve_array(cd: CurveData, n: int) -> np.ndarray:
     if not cd or not cd.data_binary:
-        return np.full(n, np.nan, dtype=np.float32)
-    arr = np.frombuffer(cd.data_binary, dtype=np.float32)
+        return np.full(n, np.nan, dtype=np.float64)
+    arr = np.frombuffer(cd.data_binary, dtype=np.float64)
     if arr.size < n:
-        padded = np.full(n, np.nan, dtype=np.float32)
+        padded = np.full(n, np.nan, dtype=np.float64)
         padded[: arr.size] = arr
         return padded
     if arr.size > n:

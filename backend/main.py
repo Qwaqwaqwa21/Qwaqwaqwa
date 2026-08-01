@@ -149,6 +149,76 @@ def _ensure_well_coordinate_columns():
 _ensure_well_coordinate_columns()
 
 
+def _ensure_log_run_depth_unit_column():
+    """Add log_runs.depth_unit if missing (idempotent)."""
+    with engine.begin() as conn:
+        try:
+            conn.execute(text("ALTER TABLE log_runs ADD COLUMN depth_unit VARCHAR(10) DEFAULT 'FT';"))
+        except Exception:
+            pass
+
+
+_ensure_log_run_depth_unit_column()
+
+
+def _normalize_depth_unit(unit: str) -> str:
+    """Map a raw LAS/DLIS/LIS index-curve unit string to 'M' or 'FT'."""
+    u = (unit or "").strip().upper()
+    if u in ("M", "METER", "METERS", "METRE", "METRES"):
+        return "M"
+    return "FT"
+
+
+def _depth_unit_from_curves(curves, depth_key: str) -> str:
+    """Derive the depth unit from the parsed index curve, not a hardcoded guess."""
+    for c in curves:
+        if c.mnemonic == depth_key:
+            return _normalize_depth_unit(c.unit)
+    return "FT"
+
+
+_DEPTH_INDEX_MNEMONICS = {"MD", "DEPT", "DEPTH", "TVD"}
+
+
+def _backfill_depth_units():
+    """Runs uploaded before depth_unit existed were stamped 'FT' unconditionally;
+    recompute from each run's own stored curve definitions (idempotent)."""
+    db = SessionLocal()
+    try:
+        changed_wells = set()
+        for lr in db.query(LogRun).all():
+            try:
+                defs = json.loads(lr.curves_json or "[]")
+            except Exception:
+                continue
+            depth_def = next(
+                (d for d in defs if (d.get("mnemonic") or "").upper() in _DEPTH_INDEX_MNEMONICS), None
+            )
+            if not depth_def:
+                continue
+            derived = _normalize_depth_unit(depth_def.get("unit"))
+            if lr.depth_unit != derived:
+                lr.depth_unit = derived
+                changed_wells.add(lr.well_id)
+        db.commit()
+
+        for wid in changed_wells:
+            well = db.query(Well).filter(Well.id == wid).first()
+            if not well:
+                continue
+            first_run = min(well.log_runs, key=lambda r: (r.run_number or 0, r.id), default=None)
+            if first_run and first_run.depth_unit and well.depth_unit != first_run.depth_unit:
+                well.depth_unit = first_run.depth_unit
+        db.commit()
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
+
+
+_backfill_depth_units()
+
+
 def _ensure_production_table():
     """Create production table for existing deployments without migrations."""
     ddl = """
@@ -1059,11 +1129,13 @@ MAX_UPLOAD_SIZE = 50 * 1024 * 1024  # 50MB
 
 def _persist_non_las_runs(db: Session, well: Well, filename: str, parsed, source_format: str):
     created_runs = []
+    had_no_runs = len(well.log_runs) == 0
     for run in parsed.runs:
         curves_def = [
             {"mnemonic": c.mnemonic, "unit": c.unit, "description": c.description}
             for c in run.curves
         ]
+        depth_unit = _depth_unit_from_curves(run.curves, run.depth_key)
 
         lr = LogRun(
             well_id=well.id,
@@ -1074,12 +1146,15 @@ def _persist_non_las_runs(db: Session, well: Well, filename: str, parsed, source
             stop_depth=run.stop_depth,
             step=run.step,
             null_value=run.null_value,
+            depth_unit=depth_unit,
             num_points=int(len(run.depth)),
             curves_json=json.dumps(curves_def),
             parameters_json=json.dumps(run.parameters or []),
         )
         db.add(lr)
         db.flush()
+        if had_no_runs and not created_runs:
+            well.depth_unit = depth_unit
 
         for curve in run.curves:
             arr = run.data.get(curve.mnemonic)
@@ -1140,6 +1215,9 @@ async def upload_las(wid: int, file: UploadFile = File(...), db: Session = Depen
         for p in las.parameters
     ]
 
+    is_first_run = len(well.log_runs) == 0
+    depth_unit = _depth_unit_from_curves(las.curves, las.depth_key)
+
     log_run = LogRun(
         well_id=wid,
         run_number=len(well.log_runs) + 1,
@@ -1149,12 +1227,15 @@ async def upload_las(wid: int, file: UploadFile = File(...), db: Session = Depen
         stop_depth=las.well.stop,
         step=las.well.step,
         null_value=las.well.null,
+        depth_unit=depth_unit,
         num_points=len(las.depth),
         curves_json=json.dumps(curves_def),
         parameters_json=json.dumps(params_def),
     )
     db.add(log_run)
     db.flush()
+    if is_first_run:
+        well.depth_unit = depth_unit
 
     # Store curve data as binary numpy arrays
     for curve in las.curves:
@@ -2790,15 +2871,20 @@ async def bulk_upload_las(wid: int, files: list = [], db: Session = Depends(get_
             text = content.decode("utf-8", errors="replace")
             las = LASParser.parse_string(text)
             curves_def = [{"mnemonic": c.mnemonic, "unit": c.unit, "description": c.description} for c in las.curves]
+            is_first_run = len(well.log_runs) == 0
+            depth_unit = _depth_unit_from_curves(las.curves, las.depth_key)
             lr = LogRun(
                 well_id=wid, run_number=len(well.log_runs) + 1,
                 filename=file.filename or "unknown.las", las_version=las.version,
                 start_depth=las.well.start, stop_depth=las.well.stop,
-                step=las.well.step, null_value=las.well.null, num_points=len(las.depth),
+                step=las.well.step, null_value=las.well.null, depth_unit=depth_unit,
+                num_points=len(las.depth),
                 curves_json=json.dumps(curves_def),
             )
             db.add(lr)
             db.flush()
+            if is_first_run:
+                well.depth_unit = depth_unit
             for curve in las.curves:
                 arr = las.data.get(curve.mnemonic)
                 if arr is not None:
@@ -9178,6 +9264,7 @@ def export_las(wid: int, db: Session = Depends(get_db)):
         raise HTTPException(404, "No log run")
 
     curves = db.query(CurveData).filter(CurveData.log_run_id == lr.id).order_by(CurveData.id).all()
+    depth_unit = lr.depth_unit or well.depth_unit or "FT"
 
     # Build LAS header
     las = "~Version Information\n"
@@ -9192,9 +9279,9 @@ def export_las(wid: int, db: Session = Depends(get_db)):
     las += f"FLD.                  {well.field_name or 'N/A'}:    Field\n"
     las += f"SRVC.                 GeoLog:    Service Company\n"
     las += f"DATE.                 {datetime.datetime.now().strftime('%Y-%m-%d')}:    Date\n"
-    las += f"STRT.{well.depth_unit or 'FT'}         {lr.start_depth or 0:.4f}                  START DEPTH\n"
-    las += f"STOP.{well.depth_unit or 'FT'}         {lr.stop_depth or 0:.4f}                  STOP DEPTH\n"
-    las += f"STEP.{well.depth_unit or 'FT'}         {lr.step or 0.5:.4f}                  STEP\n"
+    las += f"STRT.{depth_unit}         {lr.start_depth or 0:.4f}                  START DEPTH\n"
+    las += f"STOP.{depth_unit}         {lr.stop_depth or 0:.4f}                  STOP DEPTH\n"
+    las += f"STEP.{depth_unit}         {lr.step or 0.5:.4f}                  STEP\n"
     las += f"NULL.                {lr.null_value or -999.25:.2f}                 NULL VALUE\n"
 
     las += "~Curve Information\n"
@@ -9523,6 +9610,8 @@ def export_client_bundle(wid: int, db: Session = Depends(get_db)):
     tops = db.query(FormationTop).filter(FormationTop.well_id == wid).order_by(FormationTop.depth).all()
     zones = db.query(Zone).filter(Zone.well_id == wid).order_by(Zone.top_depth).all()
     params = db.query(PetroParams).filter(PetroParams.well_id == wid).first()
+    depth_unit = ((lr.depth_unit if lr else None) or well.depth_unit or "FT")
+    depth_unit_label = "m" if depth_unit == "M" else "ft"
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
@@ -9535,9 +9624,9 @@ def export_client_bundle(wid: int, db: Session = Depends(get_db)):
                 "WRAP.                  NO:   One line per depth step",
                 "~Well Information",
                 f"WELL.                  {well.name}:   Well Name",
-                f"STRT. {float(lr.start_depth or 0):>10.2f} {getattr(lr, 'depth_unit', 'FT')}:   Start Depth",
-                f"STOP. {float(lr.stop_depth or 0):>10.2f} {getattr(lr, 'depth_unit', 'FT')}:   Stop Depth",
-                f"STEP. {float(lr.step or 1):>10.4f} {getattr(lr, 'depth_unit', 'FT')}:   Step",
+                f"STRT. {float(lr.start_depth or 0):>10.2f} {depth_unit}:   Start Depth",
+                f"STOP. {float(lr.stop_depth or 0):>10.2f} {depth_unit}:   Stop Depth",
+                f"STEP. {float(lr.step or 1):>10.4f} {depth_unit}:   Step",
                 f"NULL.              -999.25:   Null Value",
                 f"COMP.                  GeoLog:   Company",
                 f"DATE.          {__import__('datetime').date.today()}:   Date",
@@ -9587,13 +9676,13 @@ def export_client_bundle(wid: int, db: Session = Depends(get_db)):
 
         # 5. Summary report
         report = f"# GeoLog Export Report\nWell: {well.name}\nDate: {__import__('datetime').datetime.now().isoformat()}\n\n"
-        report += f"## Log Runs\n- Depth range: {lr.start_depth} - {lr.stop_depth} ft\n- Points: {lr.num_points}\n\n" if lr else ""
+        report += f"## Log Runs\n- Depth range: {lr.start_depth} - {lr.stop_depth} {depth_unit_label}\n- Points: {lr.num_points}\n\n" if lr else ""
         report += f"## Formation Tops ({len(tops)} entries)\n"
         for t in tops:
-            report += f"- {t.depth:.1f} ft: {t.name or t.formation_name}\n"
+            report += f"- {t.depth:.1f} {depth_unit_label}: {t.name or t.formation_name}\n"
         report += f"\n## Zones ({len(zones)} entries)\n"
         for z in zones:
-            report += f"- {z.zone_name}: {z.top_depth:.1f} - {z.bottom_depth:.1f} ft (NTG: {z.net_to_gross or 'N/A'})\n"
+            report += f"- {z.zone_name}: {z.top_depth:.1f} - {z.bottom_depth:.1f} {depth_unit_label} (NTG: {z.net_to_gross or 'N/A'})\n"
         zf.writestr("report.md", report)
 
     buf.seek(0)
