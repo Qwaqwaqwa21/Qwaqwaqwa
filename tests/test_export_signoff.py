@@ -90,6 +90,47 @@ def test_accepting_review_drops_digitization_issue_from_409():
     assert "signed off" in after.json()["detail"]["detail"].lower()
 
 
+SURVEY_LAS = lambda n, stop: """~Version Information
+VERS.                  2.0 :
+WRAP.                  NO  :
+~Well Information
+STRT.M              100.000 :
+STOP.M              %d.000 :
+STEP.M                1.000 :
+NULL.              -999.25  :
+~Curve Information
+MD  .M                   :   MEASURED DEPTH
+INKL.DEG                :   INCLINATION
+AZIM.DEG                :   AZIMUTH
+~ASCII
+""" % stop + "\n".join(f"{100 + i}.0 {2.0 + 0.1 * i} {10.0 + i}" for i in range(n)) + "\n"
+
+
+def test_second_survey_shaped_run_does_not_block_digitization_gate():
+    """When a well has two MD/INKL/AZIM-only (deviation-survey-shaped) runs,
+    `_find_deviation_survey` only recognizes the larger one as *the* survey.
+    The smaller one must still be excluded from the digitization-review
+    gate — it's a survey file, not a real curve log needing per-curve
+    review — rather than blocking export forever waiting on a review that
+    was never meant to apply to it."""
+    proj = client.post("/api/projects/", headers=_h("admin"), json={"name": "SurveyGapProject"})
+    pid = proj.json()["id"]
+    well = client.post("/api/wells/", headers=_h("admin"), json={"project_id": pid, "name": "SurveyGapWell"})
+    wid = well.json()["id"]
+
+    up1 = client.post(f"/api/wells/{wid}/upload-las", headers=_h("admin"),
+                       files={"file": ("survey_big.las", SURVEY_LAS(10, 109).encode(), "text/plain")})
+    assert up1.status_code == 200
+    up2 = client.post(f"/api/wells/{wid}/upload-las", headers=_h("admin"),
+                       files={"file": ("survey_small.las", SURVEY_LAS(5, 104).encode(), "text/plain")})
+    assert up2.status_code == 200
+
+    readiness = client.get(f"/api/wells/{wid}/readiness-summary")
+    assert readiness.status_code == 200
+    issues = readiness.json()["digitization_issues"]
+    assert not any("survey_small" in i or "survey_big" in i for i in issues), issues
+
+
 def test_export_succeeds_after_snapshot_approved():
     _pid, wid, lr_id = _make_well_with_run()
 

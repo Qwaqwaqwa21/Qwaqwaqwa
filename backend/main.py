@@ -9541,6 +9541,38 @@ def well_analogs(pid: int, reference_well_id: int, db: Session = Depends(get_db)
     return {"reference_well": ref_well.name, "ref_stats": ref_stats, "analogs": analogs}
 
 
+# A run whose curves are only MD/inclination(/azimuth) is a deviation-survey
+# upload, not a real petrophysical log — same mnemonic sets as
+# routers/inclinometry.py's _find_survey, duplicated here to avoid importing
+# a router module from main just for this check.
+_SURVEY_DEPTH_MNEMONICS = {"DEPT", "DEPTH", "MD", "TVD"}
+_SURVEY_INCL_MNEMONICS = {"INKL", "INCL", "ИНКЛ", "ZENIT", "ZENITH", "DEVI", "ANGLE", "UGOL"}
+_SURVEY_AZIM_MNEMONICS = {"AZ", "AZIM", "AZIMUTH", "АЗИМУТ"}
+
+
+def _is_survey_shaped_run(lr: "LogRun") -> bool:
+    """True if every curve on this run is a depth/inclination/azimuth
+    mnemonic (i.e. it looks like a deviation survey), regardless of whether
+    `_find_deviation_survey` picked it as *the* survey for this well.
+
+    `_find_deviation_survey` only ever returns the single largest matching
+    run, so a second (duplicate, superseded, or otherwise unselected)
+    survey-shaped upload would otherwise fall through to the "real curve
+    log" digitization-review gate below and block export forever waiting
+    for a review that doesn't make sense for a survey file.
+    """
+    try:
+        defs = json.loads(lr.curves_json or "[]")
+    except Exception:
+        return False
+    mnemonics = {(d.get("mnemonic") or "").strip().upper() for d in defs}
+    mnemonics.discard("")
+    if not mnemonics or not (mnemonics & _SURVEY_INCL_MNEMONICS):
+        return False
+    extra = mnemonics - _SURVEY_DEPTH_MNEMONICS - _SURVEY_INCL_MNEMONICS - _SURVEY_AZIM_MNEMONICS
+    return not extra
+
+
 # ─── Sign-off gate for interpretation handoff exports ────────
 def _compute_export_readiness(wid: int, db: Session) -> dict:
     """Compute whether a well is ready to hand off to another interpretation
@@ -9583,7 +9615,10 @@ def _compute_export_readiness(wid: int, db: Session) -> dict:
         except Exception:
             survey_run_id = None
     curve_runs = db.query(LogRun).filter(LogRun.well_id == wid).order_by(LogRun.run_number.asc(), LogRun.id.asc()).all()
-    curve_runs = [r for r in curve_runs if r.id != survey_run_id and r.num_points]
+    curve_runs = [
+        r for r in curve_runs
+        if r.id != survey_run_id and r.num_points and not _is_survey_shaped_run(r)
+    ]
     for r in curve_runs:
         status = r.digitization_status or "pending_review"
         if status == "rejected":
