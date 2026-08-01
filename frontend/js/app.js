@@ -910,7 +910,16 @@ class GeoLogApp {
             headers: { 'X-User-Role': this.currentRole || 'viewer', ...opts.headers },
             ...opts,
         });
-        if (!resp.ok) throw new Error(`Export error: ${resp.status}`);
+        if (!resp.ok) {
+            let message = `Export error: ${resp.status}`;
+            try {
+                const body = await resp.clone().json();
+                if (body && body.detail !== undefined) {
+                    message = typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail);
+                }
+            } catch (e) { /* body wasn't JSON / had no detail — keep generic message */ }
+            throw new Error(message);
+        }
         return resp.blob();
     }
 

@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 
 try:
     from routers.qc import router as qc_router
+    from routers.qc import _run_advanced_qc
     from routers.correlation import router as corr_router
     from routers.zonation import router as zonation_router
     from routers.units import router as units_router
@@ -31,6 +32,7 @@ try:
     from routers.duplicates import router as duplicates_router
 except ImportError:
     from backend.routers.qc import router as qc_router
+    from backend.routers.qc import _run_advanced_qc
     from backend.routers.correlation import router as corr_router
     from backend.routers.zonation import router as zonation_router
     from backend.routers.units import router as units_router
@@ -9253,6 +9255,46 @@ def well_analogs(pid: int, reference_well_id: int, db: Session = Depends(get_db)
     return {"reference_well": ref_well.name, "ref_stats": ref_stats, "analogs": analogs}
 
 
+# ─── Sign-off gate for interpretation handoff exports ────────
+def _check_export_signoff(wid: int, db: Session, force: bool) -> dict:
+    """Verify a well is ready to hand off to another interpretation package:
+    it must have been signed off (locked via an approved interpretation
+    snapshot) and must not have a POOR advanced-QC rating. Returns an info
+    dict (locked, qc_rating, issues) for audit logging. Raises HTTPException
+    409 with every issue found when the well isn't ready and `force` is not
+    set — callers should still log the export attempt after catching it.
+    """
+    issues = []
+
+    lock = _get_well_lock(wid)
+    locked = bool(lock.get("locked"))
+    if not locked:
+        issues.append("well has not been signed off (no interpretation snapshot has been approved)")
+
+    qc_rating = None
+    try:
+        qc_result = _run_advanced_qc(wid, db)
+        qc_rating = (qc_result.get("summary") or {}).get("overall_rating")
+        if qc_rating == "POOR":
+            issues.append(f"advanced QC rating is POOR")
+    except HTTPException as exc:
+        qc_rating = f"unavailable ({exc.detail})"
+        issues.append(f"advanced QC could not be run ({exc.detail})")
+
+    info = {"locked": locked, "qc_rating": qc_rating, "issues": issues, "force": force}
+
+    if issues and not force:
+        raise HTTPException(status_code=409, detail={
+            "detail": "Well is not ready for export: " + "; ".join(issues) + ".",
+            "locked": locked,
+            "qc_rating": qc_rating,
+            "issues": issues,
+            "hint": f"approve an interpretation snapshot (POST /api/wells/{wid}/snapshots/{{id}}/approve) or retry with ?force=true",
+        })
+
+    return info
+
+
 # ─── Sprint 28: LAS Export with All Data ─────────────────────
 def _build_las_text(well: Well, lr: LogRun, curves: list, depth_unit: str) -> str:
     """Render one log run as a LAS 2.0 text body. Shared by export-las and
@@ -9305,11 +9347,22 @@ def _build_las_text(well: Well, lr: LogRun, curves: list, depth_unit: str) -> st
 
 
 @app.get("/api/wells/{wid}/export-las")
-def export_las(wid: int, db: Session = Depends(get_db)):
-    """Export well data as LAS 2.0 format string."""
+def export_las(wid: int, force: bool = Query(False), db: Session = Depends(get_db)):
+    """Export well data as LAS 2.0 format string.
+
+    Gated on sign-off: the well must have been locked via an approved
+    interpretation snapshot and must not have a POOR advanced-QC rating,
+    otherwise a 409 is returned. Pass ?force=true to override (audited)."""
     well = db.query(Well).filter(Well.id == wid).first()
     if not well:
         raise HTTPException(404, "Well not found")
+
+    try:
+        signoff = _check_export_signoff(wid, db, force)
+    except HTTPException as exc:
+        _log_audit(db, "export_las", entity_type="well", entity_id=wid, well_id=wid,
+                   details=f"blocked: {exc.detail}")
+        raise
 
     lr = db.query(LogRun).filter(LogRun.well_id == wid).order_by(LogRun.num_points.desc()).first()
     if not lr:
@@ -9318,6 +9371,10 @@ def export_las(wid: int, db: Session = Depends(get_db)):
     curves = db.query(CurveData).filter(CurveData.log_run_id == lr.id).order_by(CurveData.id).all()
     depth_unit = lr.depth_unit or well.depth_unit or "FT"
     las = _build_las_text(well, lr, curves, depth_unit)
+
+    _log_audit(db, "export_las", entity_type="well", entity_id=wid, well_id=wid,
+               details=f"ok: locked={signoff['locked']} qc_rating={signoff['qc_rating']} "
+                       f"force={signoff['force']} issues={signoff['issues']}")
 
     headers = {"Content-Disposition": f'attachment; filename="{well.name}.las"'}
     return StreamingResponse(iter([las]), media_type="text/plain", headers=headers)
@@ -9605,7 +9662,7 @@ def formation_tester(wid: int, db: Session = Depends(get_db)):
 
 # ─── Feature 18: Client Handoff Bundle ─────────────────────
 @app.get("/api/wells/{wid}/export-bundle")
-def export_client_bundle(wid: int, db: Session = Depends(get_db)):
+def export_client_bundle(wid: int, force: bool = Query(False), db: Session = Depends(get_db)):
     """Export a ZIP bundle: one LAS per curve-data run, a separate deviation
     survey file if one was uploaded, tops, zones, params, and a summary report.
 
@@ -9614,12 +9671,23 @@ def export_client_bundle(wid: int, db: Session = Depends(get_db)):
     interpretation package needs for TVD/directional work. All runs are now
     included; the survey run is exported as its own MD/INKL/AZIM CSV instead
     of being squeezed into (or lost from) the main LAS.
+
+    Gated on sign-off: the well must have been locked via an approved
+    interpretation snapshot and must not have a POOR advanced-QC rating,
+    otherwise a 409 is returned. Pass ?force=true to override (audited).
     """
     import zipfile
     import io
     well = db.query(Well).filter(Well.id == wid).first()
     if not well:
         raise HTTPException(404, "Well not found")
+
+    try:
+        signoff = _check_export_signoff(wid, db, force)
+    except HTTPException as exc:
+        _log_audit(db, "export_bundle", entity_type="well", entity_id=wid, well_id=wid,
+                   details=f"blocked: {exc.detail}")
+        raise
 
     all_runs = db.query(LogRun).filter(LogRun.well_id == wid).order_by(LogRun.run_number.asc(), LogRun.id.asc()).all()
     tops = db.query(FormationTop).filter(FormationTop.well_id == wid).order_by(FormationTop.depth).all()
@@ -9691,6 +9759,11 @@ def export_client_bundle(wid: int, db: Session = Depends(get_db)):
         zf.writestr("report.md", report)
 
     buf.seek(0)
+
+    _log_audit(db, "export_bundle", entity_type="well", entity_id=wid, well_id=wid,
+               details=f"ok: locked={signoff['locked']} qc_rating={signoff['qc_rating']} "
+                       f"force={signoff['force']} issues={signoff['issues']}")
+
     return StreamingResponse(buf, media_type="application/zip", headers={
         "Content-Disposition": f"attachment; filename={well.name}_bundle.zip"
     })
