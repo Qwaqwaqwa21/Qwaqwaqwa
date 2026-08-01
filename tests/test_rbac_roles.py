@@ -670,14 +670,14 @@ def test_audit_verify_signature_endpoint_valid_and_mismatch():
         assert exported.status_code == 200
         data = exported.json()
 
-        import json
-
-        payload_json = json.dumps(data["payload"], sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-        ok_r = client.get(
+        # Use the POST verify endpoint (JSON body) rather than GET query params:
+        # the payload is a full audit-log export and can exceed URL length limits
+        # once the audit history grows, so GET is not viable for large payloads.
+        ok_r = client.post(
             "/api/audit-log/verify/signature",
-            headers=_h("viewer"),
-            params={
-                "payload": payload_json,
+            headers=_h("interpreter"),
+            json={
+                "payload": data["payload"],
                 "signature": data["signature"],
                 "kid": data.get("signature_kid"),
             },
@@ -688,11 +688,11 @@ def test_audit_verify_signature_endpoint_valid_and_mismatch():
         assert ok_data["reason"] == "signature_valid"
         assert ok_data["reason_code"] == "SIGNATURE_VALID"
 
-        bad_r = client.get(
+        bad_r = client.post(
             "/api/audit-log/verify/signature",
-            headers=_h("viewer"),
-            params={
-                "payload": payload_json,
+            headers=_h("interpreter"),
+            json={
+                "payload": data["payload"],
                 "signature": "0" * 64,
                 "kid": data.get("signature_kid"),
             },
@@ -725,14 +725,11 @@ def test_audit_verify_signature_endpoint_unknown_kid_returns_fail_reason():
         assert exported.status_code == 200
         data = exported.json()
 
-        import json
-
-        payload_json = json.dumps(data["payload"], sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-        r = client.get(
+        r = client.post(
             "/api/audit-log/verify/signature",
-            headers=_h("viewer"),
-            params={
-                "payload": payload_json,
+            headers=_h("interpreter"),
+            json={
+                "payload": data["payload"],
                 "signature": data["signature"],
                 "kid": "missing",
             },
