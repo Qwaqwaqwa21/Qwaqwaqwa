@@ -73,6 +73,12 @@ class LogRun(Base):
     curves_json = Column(Text, default="[]")  # JSON array of curve definitions
     parameters_json = Column(Text, default="[]")
     uploaded_at = Column(DateTime, default=datetime.datetime.utcnow)
+    # Digitization review workflow: pending_review -> accepted/rejected.
+    # A rejected run needs re-digitization + re-upload by the external group.
+    digitization_status = Column(String(20), default="pending_review")
+    digitization_notes = Column(Text, default="")
+    reviewed_by = Column(String(120), default="")
+    reviewed_at = Column(DateTime, nullable=True)
 
     well = relationship("Well", back_populates="log_runs")
     curve_data = relationship("CurveData", back_populates="log_run", cascade="all, delete-orphan")

@@ -165,6 +165,30 @@ def _ensure_log_run_depth_unit_column():
 _ensure_log_run_depth_unit_column()
 
 
+def _ensure_log_run_digitization_columns():
+    """Add log_runs digitization review columns if missing (idempotent)."""
+    with engine.begin() as conn:
+        try:
+            conn.execute(text("ALTER TABLE log_runs ADD COLUMN digitization_status VARCHAR(20) DEFAULT 'pending_review';"))
+        except Exception:
+            pass
+        try:
+            conn.execute(text("ALTER TABLE log_runs ADD COLUMN digitization_notes TEXT DEFAULT '';"))
+        except Exception:
+            pass
+        try:
+            conn.execute(text("ALTER TABLE log_runs ADD COLUMN reviewed_by VARCHAR(120) DEFAULT '';"))
+        except Exception:
+            pass
+        try:
+            conn.execute(text("ALTER TABLE log_runs ADD COLUMN reviewed_at DATETIME;"))
+        except Exception:
+            pass
+
+
+_ensure_log_run_digitization_columns()
+
+
 def _ensure_project_logo_columns():
     """Add projects.logo_binary/logo_mime if missing (idempotent)."""
     with engine.begin() as conn:
@@ -1436,6 +1460,46 @@ def delete_log_run(lr_id: int, db: Session = Depends(get_db)):
     db.query(LogRunDepthShift).filter(LogRunDepthShift.log_run_id == lr_id).delete()
     db.delete(lr)
     db.commit()
+
+
+# ─── Log Run Digitization Review ───────────────────────────────
+@app.post("/api/log-runs/{lr_id}/review")
+def review_log_run(lr_id: int, data: dict = None, db: Session = Depends(get_db),
+                   x_user_role: str = Header(default="viewer")):
+    """Record the review outcome of an uploaded LAS against the original scan.
+
+    Every uploaded log run starts life as 'pending_review' (the digitization
+    group's output isn't trusted until someone checks it against the source
+    study). This endpoint records the reviewer's decision: 'accepted' means
+    the run matches the scan and is fit for export; 'rejected' means it needs
+    to go back to the digitization group and be re-uploaded.
+    """
+    role = (x_user_role or "viewer").lower()
+    if role not in {"admin", "interpreter"}:
+        raise HTTPException(403, "interpreter/admin role required")
+
+    lr = db.query(LogRun).filter(LogRun.id == lr_id).first()
+    if not lr:
+        raise HTTPException(404, "Log run not found")
+
+    status = (data or {}).get("status")
+    if status not in ("accepted", "rejected"):
+        raise HTTPException(400, "status must be 'accepted' or 'rejected'")
+
+    notes = (data or {}).get("notes", "") or ""
+    reviewer = (data or {}).get("reviewer") or role
+
+    lr.digitization_status = status
+    lr.digitization_notes = notes
+    lr.reviewed_by = reviewer
+    lr.reviewed_at = datetime.datetime.utcnow()
+    db.commit()
+    db.refresh(lr)
+
+    _log_audit(db, "log_run_review", "log_run", entity_id=lr_id, well_id=lr.well_id,
+               details=f"status={status};reviewer={reviewer}")
+
+    return {c.name: getattr(lr, c.name) for c in LogRun.__table__.columns}
 
 
 # ─── Log Run Diff (LAS comparison) ─────────────────────────────
@@ -9337,6 +9401,26 @@ def _check_export_signoff(wid: int, db: Session, force: bool) -> dict:
     except HTTPException as exc:
         qc_rating = f"unavailable ({exc.detail})"
         issues.append(f"advanced QC could not be run ({exc.detail})")
+
+    # Digitization review gate: every curve-bearing run exported (whether the
+    # single biggest run for export-las, or the full set export-bundle sends)
+    # must have been reviewed and accepted against the original scan.
+    well = db.query(Well).filter(Well.id == wid).first()
+    survey_run_id = None
+    if well:
+        try:
+            survey = _find_deviation_survey(well)
+            survey_run_id = survey[1].id if survey else None
+        except Exception:
+            survey_run_id = None
+    curve_runs = db.query(LogRun).filter(LogRun.well_id == wid).order_by(LogRun.run_number.asc(), LogRun.id.asc()).all()
+    curve_runs = [r for r in curve_runs if r.id != survey_run_id and r.num_points]
+    for r in curve_runs:
+        status = r.digitization_status or "pending_review"
+        if status == "rejected":
+            issues.append(f"log run {r.run_number} ({r.filename}) was rejected during review: {r.digitization_notes}")
+        elif status == "pending_review":
+            issues.append(f"log run {r.run_number} ({r.filename}) has not been reviewed yet (still pending_review)")
 
     info = {"locked": locked, "qc_rating": qc_rating, "issues": issues, "force": force}
 

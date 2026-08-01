@@ -1156,10 +1156,42 @@ class GeoLogApp {
             const pts = r.num_points ?? 0;
             const versionLabel = this._formatRunVersion(r.version || r.las_version, file);
             const versionText = versionLabel ? ` • ${versionLabel}` : '';
-            return `<option value="${r.id}">Run ${runNo} • ${file} • ${pts} pts${versionText}</option>`;
+            const statusIcon = this._digitizationStatusIcon(r.digitization_status);
+            return `<option value="${r.id}">${statusIcon} Run ${runNo} • ${file} • ${pts} pts${versionText}</option>`;
         }).join('');
         const chosen = selectedId || logRuns[0].id;
         sel.value = String(chosen);
+    }
+
+    _digitizationStatusIcon(status) {
+        const s = status || 'pending_review';
+        if (s === 'accepted') return '✅';
+        if (s === 'rejected') return '❌';
+        return '⏳';
+    }
+
+    async reviewCurrentLogRun(status) {
+        if (!this.currentLogRun?.id) { GeoToast.error('No log run selected'); return; }
+        let notes = '';
+        if (status === 'rejected') {
+            const r = await GeoModal.show({ title: 'Reject Log Run', fields: [
+                { id: 'notes', label: 'Reason (what does not match the original scan?)', value: '' },
+            ]});
+            if (r === null) return; // cancelled
+            notes = r.notes || '';
+        }
+        try {
+            const updated = await this._api(`/log-runs/${this.currentLogRun.id}/review`, {
+                method: 'POST',
+                body: JSON.stringify({ status, notes, reviewer: this.currentRole || 'viewer' }),
+            });
+            this.currentLogRun = { ...this.currentLogRun, ...updated };
+            if (this.currentWell?.log_runs) {
+                this.currentWell.log_runs = this.currentWell.log_runs.map(r => r.id === updated.id ? { ...r, ...updated } : r);
+                this._populateLogRunSelector(this.currentWell.log_runs, this.currentLogRun.id);
+            }
+            GeoToast.success(status === 'accepted' ? 'Log run accepted' : 'Log run rejected');
+        } catch (e) { GeoToast.error('Failed to record review: ' + e.message); }
     }
 
     _formatRunVersion(version, filename = '') {
