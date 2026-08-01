@@ -26,6 +26,7 @@ try:
     from routers.reports import router as reports_router
     from routers.research import router as research_router
     from routers.inclinometry import router as inkl_router
+    from routers.inclinometry import _find_survey as _find_deviation_survey
     from routers.maps import router as maps_router
     from routers.duplicates import router as duplicates_router
 except ImportError:
@@ -37,6 +38,7 @@ except ImportError:
     from backend.routers.reports import router as reports_router
     from backend.routers.research import router as research_router
     from backend.routers.inclinometry import router as inkl_router
+    from backend.routers.inclinometry import _find_survey as _find_deviation_survey
     from backend.routers.maps import router as maps_router
     from backend.routers.duplicates import router as duplicates_router
 
@@ -9252,21 +9254,10 @@ def well_analogs(pid: int, reference_well_id: int, db: Session = Depends(get_db)
 
 
 # ─── Sprint 28: LAS Export with All Data ─────────────────────
-@app.get("/api/wells/{wid}/export-las")
-def export_las(wid: int, db: Session = Depends(get_db)):
-    """Export well data as LAS 2.0 format string."""
-    well = db.query(Well).filter(Well.id == wid).first()
-    if not well:
-        raise HTTPException(404, "Well not found")
-
-    lr = db.query(LogRun).filter(LogRun.well_id == wid).order_by(LogRun.num_points.desc()).first()
-    if not lr:
-        raise HTTPException(404, "No log run")
-
-    curves = db.query(CurveData).filter(CurveData.log_run_id == lr.id).order_by(CurveData.id).all()
-    depth_unit = lr.depth_unit or well.depth_unit or "FT"
-
-    # Build LAS header
+def _build_las_text(well: Well, lr: LogRun, curves: list, depth_unit: str) -> str:
+    """Render one log run as a LAS 2.0 text body. Shared by export-las and
+    export-bundle so both endpoints produce byte-identical LAS output for a
+    given run instead of maintaining two independent writers."""
     las = "~Version Information\n"
     las += "VERS.                  2.0:   CWLS Log ASCII Standard - VERSION 2.0\n"
     las += "WRAP.                  NO:    One line per depth step\n"
@@ -9285,10 +9276,8 @@ def export_las(wid: int, db: Session = Depends(get_db)):
     las += f"NULL.                {lr.null_value or -999.25:.2f}                 NULL VALUE\n"
 
     las += "~Curve Information\n"
-    mnemonics = []
     for c in curves:
         las += f"{c.mnemonic:8s}.{c.unit or '':6s} {c.description or ''}\n"
-        mnemonics.append(c.mnemonic)
 
     las += "~Ascii\n"
 
@@ -9311,6 +9300,24 @@ def export_las(wid: int, db: Session = Depends(get_db)):
             else:
                 row.append(f"{v:12.4f}")
         las += "  ".join(row) + "\n"
+
+    return las
+
+
+@app.get("/api/wells/{wid}/export-las")
+def export_las(wid: int, db: Session = Depends(get_db)):
+    """Export well data as LAS 2.0 format string."""
+    well = db.query(Well).filter(Well.id == wid).first()
+    if not well:
+        raise HTTPException(404, "Well not found")
+
+    lr = db.query(LogRun).filter(LogRun.well_id == wid).order_by(LogRun.num_points.desc()).first()
+    if not lr:
+        raise HTTPException(404, "No log run")
+
+    curves = db.query(CurveData).filter(CurveData.log_run_id == lr.id).order_by(CurveData.id).all()
+    depth_unit = lr.depth_unit or well.depth_unit or "FT"
+    las = _build_las_text(well, lr, curves, depth_unit)
 
     headers = {"Content-Disposition": f'attachment; filename="{well.name}.las"'}
     return StreamingResponse(iter([las]), media_type="text/plain", headers=headers)
@@ -9599,85 +9606,83 @@ def formation_tester(wid: int, db: Session = Depends(get_db)):
 # ─── Feature 18: Client Handoff Bundle ─────────────────────
 @app.get("/api/wells/{wid}/export-bundle")
 def export_client_bundle(wid: int, db: Session = Depends(get_db)):
-    """Export a ZIP bundle with LAS, tops, zones, params, and summary report."""
+    """Export a ZIP bundle: one LAS per curve-data run, a separate deviation
+    survey file if one was uploaded, tops, zones, params, and a summary report.
+
+    Earlier versions kept only the single largest run, which silently dropped
+    every other run in the well — including the deviation survey a receiving
+    interpretation package needs for TVD/directional work. All runs are now
+    included; the survey run is exported as its own MD/INKL/AZIM CSV instead
+    of being squeezed into (or lost from) the main LAS.
+    """
     import zipfile
     import io
     well = db.query(Well).filter(Well.id == wid).first()
     if not well:
         raise HTTPException(404, "Well not found")
 
-    lr = db.query(LogRun).filter(LogRun.well_id == wid).order_by(LogRun.num_points.desc()).first()
+    all_runs = db.query(LogRun).filter(LogRun.well_id == wid).order_by(LogRun.run_number.asc(), LogRun.id.asc()).all()
     tops = db.query(FormationTop).filter(FormationTop.well_id == wid).order_by(FormationTop.depth).all()
     zones = db.query(Zone).filter(Zone.well_id == wid).order_by(Zone.top_depth).all()
     params = db.query(PetroParams).filter(PetroParams.well_id == wid).first()
-    depth_unit = ((lr.depth_unit if lr else None) or well.depth_unit or "FT")
-    depth_unit_label = "m" if depth_unit == "M" else "ft"
+
+    survey = _find_deviation_survey(well)  # (n, run, md, incl, azim) or None
+    survey_run_id = survey[1].id if survey else None
+    curve_runs = [r for r in all_runs if r.id != survey_run_id and r.num_points]
+    main_lr = max(curve_runs, key=lambda r: r.num_points, default=None)
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
-        # 1. LAS file
-        if lr:
-            cds = db.query(CurveData).filter(CurveData.log_run_id == lr.id).all()
-            las_lines = [
-                "~Version Information",
-                "VERS.                  2.0:   CWLS Log ASCII Standard - VERSION 2.0",
-                "WRAP.                  NO:   One line per depth step",
-                "~Well Information",
-                f"WELL.                  {well.name}:   Well Name",
-                f"STRT. {float(lr.start_depth or 0):>10.2f} {depth_unit}:   Start Depth",
-                f"STOP. {float(lr.stop_depth or 0):>10.2f} {depth_unit}:   Stop Depth",
-                f"STEP. {float(lr.step or 1):>10.4f} {depth_unit}:   Step",
-                f"NULL.              -999.25:   Null Value",
-                f"COMP.                  GeoLog:   Company",
-                f"DATE.          {__import__('datetime').date.today()}:   Date",
-                "~Curve Information",
-            ]
-            for c in cds:
-                las_lines.append(f"{c.mnemonic:>8}.{c.unit:>4}:   {c.description or c.mnemonic}")
-            las_lines.append("~Ascii")
-            depth_arr = None
-            curve_arrays = {}
-            for c in cds:
-                import numpy as np
-                arr = np.frombuffer(c.data_binary, dtype=np.float64)
-                if c.mnemonic in ('DEPT', 'DEPTH'):
-                    depth_arr = arr
-                else:
-                    curve_arrays[c.mnemonic] = arr
-            if depth_arr is not None:
-                for i in range(len(depth_arr)):
-                    vals = [f"{depth_arr[i]:>10.2f}"]
-                    for c in cds:
-                        if c.mnemonic not in ('DEPT', 'DEPTH'):
-                            v = curve_arrays.get(c.mnemonic, [])
-                            vals.append(f"{v[i]:>10.4f}" if i < len(v) else "   -999.25")
-                    las_lines.append(" ".join(vals))
-            zf.writestr(f"{well.name}.las", "\n".join(las_lines))
+        # 1. One LAS per curve-data run (not just the largest)
+        for run in curve_runs:
+            cds = db.query(CurveData).filter(CurveData.log_run_id == run.id).order_by(CurveData.id).all()
+            if not cds:
+                continue
+            depth_unit = run.depth_unit or well.depth_unit or "FT"
+            las_text = _build_las_text(well, run, cds, depth_unit)
+            fname = f"{well.name}.las" if len(curve_runs) == 1 else f"{well.name}_run{run.run_number}.las"
+            zf.writestr(fname, las_text)
 
-        # 2. Tops CSV
+        # 2. Deviation survey, if one was uploaded — own file, standard columns
+        if survey:
+            _, survey_lr, md, incl, azim = survey
+            survey_unit = survey_lr.depth_unit or well.depth_unit or "FT"
+            dev_csv = f"# Deviation survey — depth unit: {survey_unit}\nMD,INKL,AZIM\n"
+            for i in range(len(md)):
+                dev_csv += f"{md[i]:.2f},{incl[i]:.3f},{azim[i]:.3f}\n"
+            zf.writestr("deviation_survey.csv", dev_csv)
+
+        depth_unit = (main_lr.depth_unit if main_lr else None) or well.depth_unit or "FT"
+        depth_unit_label = "m" if depth_unit == "M" else "ft"
+
+        # 3. Tops CSV
         if tops:
             tops_csv = "depth,name,formation_name,color\n"
             for t in tops:
                 tops_csv += f"{t.depth},{t.name or ''},{t.formation_name or ''},{t.color or ''}\n"
             zf.writestr("tops.csv", tops_csv)
 
-        # 3. Zones CSV
+        # 4. Zones CSV
         if zones:
             zones_csv = "name,top_depth,bottom_depth,sw_avg,vsh_avg,phie_avg,ntg\n"
             for z in zones:
                 zones_csv += f"{z.zone_name or ''},{z.top_depth},{z.bottom_depth},{z.sw_avg or ''},{z.vsh_avg or ''},{z.phie_avg or ''},{z.net_to_gross or ''}\n"
             zf.writestr("zones.csv", zones_csv)
 
-        # 4. Petro params JSON
+        # 5. Petro params JSON
         if params:
             import json
             p = {k: getattr(params, k) for k in ['saturation_model', 'a', 'm', 'n', 'rw', 'vsh_cutoff', 'phie_cutoff', 'sw_cutoff', 'template'] if hasattr(params, k)}
             zf.writestr("petro_params.json", json.dumps(p, indent=2))
 
-        # 5. Summary report
+        # 6. Summary report
         report = f"# GeoLog Export Report\nWell: {well.name}\nDate: {__import__('datetime').datetime.now().isoformat()}\n\n"
-        report += f"## Log Runs\n- Depth range: {lr.start_depth} - {lr.stop_depth} {depth_unit_label}\n- Points: {lr.num_points}\n\n" if lr else ""
-        report += f"## Formation Tops ({len(tops)} entries)\n"
+        report += f"## Log Runs ({len(curve_runs)} included)\n"
+        for run in curve_runs:
+            report += f"- Run {run.run_number} ({run.filename}): {run.start_depth} - {run.stop_depth} {depth_unit_label}, {run.num_points} points\n"
+        report += f"\n## Deviation Survey\n"
+        report += f"- Included ({len(survey[2])} stations)\n" if survey else "- Not available for this well\n"
+        report += f"\n## Formation Tops ({len(tops)} entries)\n"
         for t in tops:
             report += f"- {t.depth:.1f} {depth_unit_label}: {t.name or t.formation_name}\n"
         report += f"\n## Zones ({len(zones)} entries)\n"
