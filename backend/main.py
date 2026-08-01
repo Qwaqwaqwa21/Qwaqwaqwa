@@ -5447,18 +5447,16 @@ def project_well_locations(pid: int, db: Session = Depends(get_db)):
         .all()
     )
 
-    return {
-        "wells": [
-            {
-                "id": w.id,
-                "name": w.name,
-                "uwi": w.uwi,
-                "lat": float(w.latitude),
-                "lon": float(w.longitude),
-            }
-            for w in wells
-        ]
-    }
+    return [
+        {
+            "id": w.id,
+            "name": w.name,
+            "uwi": w.uwi,
+            "latitude": float(w.latitude),
+            "longitude": float(w.longitude),
+        }
+        for w in wells
+    ]
 
 
 @app.get("/api/wells/{wid}/tops-petrel")

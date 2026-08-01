@@ -10,11 +10,16 @@ class LogRenderer {
         this.dpr = window.devicePixelRatio || 1;
 
         // Display config
+        // Curve lists combine the Western LAS mnemonics this renderer shipped
+        // with and the Russian РИГИС canonical families from the
+        // logging-method registry (backend/methods.py, track 0-4) so curves
+        // normalized by the mnemonic auto-mapper (GK, NGK, KS, PS, BKZ, MKZ,
+        // GAZ, ...) land in a track instead of rendering nowhere.
         this.tracks = [
-            { name: 'GR / SP / CAL', curves: ['GR', 'SGR', 'CGR', 'SP', 'CAL', 'CALI', 'HCAL', 'BS'], width: 180 },
-            { name: 'Resistivity', curves: ['RT', 'RESD', 'RXO', 'RILD', 'RILM', 'RLL3', 'RLLS', 'ILD', 'ILM', 'MSFL'], width: 180, log: true },
-            { name: 'Porosity', curves: ['NPHI', 'NPHI_LS', 'RHOB', 'RHOZ', 'DT', 'DTC', 'DTS', 'PEF', 'DRHO'], width: 180 },
-            { name: 'Saturation', curves: ['SW', 'VSH', 'PHIE', 'PHIT', 'BVW', 'PERM', 'KP', 'KGL', 'KNG', 'KPR'], width: 180 },
+            { name: 'GR / SP / CAL', curves: ['GR', 'SGR', 'CGR', 'SP', 'CAL', 'CALI', 'HCAL', 'BS', 'PS', 'GK', 'DS', 'TEMP'], width: 180 },
+            { name: 'Resistivity', curves: ['RT', 'RESD', 'RXO', 'RILD', 'RILM', 'RLL3', 'RLLS', 'ILD', 'ILM', 'MSFL', 'KS', 'IK', 'BK', 'BKZ', 'MKZ', 'RS'], width: 180, log: true },
+            { name: 'Porosity', curves: ['NPHI', 'NPHI_LS', 'RHOB', 'RHOZ', 'DT', 'DTC', 'DTS', 'PEF', 'DRHO', 'NGK', 'GGKP', 'PE', 'U1', 'AK'], width: 180 },
+            { name: 'Saturation', curves: ['SW', 'VSH', 'PHIE', 'PHIT', 'BVW', 'PERM', 'KP', 'KGL', 'KNG', 'KPR', 'GAZ'], width: 180 },
             { name: 'РИГИС', curves: ['LITH', 'COLL', 'SAT'], width: 132, categorical: true },
         ];
 
