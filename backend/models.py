@@ -17,6 +17,8 @@ class Project(Base):
     field_name = Column(String(200), default="")
     operator = Column(String(200), default="")
     country = Column(String(100), default="")
+    logo_binary = Column(LargeBinary, nullable=True)
+    logo_mime = Column(String(50), nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
 

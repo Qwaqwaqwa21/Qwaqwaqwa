@@ -3,7 +3,7 @@ import logging
 import traceback
 from fastapi import FastAPI, Request, UploadFile, File, Depends, HTTPException, Header, WebSocket, WebSocketDisconnect, Query
 from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.responses import StreamingResponse
+from starlette.responses import StreamingResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -163,6 +163,22 @@ def _ensure_log_run_depth_unit_column():
 
 
 _ensure_log_run_depth_unit_column()
+
+
+def _ensure_project_logo_columns():
+    """Add projects.logo_binary/logo_mime if missing (idempotent)."""
+    with engine.begin() as conn:
+        try:
+            conn.execute(text("ALTER TABLE projects ADD COLUMN logo_binary BLOB;"))
+        except Exception:
+            pass
+        try:
+            conn.execute(text("ALTER TABLE projects ADD COLUMN logo_mime VARCHAR(50);"))
+        except Exception:
+            pass
+
+
+_ensure_project_logo_columns()
 
 
 def _normalize_depth_unit(unit: str) -> str:
@@ -1045,12 +1061,20 @@ def health():
 
 
 # ─── Projects ─────────────────────────────────────────────────
+def _project_dict(p: Project) -> dict:
+    """Serialize a Project row, replacing the raw logo bytes with a boolean flag
+    (logo_binary is a BLOB and isn't JSON-serializable as-is)."""
+    d = {c.name: getattr(p, c.name) for c in Project.__table__.columns if c.name != "logo_binary"}
+    d["has_logo"] = p.logo_binary is not None
+    return d
+
+
 @app.get("/api/projects/")
 def list_projects(db: Session = Depends(get_db)):
     projects = db.query(Project).all()
     result = []
     for p in projects:
-        d = {c.name: getattr(p, c.name) for c in Project.__table__.columns}
+        d = _project_dict(p)
         d["well_count"] = len(p.wells)
         result.append(d)
     return result
@@ -1061,7 +1085,7 @@ def create_project(data: dict, db: Session = Depends(get_db)):
     db.add(p)
     db.commit()
     db.refresh(p)
-    return {c.name: getattr(p, c.name) for c in Project.__table__.columns}
+    return _project_dict(p)
 
 @app.delete("/api/projects/{pid}", status_code=204)
 def delete_project(pid: int, db: Session = Depends(get_db)):
@@ -1070,6 +1094,38 @@ def delete_project(pid: int, db: Session = Depends(get_db)):
         raise HTTPException(404, "Project not found")
     db.delete(p)
     db.commit()
+
+
+@app.post("/api/projects/{pid}/logo", status_code=201)
+async def upload_project_logo(pid: int, file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """Upload/replace a project's logo image, embedded later into PDF report headers."""
+    p = db.query(Project).filter(Project.id == pid).first()
+    if not p:
+        raise HTTPException(404, "Project not found")
+    if not (file.content_type or "").startswith("image/"):
+        raise HTTPException(400, "File must be an image")
+
+    content = await file.read()
+    if len(content) == 0:
+        raise HTTPException(400, "Empty file")
+    if len(content) > MAX_LOGO_UPLOAD_SIZE:
+        raise HTTPException(413, f"File too large (max {MAX_LOGO_UPLOAD_SIZE // 1024 // 1024}MB)")
+
+    p.logo_binary = content
+    p.logo_mime = file.content_type
+    db.commit()
+    return {"status": "ok", "logo_mime": p.logo_mime, "size": len(content)}
+
+
+@app.get("/api/projects/{pid}/logo")
+def get_project_logo(pid: int, db: Session = Depends(get_db)):
+    """Return the stored project logo bytes so the frontend can preview it."""
+    p = db.query(Project).filter(Project.id == pid).first()
+    if not p:
+        raise HTTPException(404, "Project not found")
+    if not p.logo_binary:
+        raise HTTPException(404, "No logo set for this project")
+    return Response(content=p.logo_binary, media_type=p.logo_mime or "application/octet-stream")
 
 
 # ─── Wells ────────────────────────────────────────────────────
@@ -1129,6 +1185,7 @@ def update_well(wid: int, data: dict, db: Session = Depends(get_db)):
 
 # ─── LAS Upload ───────────────────────────────────────────────
 MAX_UPLOAD_SIZE = 50 * 1024 * 1024  # 50MB
+MAX_LOGO_UPLOAD_SIZE = 2 * 1024 * 1024  # 2MB — project logos are small images
 
 
 def _persist_non_las_runs(db: Session, well: Well, filename: str, parsed, source_format: str):

@@ -17,7 +17,8 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import mm
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.lib.utils import ImageReader
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
 from reportlab.graphics.shapes import Drawing
 from reportlab.graphics.charts.barcharts import VerticalBarChart
 from reportlab.graphics import renderPDF
@@ -314,28 +315,57 @@ def generate_petrophysical_report_pdf(
 
     # 1) Header
     report_date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-    header_tbl = Table([
-        [
-            Paragraph("<b>COMPANY LOGO</b><br/><font size='8'>[Placeholder]</font>", body_style),
-            Paragraph(
-                f"<b>{_safe_text(well.operator, 'GeoLog')}</b><br/>"
-                f"<font size='14'><b>Petrophysical Report</b></font><br/>"
-                f"Date: {report_date}<br/>"
-                f"Well: <b>{_safe_text(well.name)}</b>",
-                body_style,
-            ),
-        ]
-    ], colWidths=[45 * mm, 130 * mm])
-    header_tbl.setStyle(TableStyle([
-        ("BOX", (0, 0), (-1, -1), 0.8, colors.HexColor("#9ca3af")),
-        ("INNERGRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#d1d5db")),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("BACKGROUND", (0, 0), (0, 0), colors.HexColor("#f3f4f6")),
-        ("LEFTPADDING", (0, 0), (-1, -1), 6),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-        ("TOPPADDING", (0, 0), (-1, -1), 6),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-    ]))
+    info_paragraph = Paragraph(
+        f"<b>{_safe_text(well.operator, 'GeoLog')}</b><br/>"
+        f"<font size='14'><b>Petrophysical Report</b></font><br/>"
+        f"Date: {report_date}<br/>"
+        f"Well: <b>{_safe_text(well.name)}</b>",
+        body_style,
+    )
+
+    logo_binary = well.project.logo_binary if well.project else None
+    logo_cell = None
+    LOGO_COL_WIDTH = 45 * mm
+    LOGO_MAX_HEIGHT = 20 * mm
+    if logo_binary:
+        try:
+            reader = ImageReader(io.BytesIO(logo_binary))
+            src_w, src_h = reader.getSize()
+            if src_w > 0 and src_h > 0:
+                # Fit within the column width and the max height cap, preserving aspect ratio.
+                scale = min(LOGO_COL_WIDTH / src_w, LOGO_MAX_HEIGHT / src_h)
+                img_w = src_w * scale
+                img_h = src_h * scale
+                logo_cell = Image(io.BytesIO(logo_binary), width=img_w, height=img_h)
+        except Exception:
+            logo_cell = None
+
+    if logo_cell is not None:
+        header_tbl = Table([
+            [logo_cell, info_paragraph],
+        ], colWidths=[LOGO_COL_WIDTH, 130 * mm])
+        header_tbl.setStyle(TableStyle([
+            ("BOX", (0, 0), (-1, -1), 0.8, colors.HexColor("#9ca3af")),
+            ("INNERGRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#d1d5db")),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("ALIGN", (0, 0), (0, 0), "CENTER"),
+            ("BACKGROUND", (0, 0), (0, 0), colors.HexColor("#f3f4f6")),
+            ("LEFTPADDING", (0, 0), (-1, -1), 6),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+            ("TOPPADDING", (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ]))
+    else:
+        # No logo on file — a single-column header, no fake/empty placeholder box.
+        header_tbl = Table([[info_paragraph]], colWidths=[175 * mm])
+        header_tbl.setStyle(TableStyle([
+            ("BOX", (0, 0), (-1, -1), 0.8, colors.HexColor("#9ca3af")),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 6),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+            ("TOPPADDING", (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ]))
     elements.extend([header_tbl, Spacer(1, 6)])
 
     # 2) Well Information
