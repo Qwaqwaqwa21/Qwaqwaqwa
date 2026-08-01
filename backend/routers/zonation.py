@@ -32,7 +32,7 @@ def _extract_curve(db, lr_id, mnemonics):
             CurveData.log_run_id == lr_id, CurveData.mnemonic == mn
         ).first()
         if cd and cd.data_binary:
-            arr = np.frombuffer(cd.data_binary, dtype=np.float32).copy()
+            arr = np.frombuffer(cd.data_binary, dtype=np.float64).copy()
             if len(arr) > 0:
                 return arr, mn
     return None, None

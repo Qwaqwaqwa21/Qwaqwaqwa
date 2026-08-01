@@ -77,7 +77,7 @@ def _load_curve(db: Session, well_id: int, curve: str) -> Tuple[Optional[LogRun]
     if not cd or not cd.data_binary:
         return lr, depth, None, None
 
-    arr = np.frombuffer(cd.data_binary, dtype=np.float32)
+    arr = np.frombuffer(cd.data_binary, dtype=np.float64)
     n = min(len(arr), len(depth))
     if n <= 1:
         return lr, depth, None, cd.unit or ""
