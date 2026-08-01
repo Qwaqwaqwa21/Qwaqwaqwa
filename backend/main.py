@@ -5907,10 +5907,40 @@ def get_audit_log(project_id: int = None, well_id: int = None, limit: int = 100,
 
 
 def _compute_audit_chain_report(limit: int, db: Session):
-    rows = db.query(AuditLog).order_by(AuditLog.id.asc()).limit(min(max(limit, 1), 10000)).all()
+    """Recompute the hash chain over the most recent `limit` audit-log
+    entries and report any prev_hash/entry_hash mismatches.
+
+    Verifies the *tail* of the chain (highest ids), not the head: any real
+    deployment's audit log grows without bound, so a window that always
+    starts at id=1 ascending would stop covering new entries the moment the
+    log passes `limit` rows — the "verified" report would silently keep
+    reporting on the same oldest handful of rows forever while everything
+    written since then (i.e. anything actually worth checking for recent
+    tampering) goes unchecked. limit=2000 is the default across all
+    callers, and it is trivial to exceed in normal use over time.
+
+    To validate the first entry inside the window without falsely flagging
+    it, the entry immediately before the window (if any) is used to seed
+    prev_hash instead of assuming "" (which is only correct for the true
+    first entry in the whole table).
+    """
+    limit = min(max(limit, 1), 10000)
+    rows = db.query(AuditLog).order_by(AuditLog.id.desc()).limit(limit).all()
+    rows.reverse()  # back to ascending id order for chain walking
+
+    prev_hash = ""
+    if rows:
+        anchor = (
+            db.query(AuditLog)
+            .filter(AuditLog.id < rows[0].id)
+            .order_by(AuditLog.id.desc())
+            .first()
+        )
+        if anchor is not None:
+            prev_hash = anchor.entry_hash or ""
+
     issues = []
     verified = 0
-    prev_hash = ""
 
     for r in rows:
         canonical = json.dumps({

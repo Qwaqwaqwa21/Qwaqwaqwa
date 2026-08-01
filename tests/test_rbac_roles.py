@@ -460,6 +460,50 @@ def test_audit_verify_endpoint_detects_tamper_gap():
     assert any((it.get("id") == bad_id and it.get("type") == "entry_hash_mismatch") for it in data["issues"])
 
 
+def test_audit_verify_checks_the_tail_of_the_chain_not_just_the_head():
+    """_compute_audit_chain_report used to walk the chain starting at id=1
+    ascending, capped at `limit` rows. Once an audit log grows past `limit`
+    entries (inevitable over time in any real deployment, and easy to hit
+    in this shared dev DB after enough test runs), that window never moves
+    forward again — recently written entries, including tampered ones,
+    would silently fall outside what gets verified. Force `limit` well
+    below the current row count and confirm a tamper planted at the very
+    tail (the newest row) is still caught."""
+    db = SessionLocal()
+    bad_id = None
+    try:
+        total_before = db.query(AuditLog).count()
+        prev = db.query(AuditLog).order_by(AuditLog.id.desc()).first()
+        prev_hash = (prev.entry_hash if prev else "") or ""
+        bad = AuditLog(
+            action="write:post",
+            entity_type="api",
+            details="/api/fake-tail-tamper",
+            request_id="tail-tamper-test",
+            auth_subject="u-test",
+            auth_role="interpreter",
+            route_path="/api/fake-tail-tamper",
+            method="POST",
+            status_code=200,
+            payload_hash="0" * 64,
+            prev_hash=prev_hash,
+            entry_hash="e" * 64,  # intentionally wrong
+        )
+        db.add(bad)
+        db.commit()
+        bad_id = bad.id
+    finally:
+        db.close()
+
+    assert total_before >= 5, "test assumes there's already some audit history in this DB"
+    small_limit = 5  # far smaller than total_before + 1, so the old head-only window would miss bad_id entirely
+    r = client.get("/api/audit-log/verify", headers=_h("viewer"), params={"limit": small_limit})
+    assert r.status_code == 200
+    data = r.json()
+    assert data["ok"] is False
+    assert any((it.get("id") == bad_id and it.get("type") == "entry_hash_mismatch") for it in data["issues"])
+
+
 def test_audit_log_update_is_blocked_by_trigger():
     db = SessionLocal()
     try:
