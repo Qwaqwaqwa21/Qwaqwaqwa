@@ -9619,9 +9619,20 @@ def _compute_export_readiness(wid: int, db: Session) -> dict:
         r for r in curve_runs
         if r.id != survey_run_id and r.num_points and not _is_survey_shaped_run(r)
     ]
+    # A rejected run that has already been linked to its re-digitized redo
+    # (LogRun.redo_of on some other run pointing at this one) is a resolved
+    # issue: the redo run is the one actually being shipped for that slot,
+    # and it gets its own pending_review/rejected check below like any other
+    # run. Without this, a well could never reach "ready" again after a
+    # single rejection even once the correction had been reviewed and
+    # accepted, because the original rejected run would keep re-raising the
+    # same stale issue forever.
+    superseded_run_ids = {r.redo_of for r in curve_runs if r.redo_of is not None}
     for r in curve_runs:
         status = r.digitization_status or "pending_review"
         if status == "rejected":
+            if r.id in superseded_run_ids:
+                continue
             issues.append(f"log run {r.run_number} ({r.filename}) was rejected during review: {r.digitization_notes}")
         elif status == "pending_review":
             issues.append(f"log run {r.run_number} ({r.filename}) has not been reviewed yet (still pending_review)")

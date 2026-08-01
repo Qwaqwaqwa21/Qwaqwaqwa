@@ -122,3 +122,37 @@ def test_link_redo_sets_redo_of_and_reverse_lookup():
     redo_run = next(x for x in well["log_runs"] if x["id"] == redo_id)
     assert rejected_run["redone_by"] == redo_id
     assert redo_run["redo_of"] == rejected_id
+
+
+# ─── Export-readiness interaction ────────────────────────────────
+
+def test_superseded_rejected_run_no_longer_blocks_readiness_once_redo_accepted():
+    """A rejected run that has been linked to its (accepted) redo must stop
+    generating its own "was rejected" issue in the well readiness summary —
+    otherwise a well could never recover from a single rejection even after
+    the correction was reviewed and accepted. The redo run's own status is
+    still checked normally."""
+    wid, rejected_id, redo_id = _make_rejected_and_redo_pair()
+
+    link = client.post(f"/api/log-runs/{redo_id}/redo-of", headers=_h("interpreter"),
+                        json={"redo_of": rejected_id})
+    assert link.status_code == 200
+
+    # Before the redo is reviewed, the well should still show exactly one
+    # digitization issue: the redo run pending review (not the stale
+    # already-superseded rejection).
+    mid_summary = client.get(f"/api/wells/{wid}/readiness-summary")
+    assert mid_summary.status_code == 200
+    mid_issues = " ".join(mid_summary.json()["digitization_issues"]).lower()
+    assert "rejected" not in mid_issues
+    assert "pending_review" in mid_issues or "not been reviewed" in mid_issues
+
+    accept = client.post(f"/api/log-runs/{redo_id}/review", headers=_h("interpreter"),
+                          json={"status": "accepted"})
+    assert accept.status_code == 200
+
+    after_summary = client.get(f"/api/wells/{wid}/readiness-summary")
+    assert after_summary.status_code == 200
+    after_issues = " ".join(after_summary.json()["digitization_issues"]).lower()
+    assert "rejected" not in after_issues
+    assert "pending_review" not in after_issues and "not been reviewed" not in after_issues
