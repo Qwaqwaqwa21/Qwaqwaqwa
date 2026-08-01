@@ -296,6 +296,12 @@ class StudyRegistryEntry(Base):
     depth_bottom = Column(Float, nullable=True)
     source_row = Column(Text, default="")   # исходная строка Excel — для трассировки
     imported_at = Column(DateTime, default=datetime.datetime.utcnow)
+    # Ручной флаг: попросили ли уже внешнюю группу оцифровки об этом
+    # исследовании. Независим от вычисляемого match_status (см.
+    # backend/routers/study_registry.py, _match_entry) — тот считается заново
+    # при каждом запросе из фактического состояния Well/LogRun, а этот
+    # хранится и меняется только явным действием пользователя.
+    action_status = Column(String(30), default="not_started")
 
 
 class LogRunDepthShift(Base):

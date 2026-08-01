@@ -24,17 +24,31 @@ import io
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, UploadFile
 from sqlalchemy.orm import Session
 
 try:
     from database import get_db
-    from models import Project, Well, StudyRegistryEntry
+    from models import Project, Well, StudyRegistryEntry, AuditLog
     from routers.duplicates import _normalize_well_name, _depth_overlap_fraction
 except ImportError:  # pragma: no cover - package-relative import
     from backend.database import get_db
-    from backend.models import Project, Well, StudyRegistryEntry
+    from backend.models import Project, Well, StudyRegistryEntry, AuditLog
     from backend.routers.duplicates import _normalize_well_name, _depth_overlap_fraction
+
+_ACTION_STATUSES = {"not_started", "sent_for_digitization"}
+
+
+def _log_audit(db: Session, action: str, entity_type: str = "", entity_id: int = None,
+               well_id: int = None, project_id: int = None, details: str = ""):
+    """Write an audit trail entry. Mirrors backend.main._log_audit — duplicated
+    here (rather than imported) because main.py imports this router, so the
+    reverse import would be circular."""
+    db.add(AuditLog(
+        project_id=project_id, well_id=well_id, action=action,
+        entity_type=entity_type, entity_id=entity_id, details=details
+    ))
+    db.commit()
 
 router = APIRouter(tags=["study-registry"])
 
@@ -240,6 +254,7 @@ def _match_entry(entry: StudyRegistryEntry, wells: List[Well], min_depth_overlap
         "matched_well_id": None,
         "matched_run_id": None,
         "matched_digitization_status": None,
+        "action_status": entry.action_status or "not_started",
     }
     if not candidates:
         return result
@@ -307,6 +322,41 @@ def get_study_registry(
         "missing_count": missing,
         "entries": out,
     }
+
+
+@router.post("/api/study-registry/{entry_id}/action")
+def set_study_registry_action(
+    entry_id: int,
+    data: dict = None,
+    db: Session = Depends(get_db),
+    x_user_role: str = Header(default="viewer"),
+) -> Dict[str, Any]:
+    """Record that someone has (or hasn't) already asked the external
+    digitization group about a registry entry. This is a manual flag, not a
+    computed match_status — see _match_entry. It matters most for entries
+    currently 'missing' (no matching well at all), so a reviewer re-checking
+    the registry later can tell "already requested" from "not yet handled".
+    """
+    role = (x_user_role or "viewer").lower()
+    if role not in {"admin", "interpreter"}:
+        raise HTTPException(403, "interpreter/admin role required")
+
+    entry = db.query(StudyRegistryEntry).filter(StudyRegistryEntry.id == entry_id).first()
+    if not entry:
+        raise HTTPException(404, "Study registry entry not found")
+
+    action_status = (data or {}).get("action_status")
+    if action_status not in _ACTION_STATUSES:
+        raise HTTPException(400, "action_status must be 'not_started' or 'sent_for_digitization'")
+
+    entry.action_status = action_status
+    db.commit()
+    db.refresh(entry)
+
+    _log_audit(db, "study_registry_action", "study_registry_entry", entity_id=entry_id,
+               project_id=entry.project_id, details=f"action_status={action_status}")
+
+    return {"id": entry.id, "project_id": entry.project_id, "action_status": entry.action_status}
 
 
 @router.delete("/api/projects/{pid}/study-registry")

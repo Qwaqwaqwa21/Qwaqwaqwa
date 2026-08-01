@@ -253,6 +253,18 @@ def _ensure_log_run_redo_column():
 _ensure_log_run_redo_column()
 
 
+def _ensure_study_registry_action_column():
+    """Add study_registry.action_status if missing (idempotent)."""
+    with engine.begin() as conn:
+        try:
+            conn.execute(text("ALTER TABLE study_registry ADD COLUMN action_status VARCHAR(30) DEFAULT 'not_started';"))
+        except Exception:
+            pass
+
+
+_ensure_study_registry_action_column()
+
+
 def _normalize_depth_unit(unit: str) -> str:
     """Map a raw LAS/DLIS/LIS index-curve unit string to 'M' or 'FT'."""
     u = (unit or "").strip().upper()

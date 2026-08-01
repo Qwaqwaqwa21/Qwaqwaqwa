@@ -366,7 +366,8 @@
         + '<th style="text-align:left;padding:6px 8px">Вид исследования</th>'
         + '<th style="padding:6px 8px">Интервал, м</th>'
         + '<th style="text-align:left;padding:6px 8px">Статус</th>'
-        + '<th style="text-align:left;padding:6px 8px">Найденный рейс</th></tr>';
+        + '<th style="text-align:left;padding:6px 8px">Найденный рейс</th>'
+        + '<th style="text-align:left;padding:6px 8px">Оцифровка</th></tr>';
       d.entries.forEach(function (e) {
         var st = MATCH_LABEL[e.match_status] || { text: e.match_status, color: '#8b949e', bg: 'transparent' };
         var interval = (e.depth_top != null && e.depth_bottom != null) ? (e.depth_top + '–' + e.depth_bottom) : '—';
@@ -376,6 +377,19 @@
             + (e.matched_run_id != null ? ', рейс #' + e.matched_run_id : '')
             + (e.matched_digitization_status ? ' (' + esc(e.matched_digitization_status) + ')' : '');
         }
+        var actionCell = '—';
+        if (e.match_status === 'missing') {
+          if (e.action_status === 'sent_for_digitization') {
+            actionCell = '<span style="padding:2px 8px;border-radius:10px;background:rgba(210,153,34,.18);color:#d29922">'
+              + '&#9203; отправлено на оцифровку</span>'
+              + ' <button type="button" title="Отменить" onclick="ResearchCoverageView.setRegistryAction(' + e.id + ',\'not_started\')"'
+              + ' style="margin-left:4px;background:none;border:1px solid #30363d;border-radius:4px;color:#8b949e;cursor:pointer;padding:1px 6px">&#8617;</button>';
+          } else {
+            actionCell = '<button type="button" onclick="ResearchCoverageView.setRegistryAction(' + e.id + ',\'sent_for_digitization\')"'
+              + ' style="background:#1f6feb;border:none;border-radius:4px;color:#fff;cursor:pointer;padding:3px 8px;font-size:12px">'
+              + '&#128228; Отправить на оцифровку</button>';
+          }
+        }
         h += '<tr style="border-bottom:1px solid #21262d">'
           + '<td style="padding:5px 8px;color:#c9d1d9">' + esc(e.well_name) + '</td>'
           + '<td style="padding:5px 8px;color:#8b949e">' + esc(e.field_name) + '</td>'
@@ -384,10 +398,28 @@
           + '<td style="padding:5px 8px"><span style="padding:2px 8px;border-radius:10px;background:' + st.bg + ';color:' + st.color + '">'
           + esc(st.text) + '</span></td>'
           + '<td style="padding:5px 8px;color:#8b949e">' + esc(matchInfo) + '</td>'
+          + '<td style="padding:5px 8px;color:#8b949e">' + actionCell + '</td>'
           + '</tr>';
       });
       h += '</table></div>';
       host.innerHTML = h;
+    },
+
+    setRegistryAction: async function (entryId, actionStatus) {
+      try {
+        var resp = await fetch('/api/study-registry/' + entryId + '/action', {
+          method: 'POST',
+          headers: { 'X-User-Role': app.currentRole || 'viewer', 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action_status: actionStatus })
+        });
+        var j = await resp.json();
+        if (!resp.ok) throw new Error(j.detail || ('HTTP ' + resp.status));
+        if (this.registryData && this.registryData.entries) {
+          var entry = this.registryData.entries.find(function (e) { return e.id === entryId; });
+          if (entry) entry.action_status = j.action_status;
+        }
+        this.render();
+      } catch (e) { GeoToast.error('Не удалось обновить статус оцифровки: ' + (e.message || e)); }
     }
   };
 })();

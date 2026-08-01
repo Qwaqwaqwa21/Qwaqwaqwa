@@ -169,6 +169,62 @@ def test_import_and_completeness_match_status():
     assert data["missing_count"] == 1
 
 
+def test_registry_action_status_default_and_update():
+    proj = client.post("/api/projects/", headers=_h("admin"), json={"name": "StudyRegistryActionTestProject"})
+    pid = proj.json()["id"]
+
+    registry_csv = "well,field,study_type,depth_top,depth_bottom\nActionMissingWell,FieldA,GIS,0,10\n"
+    imp = client.post(
+        f"/api/projects/{pid}/study-registry/import",
+        headers=_h("admin"),
+        files={"file": ("registry.csv", registry_csv.encode(), "text/csv")},
+    )
+    assert imp.status_code == 200
+
+    reg = client.get(f"/api/projects/{pid}/study-registry")
+    entry = reg.json()["entries"][0]
+    assert entry["match_status"] == "missing"
+    assert entry["action_status"] == "not_started"
+    entry_id = entry["id"]
+
+    # viewer role forbidden
+    forbidden = client.post(
+        f"/api/study-registry/{entry_id}/action",
+        headers=_h("viewer"),
+        json={"action_status": "sent_for_digitization"},
+    )
+    assert forbidden.status_code == 403
+
+    # invalid value
+    bad = client.post(
+        f"/api/study-registry/{entry_id}/action",
+        headers=_h("interpreter"),
+        json={"action_status": "bogus"},
+    )
+    assert bad.status_code == 400
+
+    # nonexistent entry
+    missing = client.post(
+        "/api/study-registry/999999999/action",
+        headers=_h("interpreter"),
+        json={"action_status": "sent_for_digitization"},
+    )
+    assert missing.status_code == 404
+
+    ok = client.post(
+        f"/api/study-registry/{entry_id}/action",
+        headers=_h("interpreter"),
+        json={"action_status": "sent_for_digitization"},
+    )
+    assert ok.status_code == 200
+    assert ok.json()["action_status"] == "sent_for_digitization"
+
+    reg2 = client.get(f"/api/projects/{pid}/study-registry")
+    entry2 = next(e for e in reg2.json()["entries"] if e["id"] == entry_id)
+    assert entry2["action_status"] == "sent_for_digitization"
+    assert entry2["match_status"] == "missing"  # unaffected, computed independently
+
+
 def test_delete_study_registry_clears_entries():
     proj = client.post("/api/projects/", headers=_h("admin"), json={"name": "StudyRegistryDeleteTestProject"})
     pid = proj.json()["id"]
