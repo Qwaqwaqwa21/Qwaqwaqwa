@@ -24,79 +24,28 @@
                 <span class="logo-badge">O&G</span>
             </div>
         </div>
+        <!--
+            Trimmed to the workflow this deployment is actually used for:
+            LAS ingest, mnemonic unification, coverage (map/planshet/
+            horizons), inclinometry QC, curve-duplicate QC, general QC,
+            statistics, well correlation, tops/formation management and
+            the project dashboard. The other 30+ stock GeoLog panels
+            (petrophysics, crossplots, facies, production, seismic, ...)
+            are still in the codebase and can be re-enabled by restoring
+            their <button> entries here — nothing about them was deleted.
+        -->
         <nav class="topbar-nav">
-            <details class="nav-group">
-                <summary class="nav-btn nav-group-trigger" title="Core visualizations and quick-look plots">Core</summary>
-                <div class="nav-group-menu">
-                    <button class="nav-btn active" data-view="viewer" title="Primary well log display with depth tracks"><i data-lucide="activity"></i><span>Log Viewer</span></button>
-                    <button class="nav-btn" data-view="crossplot" title="Cross-plot two curves to evaluate relationships"><i data-lucide="scatter-chart"></i><span>Cross Plot</span></button>
-                    <button class="nav-btn" data-view="pickett" title="Log-log Pickett plot for Archie interpretation"><i data-lucide="chart-no-axes-combined"></i><span>Pickett</span></button>
-                    <button class="nav-btn" data-view="mnplot" title="M-N lithology discrimination plot"><i data-lucide="beaker"></i><span>M-N Plot</span></button>
-                </div>
-            </details>
-            <details class="nav-group">
-                <summary class="nav-btn nav-group-trigger" title="Petrophysical calculations and quality workflows">Petrophysics</summary>
-                <div class="nav-group-menu">
-                    <button class="nav-btn" data-view="petrophysics" title="Compute Sw, Vsh, PHIE and zonation stats"><i data-lucide="calculator"></i><span>Petrophysics</span></button>
-                    <button class="nav-btn" data-view="qc" title="Run quality checks for missing data and outliers"><i data-lucide="shield-check"></i><span>QC</span></button>
-                    <button class="nav-btn" data-view="statistics" title="View curve statistics and distributions"><i data-lucide="bar-chart-3"></i><span>Statistics</span></button>
-                    <button class="nav-btn" data-view="sensitivity" title="Sensitivity analysis for model parameters"><i data-lucide="git-compare"></i><span>Sensitivity</span></button>
-                    <button class="nav-btn" data-view="tornado" title="Tornado chart — parameter impact on net pay"><i data-lucide="wind"></i><span>Tornado</span></button>
-                    <button class="nav-btn" data-view="vclmodels" title="Compare Vclay models (Larionov, Clavier, Steiber)"><i data-lucide="layers"></i><span>Vcl Models</span></button>
-                    <button class="nav-btn" data-view="comparison" title="Well-to-well structural cross-section view"><i data-lucide="columns-3"></i><span>Cross Section</span></button>
-                </div>
-            </details>
-            <details class="nav-group">
-                <summary class="nav-btn nav-group-trigger" title="Stratigraphic and geological interpretation tools">Interpretation</summary>
-                <div class="nav-group-menu">
-                    <button class="nav-btn" data-view="correlation" title="Tie wells using curves, tops, and markers"><i data-lucide="split-square-horizontal"></i><span>Correlation</span></button>
-                    <button class="nav-btn" data-view="striplog" title="Render lithology strip log view"><i data-lucide="columns"></i><span>Strip Log</span></button>
-                    <button class="nav-btn" data-view="facies" title="Classify and visualize facies"><i data-lucide="gem"></i><span>Facies</span></button>
-                    <button class="nav-btn" data-view="formation" title="Multi-well formation matrix and presence"><i data-lucide="grid-3x3"></i><span>Formation</span></button>
-                    <button class="nav-btn" data-view="topsmgmt" title="Create, edit, import, and export tops"><i data-lucide="layers"></i><span>Tops</span></button>
-                </div>
-            </details>
-            <details class="nav-group">
-                <summary class="nav-btn nav-group-trigger" title="Advanced analytical diagnostics">Analysis</summary>
-                <div class="nav-group-menu">
-                    <button class="nav-btn" data-view="probability" title="Probability plot and uncertainty screening"><i data-lucide="trending-up"></i><span>Probability</span></button>
-                    <button class="nav-btn" data-view="moveable" title="Estimate moveable hydrocarbon indicators"><i data-lucide="droplet"></i><span>Moveable Oil</span></button>
-                    <button class="nav-btn" data-view="dipplot" title="Dip trend and structural orientation plot"><i data-lucide="compass"></i><span>Dip Plot</span></button>
-                    <button class="nav-btn" data-view="buckles" title="Buckles diagnostic plot"><i data-lucide="waves"></i><span>Buckles</span></button>
-                    <button class="nav-btn" data-view="hingle" title="Hingle plot for saturation interpretation"><i data-lucide="axis-3d"></i><span>Hingle</span></button>
-                </div>
-            </details>
-            <details class="nav-group">
-                <summary class="nav-btn nav-group-trigger" title="Utilities, exports, mapping, and automation">Tools</summary>
-                <div class="nav-group-menu">
-                    <button class="nav-btn" data-view="tools" title="General utilities and helper workflows"><i data-lucide="wrench"></i><span>Tools</span></button>
-                    <button class="nav-btn" data-view="production" title="Production rates, pressures, and decline curve analysis"><i data-lucide="line-chart"></i><span>Production</span></button>
-                    <button class="nav-btn" data-view="corecal" title="Core calibration — depth shift and porosity/permeability transforms"><i data-lucide="target"></i><span>Core Cal</span></button>
-                    <button class="nav-btn" data-view="qcautofix" title="Enhanced QC with auto-fix suggestions"><i data-lucide="sparkles"></i><span>QC Fix</span></button>
-                    <button class="nav-btn" data-view="advancedqc" title="Advanced QC — missing intervals, spikes, environmental flags"><i data-lucide="shield-check"></i><span>Adv QC</span></button>
-                    <button class="nav-btn" data-view="zonation" title="Zonation & net pay report — auto-zone from cutoffs"><i data-lucide="layers"></i><span>Zonation</span></button>
-                    <button class="nav-btn" data-view="units" title="Unit normalization & alias resolution"><i data-lucide="ruler"></i><span>Units</span></button>
-                    <button class="nav-btn" data-view="maps" title="Карты: устья, толщины, пористость"><i data-lucide="map"></i><span>Карты</span></button>
-                    <button class="nav-btn" data-view="inklqc" title="Инклинометрия: DLS, проекции, дубли, заметки"><i data-lucide="compass"></i><span>Инклинометрия</span></button>
-                    <button class="nav-btn" data-view="coverage" title="Research coverage map — logging-method coverage across wells"><i data-lucide="grid-2x2-check"></i><span>Coverage</span></button>
-                    <button class="nav-btn" data-view="mnemonics" title="Auto-normalize vendor curve mnemonics to canonical families"><i data-lucide="wand-sparkles"></i><span>Mnemonics</span></button>
-                    <button class="nav-btn" data-view="templates" title="Reservoir template workflow — one-click presets"><i data-lucide="file-check"></i><span>Templates</span></button>
-                    <button class="nav-btn" data-view="calculator" title="Quick petrophysical and engineering calculations"><i data-lucide="function-square"></i><span>Calc</span></button>
-                    <button class="nav-btn" data-view="datatable" title="Inspect raw curve samples in a table"><i data-lucide="table"></i><span>Data Table</span></button>
-                    <button class="nav-btn" data-view="batch" title="Run petrophysics in batch across wells"><i data-lucide="copy"></i><span>Batch</span></button>
-                    <button class="nav-btn" data-view="map" title="View and select wells on map"><i data-lucide="map-pin"></i><span>Map</span></button>
-                    <button class="nav-btn" data-view="dashboard" title="Project-level summary metrics dashboard"><i data-lucide="layout-dashboard"></i><span>Dashboard</span></button>
-                    <button class="nav-btn" data-view="matrix" title="Multi-well cross-plot matrix for formation comparison"><i data-lucide="grid-3x3"></i><span>Matrix</span></button>
-                    <button class="nav-btn" data-view="audit" title="Audit trail — track all project activity"><i data-lucide="file-text"></i><span>Audit</span></button>
-                    <button class="nav-btn" data-view="seismic" title="Synthetic seismogram from DT and RHOB"><i data-lucide="activity"></i><span>Seismic</span></button>
-                    <button class="nav-btn" data-view="imagelog" title="Resistivity image log display (FMI/OBI lite)"><i data-lucide="image"></i><span>Image Log</span></button>
-                    <button class="nav-btn" data-view="multiwell" title="Multi-well overlay comparison"><i data-lucide="layers"></i><span>Multi-Well</span></button>
-                    <button class="nav-btn" data-view="formationtester" title="Formation tester pressure gradient"><i data-lucide="gauge"></i><span>Pressure</span></button>
-                    <button class="nav-btn" data-view="analogs" title="Offset-well analog recommendation"><i data-lucide="git-branch"></i><span>Analogs</span></button>
-                    <button class="nav-btn" data-view="users" title="Manage users and roles"><i data-lucide="users"></i><span>Users</span></button>
-                    <button class="nav-btn" data-view="jobmonitor" title="Background job queue monitor"><i data-lucide="activity"></i><span>Jobs</span></button>
-                </div>
-            </details>
+            <button class="nav-btn active" data-view="viewer" title="Просмотр каротажа: треки кривых по глубине"><i data-lucide="activity"></i><span>Каротаж</span></button>
+            <button class="nav-btn" data-view="mnemonics" title="Проверка и унификация мнемоник"><i data-lucide="wand-sparkles"></i><span>Мнемоники</span></button>
+            <button class="nav-btn" data-view="duplicates" title="Проверка кривых на полное дублирование"><i data-lucide="copy-check"></i><span>Дубли кривых</span></button>
+            <button class="nav-btn" data-view="qc" title="Контроль качества: пропуски, выбросы"><i data-lucide="shield-check"></i><span>QC</span></button>
+            <button class="nav-btn" data-view="inklqc" title="Инклинометрия: DLS, проекции, дубли, заметки"><i data-lucide="compass"></i><span>Инклинометрия</span></button>
+            <button class="nav-btn" data-view="coverage" title="Карта охвата ГИС: по скважинам, глубине и горизонтам"><i data-lucide="grid-2x2-check"></i><span>Охват ГИС</span></button>
+            <button class="nav-btn" data-view="topsmgmt" title="Отбивки (горизонты): создание, импорт, экспорт"><i data-lucide="layers"></i><span>Отбивки</span></button>
+            <button class="nav-btn" data-view="formation" title="Таблица горизонтов по всем скважинам"><i data-lucide="grid-3x3"></i><span>Горизонты</span></button>
+            <button class="nav-btn" data-view="correlation" title="Сопоставление скважин по кривым и отбивкам"><i data-lucide="split-square-horizontal"></i><span>Сопоставление</span></button>
+            <button class="nav-btn" data-view="statistics" title="Статистика и распределения по кривым"><i data-lucide="bar-chart-3"></i><span>Статистика</span></button>
+            <button class="nav-btn" data-view="dashboard" title="Сводная панель по проекту"><i data-lucide="layout-dashboard"></i><span>Дашборд</span></button>
         </nav>
         <div class="topbar-actions">
             <select id="activeRoleSelect" class="depth-select" style="min-width:120px" onchange="app.setActiveRole(this.value)" title="Active API role">
@@ -1405,6 +1354,22 @@
             <div id="mnemonicsContent" class="stats-container"></div>
         </div>
 
+        <!-- Duplicate Curve Check Panel -->
+        <div id="duplicatesPanel" class="panel" style="display:none">
+            <div class="panel-toolbar">
+                <div class="toolbar-group"><label>Дубли кривых</label><span class="toolbar-hint">Поиск пар кривых с полностью совпадающими значениями на общем интервале глубин</span></div>
+                <div class="toolbar-group"><label>Область</label>
+                    <select id="dupScope" class="depth-select" onchange="DuplicatesView.load()">
+                        <option value="well">Текущая скважина</option>
+                        <option value="project">Весь проект (включая между скважинами)</option>
+                    </select>
+                </div>
+                <button class="btn-sm" onclick="DuplicatesView.load()"><i data-lucide="refresh-cw"></i> Проверить</button>
+                <span id="dupInfo" class="toolbar-hint"></span>
+            </div>
+            <div id="duplicatesContent" class="stats-container"></div>
+        </div>
+
     </main>
 
     <!-- Modal Dialog -->
@@ -1558,6 +1523,7 @@
     <script src="/static/js/clipboard.js"></script>
     <script src="/static/js/research-coverage.js"></script>
     <script src="/static/js/mnemonics.js"></script>
+    <script src="/static/js/duplicates.js"></script>
     <script src="/static/js/app.js"></script>
 <script>
 function toggleSidebar() {

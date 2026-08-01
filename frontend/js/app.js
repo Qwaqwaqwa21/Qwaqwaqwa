@@ -569,6 +569,7 @@ class GeoLogApp {
         document.getElementById('inklqcPanel').style.display = view === 'inklqc' ? 'block' : 'none';
         document.getElementById('mapsPanel').style.display = view === 'maps' ? 'block' : 'none';
         document.getElementById('mnemonicsPanel').style.display = view === 'mnemonics' ? 'block' : 'none';
+        document.getElementById('duplicatesPanel').style.display = view === 'duplicates' ? 'block' : 'none';
 
         // Sprint 26: Update status bar + trigger panel-specific loads
         this._updateStatusBar(view);
@@ -582,6 +583,7 @@ class GeoLogApp {
         if (view === 'mnplot') this._renderMNPlot();
         if (view === 'petrophysics') this._renderPetrophysics();
         if (view === 'qc') this._renderQC();
+        if (view === 'duplicates') { if (typeof DuplicatesView !== 'undefined') DuplicatesView.load(); }
         if (view === 'correlation') {
             this._renderCorrelationMarkerTable();
             this._populateCorrelationCurveOptions().then(() => this.renderCorrelation());
@@ -968,9 +970,21 @@ class GeoLogApp {
             this.projects = await this._api('/projects/');
             this._renderProjectTree();
             if (this.projects.length > 0) {
-                await this.loadWells(this.projects[0].id);
+                await this.switchProject(this.projects[0].id);
             }
         } catch (e) { console.error('Failed to load projects:', e); }
+    }
+
+    // Makes `pid` the active project: highlights it in the sidebar tree and
+    // loads its wells into its own well-list container. Previously every
+    // project rendered its own `.well-list` div but `_renderWellList` always
+    // populated whichever one `document.querySelector('.well-list')` found
+    // first, so opening a second project silently did nothing — there was
+    // no working way to switch projects from the sidebar.
+    async switchProject(pid) {
+        this.currentProjectId = pid;
+        this._renderProjectTree();
+        await this.loadWells(pid);
     }
 
     async loadWells(projectId) {
@@ -996,6 +1010,7 @@ class GeoLogApp {
             // Highlight in sidebar
             document.querySelectorAll('.well-item').forEach(el => el.classList.remove('active'));
             document.querySelector(`.well-item[data-id="${wellId}"]`)?.classList.add('active');
+            this._renderActiveWellCurves(well);
 
             this.loadPetroParams();
             this.renderTemplateCards();
@@ -1168,18 +1183,49 @@ class GeoLogApp {
         const dataArrays = Object.entries(curveData)
             .filter(([mn]) => !DEPTH_MNEMONICS.has((mn || '').toUpperCase()))
             .map(([, arr]) => arr);
+        if (!dataArrays.length) { GeoToast.warn('Нет данных ни по одной кривой'); return; }
+
+        // A run declared over the whole borehole often has one broadly-sparse
+        // curve (e.g. a gas log) spanning almost the full depth while the
+        // others only overlap in a much narrower window. Bounding by "any
+        // curve has a value" would keep that whole span and leave most
+        // curves invisible off-screen. Instead find the longest interval
+        // where at least two curves (or all of them, if only one is loaded)
+        // have data at the same time — that is the interval actually worth
+        // looking at.
+        const minOverlap = Math.min(2, dataArrays.length);
+        const counts = new Array(depth.length).fill(0);
+        for (const arr of dataArrays) {
+            for (let i = 0; i < depth.length; i++) {
+                const v = arr[i];
+                if (v !== null && v !== undefined && !Number.isNaN(v)) counts[i]++;
+            }
+        }
+        let bestStart = -1, bestLen = 0, curStart = -1;
+        for (let i = 0; i < counts.length; i++) {
+            if (counts[i] >= minOverlap) {
+                if (curStart < 0) curStart = i;
+                if (i - curStart + 1 > bestLen) { bestLen = i - curStart + 1; bestStart = curStart; }
+            } else {
+                curStart = -1;
+            }
+        }
+
         let start = null, stop = null;
-        for (let i = 0; i < depth.length; i++) {
-            const hasValue = dataArrays.some(arr => {
-                const v = arr?.[i];
-                return v !== null && v !== undefined && !Number.isNaN(v);
-            });
-            if (hasValue) {
-                if (start === null) start = depth[i];
-                stop = depth[i];
+        if (bestStart >= 0 && bestLen > 1) {
+            start = depth[bestStart];
+            stop = depth[bestStart + bestLen - 1];
+        } else {
+            for (let i = 0; i < depth.length; i++) {
+                const hasValue = dataArrays.some(arr => {
+                    const v = arr?.[i];
+                    return v !== null && v !== undefined && !Number.isNaN(v);
+                });
+                if (hasValue) { if (start === null) start = depth[i]; stop = depth[i]; }
             }
         }
         if (start === null) { GeoToast.warn('Нет данных ни по одной кривой'); return; }
+
         const topInput = document.getElementById('depthTop');
         const bottomInput = document.getElementById('depthBottom');
         if (topInput) topInput.value = start;
@@ -1187,6 +1233,20 @@ class GeoLogApp {
         this.renderer.setView(start, stop);
         localStorage.setItem('geolog_depth_top', String(start));
         localStorage.setItem('geolog_depth_bottom', String(stop));
+
+        // The canvas itself renders fine, but it commonly sits below other
+        // page content taller than the scrollable <main>, so the populated
+        // part of the track can be scrolled out of view with nothing on
+        // screen to suggest scrolling would help. Bring it fully into view.
+        requestAnimationFrame(() => {
+            const canvas = this.renderer.canvas;
+            const scrollParent = canvas.closest('main.main') || canvas.parentElement;
+            if (!scrollParent) return;
+            const canvasRect = canvas.getBoundingClientRect();
+            const parentRect = scrollParent.getBoundingClientRect();
+            const overflowBelow = canvasRect.bottom - parentRect.bottom;
+            if (overflowBelow > 0) scrollParent.scrollTop += overflowBelow;
+        });
     }
 
     _applyCurveDataToRenderer(data, curves) {
@@ -1397,30 +1457,63 @@ class GeoLogApp {
     _renderProjectTree() {
         const container = document.getElementById('projectTree');
         if (!container) return;
-        container.innerHTML = this.projects.map(p => `
-            <div class="project-group">
-                <div class="project-header">
-                    <span class="project-name">${p.name}</span>
+        container.innerHTML = this.projects.map(p => {
+            const active = this.currentProjectId === p.id;
+            return `
+            <div class="project-group${active ? ' active' : ''}">
+                <div class="project-header" onclick="app.switchProject(${p.id})" title="${active ? 'Текущий проект' : 'Открыть проект'}"
+                     style="cursor:pointer${active ? ';border-left:3px solid #3fb950' : ''}">
+                    <span class="project-name">${active ? '● ' : ''}${p.name}</span>
                     <span class="project-meta">${p.operator || ''} • ${p.country || ''}</span>
-                    <button class="btn-icon-sm" onclick="app.deleteProject(${p.id})" title="Delete">
+                    <button class="btn-icon-sm" onclick="event.stopPropagation(); app.deleteProject(${p.id})" title="Delete">
                         <i data-lucide="trash-2"></i>
                     </button>
                 </div>
                 <div class="well-list" id="wells-${p.id}"></div>
             </div>
-        `).join('');
+        `;
+        }).join('');
         if (typeof lucide !== 'undefined') lucide.createIcons();
     }
 
     _renderWellList() {
-        const container = document.querySelector('.well-list');
+        const container = document.getElementById(`wells-${this.currentProjectId}`) || document.querySelector('.well-list');
         if (!container) return;
         container.innerHTML = this.wells.map(w => `
-            <div class="well-item" data-id="${w.id}" onclick="app.onWellClick(${w.id})">
+            <div class="well-item${this.currentWell?.id === w.id ? ' active' : ''}" data-id="${w.id}" onclick="app.onWellClick(${w.id})">
                 <div class="well-name">${w.name}</div>
                 <div class="well-meta">${w.uwi || '—'} • ${w.log_run_count || 0} logs</div>
             </div>
         `).join('');
+        if (this.currentWell) this._renderActiveWellCurves(this.currentWell);
+    }
+
+    // Shows which curves are actually loaded in the active well's container
+    // directly under it in the sidebar, so it's clear at a glance what's
+    // in there without having to open the log viewer.
+    _renderActiveWellCurves(well) {
+        document.querySelectorAll('.well-item .well-curves').forEach(el => el.remove());
+        if (!well) return;
+        const item = document.querySelector(`.well-item[data-id="${well.id}"]`);
+        if (!item) return;
+        const DEPTH_MNEMONICS = new Set(['MD', 'DEPT', 'DEPTH', 'TVD']);
+        const mnemonics = new Set();
+        for (const run of (well.log_runs || [])) {
+            try {
+                JSON.parse(run.curves_json || '[]').forEach(c => {
+                    const m = (c.mnemonic || '').toUpperCase();
+                    if (m && !DEPTH_MNEMONICS.has(m)) mnemonics.add(m);
+                });
+            } catch { /* malformed curves_json, skip */ }
+        }
+        if (!mnemonics.size) return;
+        const div = document.createElement('div');
+        div.className = 'well-curves';
+        div.style.cssText = 'display:flex;flex-wrap:wrap;gap:3px;margin-top:5px';
+        div.innerHTML = [...mnemonics].map(m =>
+            `<span style="background:#21262d;color:#8b949e;font-size:10px;font-family:monospace;padding:1px 5px;border-radius:8px;line-height:1.6">${m}</span>`
+        ).join('');
+        item.appendChild(div);
     }
 
     // В режиме карт клик по скважине исключает/возвращает её в интерполяцию,
