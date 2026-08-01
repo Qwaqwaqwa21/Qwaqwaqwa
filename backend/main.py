@@ -27,6 +27,7 @@ try:
     from routers.research import router as research_router
     from routers.inclinometry import router as inkl_router
     from routers.maps import router as maps_router
+    from routers.duplicates import router as duplicates_router
 except ImportError:
     from backend.routers.qc import router as qc_router
     from backend.routers.correlation import router as corr_router
@@ -37,6 +38,7 @@ except ImportError:
     from backend.routers.research import router as research_router
     from backend.routers.inclinometry import router as inkl_router
     from backend.routers.maps import router as maps_router
+    from backend.routers.duplicates import router as duplicates_router
 
 
 class SafeJSONResponse(JSONResponse):
@@ -409,6 +411,7 @@ app.include_router(reports_router)
 app.include_router(research_router)
 app.include_router(inkl_router)
 app.include_router(maps_router)
+app.include_router(duplicates_router)
 
 JOB_EXECUTOR = ThreadPoolExecutor(max_workers=2)
 JOBS = {}

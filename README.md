@@ -57,6 +57,16 @@ single logging-method registry (`backend/methods.py`):
 - **Recursive folder import** — the bulk-import wizard now has a **Select
   Folder** picker and recursive drag-and-drop that walk subfolders, ingesting
   every `.las` file beneath a directory tree.
+- **Full-curve duplicate check** (проверка кривых на полное дублирование) —
+  finds pairs of curves whose values match exactly over their shared depth
+  interval (joined by depth, NULL-padding ignored), catching copy/paste
+  export mistakes such as a track saved twice under different mnemonics or
+  the same file uploaded twice under different wells. Family members that
+  are only numerically similar (e.g. the BKZ gradient probes GZ1..GZ5) are
+  not affected — only real byte-for-byte matches are reported.
+  API: `GET /api/wells/{wid}/duplicate-curves`,
+  `GET /api/projects/{pid}/duplicate-curves` (project-wide, flags cross-well
+  matches too). Tests: `tests/test_duplicate_curves.py`.
 
 Tests for the registry, auto-mapper, Cyrillic parsing, and custom aliases live
 in `tests/test_methods.py` and `tests/test_cyrillic_custom.py`.
