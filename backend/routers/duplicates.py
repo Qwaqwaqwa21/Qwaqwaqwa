@@ -15,10 +15,30 @@
 Совпадение фиксируется только там, где обе кривые имеют реальные (не NULL)
 значения — NULL-заполнение (-999.25 и т.п.) уже приведено парсером к NaN
 при загрузке, так что протяжённые пустые интервалы не дают ложных срабатываний.
+
+Отдельная, более грубая проверка — на уровне ИССЛЕДОВАНИЯ (study), а не
+значений кривых:
+
+  * GET /api/projects/{pid}/duplicate-studies
+
+В реальном workflow бумажный каротаж оцифровывается внешней группой и
+загружается как LAS. UWI в исходных данных нет вообще (он есть только во
+внешнем Excel-реестре — отдельная, более поздняя задача), поэтому проверка
+"это не тот же самый physical study, оцифрованный второй раз" не может
+опираться на идентификаторы и должна работать по тому, что реально есть в
+БД: имя скважины, площадь (field_name), интервал глубин и набор методов/
+кривых рейса. Это ловит два сценария, которые duplicate-curves пропускает,
+потому что там значения совпадают не побайтово:
+  - тот же рейс оцифрован повторно (другой проход OCR/оператора → немного
+    другие числа, но тот же ствол, тот же интервал, те же методы);
+  - одна и та же скважина заведена дважды под разными именами
+    (опечатка/варианты написания: "105" / "Скв. 105" / "105-Б").
 """
 from __future__ import annotations
 
 import itertools
+import json
+import re
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -39,6 +59,12 @@ _DEPTH_NAMES = {"MD", "DEPT", "DEPTH", "TVD"}
 DEFAULT_TOLERANCE = 1e-6
 DEFAULT_MIN_POINTS = 20
 DEFAULT_MIN_COVERAGE = 0.9
+
+DEFAULT_MIN_DEPTH_OVERLAP = 0.5
+DEFAULT_MIN_METHOD_OVERLAP = 0.5
+
+_NAME_NOISE_RE = re.compile(r"скв\.|скважина|well|№|[.\-_]")
+_WS_RE = re.compile(r"\s+")
 
 
 def _decode(cd: CurveData) -> Optional[np.ndarray]:
@@ -194,6 +220,140 @@ def project_duplicate_curves(
         "project_id": pid,
         "well_count": len(project.wells),
         "curve_count": len(curves),
+        "duplicate_count": len(dupes),
+        "cross_well_duplicate_count": sum(1 for d in dupes if d["cross_well"]),
+        "duplicates": dupes,
+    }
+
+
+def _normalize_well_name(name: Optional[str]) -> str:
+    """Lowercase + strip common RU/EN well-name noise so '105', 'Скв. 105' and
+    'well-105' compare equal."""
+    s = (name or "").strip().lower()
+    s = _NAME_NOISE_RE.sub(" ", s)
+    s = _WS_RE.sub(" ", s).strip()
+    return s
+
+
+def _run_methods(run: LogRun) -> set:
+    """Mnemonics (uppercased, depth/index excluded) present in a run's curves_json —
+    the cheapest available signal for "what methods this study contains"."""
+    try:
+        curves = json.loads(run.curves_json or "[]")
+    except (ValueError, TypeError):
+        return set()
+    out = set()
+    for c in curves:
+        m = (c.get("mnemonic") or "").strip().upper()
+        if m and m not in _DEPTH_NAMES:
+            out.add(m)
+    return out
+
+
+def _depth_overlap_fraction(run_a: LogRun, run_b: LogRun) -> Optional[float]:
+    """Overlap of [start_depth, stop_depth] between two runs, relative to the
+    shorter run's range. None if either run has no usable depth range."""
+    if run_a.start_depth is None or run_a.stop_depth is None:
+        return None
+    if run_b.start_depth is None or run_b.stop_depth is None:
+        return None
+    lo_a, hi_a = sorted((run_a.start_depth, run_a.stop_depth))
+    lo_b, hi_b = sorted((run_b.start_depth, run_b.stop_depth))
+    range_a, range_b = hi_a - lo_a, hi_b - lo_b
+    if range_a <= 0 or range_b <= 0:
+        return None
+    overlap = min(hi_a, hi_b) - max(lo_a, lo_b)
+    if overlap <= 0:
+        return 0.0
+    return overlap / min(range_a, range_b)
+
+
+def _run_side(well: Well, run: LogRun) -> Dict[str, Any]:
+    return {
+        "id": well.id, "name": well.name, "field_name": well.field_name,
+        "run_id": run.id, "run_number": run.run_number, "filename": run.filename,
+        "start_depth": run.start_depth, "stop_depth": run.stop_depth,
+        "digitization_status": run.digitization_status,
+    }
+
+
+def _compare_study_pair(
+    well_a: Well, run_a: LogRun, well_b: Well, run_b: LogRun,
+    min_depth_overlap: float, min_method_overlap: float,
+) -> Optional[Dict[str, Any]]:
+    depth_overlap = _depth_overlap_fraction(run_a, run_b)
+    if depth_overlap is None or depth_overlap < min_depth_overlap:
+        return None
+
+    methods_a, methods_b = _run_methods(run_a), _run_methods(run_b)
+    if not methods_a or not methods_b:
+        return None
+    shared = methods_a & methods_b
+    method_overlap = len(shared) / min(len(methods_a), len(methods_b))
+    if method_overlap < min_method_overlap:
+        return None
+
+    same_well = well_a.id == well_b.id
+    if same_well:
+        reason = "same_well"
+    else:
+        # Cross-well pairs are only meaningful within the same площадь — same
+        # well ⇒ same field by definition, so only cross-well pairs need this
+        # check. Unrelated (or both-blank/unspecified) fields are too noisy
+        # to flag as duplicates — an empty field_name means "unknown", not
+        # "same field", so it must not match another empty field_name.
+        field_a = (well_a.field_name or "").strip().lower()
+        field_b = (well_b.field_name or "").strip().lower()
+        if not field_a or not field_b or field_a != field_b:
+            return None
+        name_a = _normalize_well_name(well_a.name)
+        name_b = _normalize_well_name(well_b.name)
+        if name_a and name_a == name_b:
+            reason = "cross_well_same_name"
+        else:
+            reason = "cross_well_similar_field"
+
+    return {
+        "well_a": _run_side(well_a, run_a),
+        "well_b": _run_side(well_b, run_b),
+        "depth_overlap_fraction": round(depth_overlap, 4),
+        "method_overlap_fraction": round(method_overlap, 4),
+        "shared_methods": sorted(shared),
+        "reason": reason,
+        "cross_well": not same_well,
+    }
+
+
+def _find_duplicate_studies(
+    wells: List[Well], min_depth_overlap: float, min_method_overlap: float
+) -> List[Dict[str, Any]]:
+    runs = [(well, run) for well in wells for run in well.log_runs]
+    results = []
+    for (well_a, run_a), (well_b, run_b) in itertools.combinations(runs, 2):
+        match = _compare_study_pair(well_a, run_a, well_b, run_b, min_depth_overlap, min_method_overlap)
+        if match:
+            results.append(match)
+    results.sort(key=lambda r: (-r["depth_overlap_fraction"], -r["method_overlap_fraction"]))
+    return results
+
+
+@router.get("/api/projects/{pid}/duplicate-studies")
+def project_duplicate_studies(
+    pid: int,
+    min_depth_overlap: float = Query(DEFAULT_MIN_DEPTH_OVERLAP, ge=0.0, le=1.0),
+    min_method_overlap: float = Query(DEFAULT_MIN_METHOD_OVERLAP, ge=0.0, le=1.0),
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    project = db.query(Project).filter(Project.id == pid).first()
+    if not project:
+        raise HTTPException(404, "Project not found")
+    wells = project.wells
+    study_count = sum(len(w.log_runs) for w in wells)
+    dupes = _find_duplicate_studies(wells, min_depth_overlap, min_method_overlap)
+    return {
+        "project_id": pid,
+        "well_count": len(wells),
+        "study_count": study_count,
         "duplicate_count": len(dupes),
         "cross_well_duplicate_count": sum(1 for d in dupes if d["cross_well"]),
         "duplicates": dupes,
