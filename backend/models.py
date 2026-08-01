@@ -83,6 +83,9 @@ class LogRun(Base):
     scan_binary = Column(LargeBinary, nullable=True)
     scan_mime = Column(String(100), nullable=True)
     scan_filename = Column(String(255), nullable=True)
+    # Self-referential link: when a rejected run is re-digitized and re-uploaded
+    # as a brand-new LogRun, redo_of points at the rejected run it corrects.
+    redo_of = Column(Integer, ForeignKey("log_runs.id"), nullable=True)
 
     well = relationship("Well", back_populates="log_runs")
     curve_data = relationship("CurveData", back_populates="log_run", cascade="all, delete-orphan")

@@ -241,6 +241,18 @@ def _ensure_log_run_scan_columns():
 _ensure_log_run_scan_columns()
 
 
+def _ensure_log_run_redo_column():
+    """Add log_runs.redo_of if missing (idempotent)."""
+    with engine.begin() as conn:
+        try:
+            conn.execute(text("ALTER TABLE log_runs ADD COLUMN redo_of INTEGER;"))
+        except Exception:
+            pass
+
+
+_ensure_log_run_redo_column()
+
+
 def _normalize_depth_unit(unit: str) -> str:
     """Map a raw LAS/DLIS/LIS index-curve unit string to 'M' or 'FT'."""
     u = (unit or "").strip().upper()
@@ -1130,11 +1142,18 @@ def _project_dict(p: Project) -> dict:
     return d
 
 
-def _log_run_dict(lr: "LogRun") -> dict:
+def _log_run_dict(lr: "LogRun", redone_by_map: dict = None) -> dict:
     """Serialize a LogRun row, replacing the raw scan bytes with metadata
-    (scan_binary is a BLOB and isn't JSON-serializable as-is)."""
+    (scan_binary is a BLOB and isn't JSON-serializable as-is).
+
+    redone_by_map is an optional {redo_of_run_id: run_id} lookup (built once
+    per well by the caller) used to report, on a rejected run, which other
+    run in the same well was uploaded to fix it. Callers that don't have
+    this context (or don't need it) can omit it and just get redone_by=None.
+    """
     d = {c.name: getattr(lr, c.name) for c in LogRun.__table__.columns if c.name != "scan_binary"}
     d["has_scan"] = lr.scan_binary is not None
+    d["redone_by"] = (redone_by_map or {}).get(lr.id)
     return d
 
 
@@ -1226,7 +1245,8 @@ def get_well(wid: int, db: Session = Depends(get_db)):
     if not w:
         raise HTTPException(404, "Well not found")
     d = {c.name: getattr(w, c.name) for c in Well.__table__.columns}
-    d["log_runs"] = [_log_run_dict(lr) for lr in w.log_runs]
+    redone_by_map = {lr.redo_of: lr.id for lr in w.log_runs if lr.redo_of is not None}
+    d["log_runs"] = [_log_run_dict(lr, redone_by_map) for lr in w.log_runs]
     d["formation_tops"] = [{c.name: getattr(ft, c.name) for c in FormationTop.__table__.columns} for ft in w.formation_tops]
     return d
 
@@ -1544,6 +1564,52 @@ def review_log_run(lr_id: int, data: dict = None, db: Session = Depends(get_db),
 
     _log_audit(db, "log_run_review", "log_run", entity_id=lr_id, well_id=lr.well_id,
                details=f"status={status};reviewer={reviewer}")
+
+    return _log_run_dict(lr)
+
+
+@app.post("/api/log-runs/{lr_id}/redo-of")
+def link_log_run_redo(lr_id: int, data: dict = None, db: Session = Depends(get_db),
+                       x_user_role: str = Header(default="viewer")):
+    """Link a newly (re-)digitized log run to the rejected run it corrects.
+
+    A rejected run's LAS gets re-digitized and re-uploaded by the external
+    group as a brand-new LogRun with no automatic relationship to the run it
+    fixes. This endpoint records that traceability link explicitly.
+    """
+    role = (x_user_role or "viewer").lower()
+    if role not in {"admin", "interpreter"}:
+        raise HTTPException(403, "interpreter/admin role required")
+
+    lr = db.query(LogRun).filter(LogRun.id == lr_id).first()
+    if not lr:
+        raise HTTPException(404, "Log run not found")
+
+    redo_of_id = (data or {}).get("redo_of")
+    if redo_of_id is None:
+        raise HTTPException(400, "redo_of is required")
+    try:
+        redo_of_id = int(redo_of_id)
+    except (TypeError, ValueError):
+        raise HTTPException(400, "redo_of must be an integer log run id")
+
+    if redo_of_id == lr_id:
+        raise HTTPException(400, "A log run cannot be its own redo")
+
+    target = db.query(LogRun).filter(LogRun.id == redo_of_id).first()
+    if not target:
+        raise HTTPException(400, "redo_of log run not found")
+    if target.well_id != lr.well_id:
+        raise HTTPException(400, "redo_of must belong to the same well")
+    if target.digitization_status != "rejected":
+        raise HTTPException(400, "redo_of must reference a run with digitization_status='rejected'")
+
+    lr.redo_of = redo_of_id
+    db.commit()
+    db.refresh(lr)
+
+    _log_audit(db, "log_run_redo_link", "log_run", entity_id=lr_id, well_id=lr.well_id,
+               details=f"redo_of={redo_of_id}")
 
     return _log_run_dict(lr)
 

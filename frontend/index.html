@@ -178,6 +178,12 @@
                     <button class="btn-sm" id="viewScanBtn" style="display:none" onclick="app.viewLogRunScan()" title="Open the original scan in a new tab" aria-label="View scan">🔍 View Scan</button>
                     <button class="btn-sm" onclick="app.reviewCurrentLogRun('accepted')" title="Accept current log run (matches original scan)" aria-label="Accept log run">✅ Accept</button>
                     <button class="btn-sm" onclick="app.reviewCurrentLogRun('rejected')" title="Reject current log run (needs re-digitization)" aria-label="Reject log run">❌ Reject</button>
+                    <div id="redoLinkControl" style="display:none; align-items:center; gap:4px">
+                        <select id="redoOfSelect" class="depth-select" style="min-width:220px" title="Which rejected run does this log run correct?">
+                            <option value="">🔗 Это переоцифровка рейса…</option>
+                        </select>
+                        <button class="btn-sm" onclick="app.linkRedoOf()" title="Link this log run as the corrected redo of the selected rejected run" aria-label="Link redo">Link</button>
+                    </div>
                     <div id="readinessWidget" class="readiness-widget" style="display:none" onclick="app.toggleReadinessPopover(event)" title="Handoff readiness — click for details"></div>
                 </div>
             </div>

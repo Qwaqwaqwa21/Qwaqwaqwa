@@ -1097,6 +1097,7 @@ class GeoLogApp {
 
             this._renderWellHeader(well);
             this._updateScanControls();
+            this._updateRedoLinkControl();
             this._refreshReadinessSummary();
             localStorage.setItem('geolog_last_well', wellId);
             this._updateWorkflowStrip();
@@ -1142,6 +1143,7 @@ class GeoLogApp {
             this.jumpToData({ silent: true });   // crop straight to where the curves actually have data
             this._renderWellHeader(well);
             this._updateScanControls();
+            this._updateRedoLinkControl();
             this._refreshReadinessSummary();
             if (this.currentLogRun) localStorage.setItem('geolog_last_run', logRunId);
         } catch (e) { console.error('Failed to select log run:', e); }
@@ -1154,6 +1156,7 @@ class GeoLogApp {
             sel.innerHTML = '<option value="">No log run</option>';
             return;
         }
+        const runNoById = new Map(logRuns.map((r, idx) => [r.id, r.run_number ?? (idx + 1)]));
         sel.innerHTML = logRuns.map((r, idx) => {
             const runNo = r.run_number ?? (idx + 1);
             const file = r.filename || 'unknown.log';
@@ -1161,7 +1164,10 @@ class GeoLogApp {
             const versionLabel = this._formatRunVersion(r.version || r.las_version, file);
             const versionText = versionLabel ? ` • ${versionLabel}` : '';
             const statusIcon = this._digitizationStatusIcon(r.digitization_status);
-            return `<option value="${r.id}">${statusIcon} Run ${runNo} • ${file} • ${pts} pts${versionText}</option>`;
+            let redoText = '';
+            if (r.redo_of != null) redoText += ` ↩ redo of Run ${runNoById.get(r.redo_of) ?? r.redo_of}`;
+            if (r.redone_by != null) redoText += ` → fixed in Run ${runNoById.get(r.redone_by) ?? r.redone_by}`;
+            return `<option value="${r.id}">${statusIcon} Run ${runNo} • ${file} • ${pts} pts${versionText}${redoText}</option>`;
         }).join('');
         const chosen = selectedId || logRuns[0].id;
         sel.value = String(chosen);
@@ -1195,6 +1201,7 @@ class GeoLogApp {
                 this._populateLogRunSelector(this.currentWell.log_runs, this.currentLogRun.id);
             }
             this._updateScanControls();
+            this._updateRedoLinkControl();
             this._refreshReadinessSummary();
             GeoToast.success(status === 'accepted' ? 'Log run accepted' : 'Log run rejected');
         } catch (e) { GeoToast.error('Failed to record review: ' + e.message); }
@@ -1290,6 +1297,59 @@ class GeoLogApp {
         btn.style.display = this.currentLogRun?.has_scan ? '' : 'none';
     }
 
+    // Small "link this run to the rejected run it corrects" control, shown
+    // only when it's actually actionable: the current run isn't itself
+    // rejected, isn't already linked, and the well has at least one rejected
+    // run that no other run has claimed as its redo yet.
+    _updateRedoLinkControl() {
+        const control = document.getElementById('redoLinkControl');
+        const select = document.getElementById('redoOfSelect');
+        if (!control || !select) return;
+        const run = this.currentLogRun;
+        const logRuns = this.currentWell?.log_runs || [];
+        if (!run || run.digitization_status === 'rejected' || run.redo_of != null) {
+            control.style.display = 'none';
+            return;
+        }
+        const linkedRedoOfIds = new Set(logRuns.filter(r => r.redo_of != null).map(r => r.redo_of));
+        const candidates = logRuns.filter(r => r.id !== run.id
+            && r.digitization_status === 'rejected'
+            && !linkedRedoOfIds.has(r.id));
+        if (!candidates.length) {
+            control.style.display = 'none';
+            return;
+        }
+        select.innerHTML = '<option value="">🔗 Это переоцифровка рейса…</option>' + candidates.map(r =>
+            `<option value="${r.id}">Run ${r.run_number ?? r.id} • ${r.filename || 'unknown.log'}</option>`
+        ).join('');
+        control.style.display = 'flex';
+    }
+
+    async linkRedoOf() {
+        const select = document.getElementById('redoOfSelect');
+        const redoOfId = select?.value ? Number(select.value) : null;
+        if (!this.currentLogRun?.id) { GeoToast.error('No log run selected'); return; }
+        if (!redoOfId) { GeoToast.error('Select the rejected run this corrects'); return; }
+        try {
+            const updated = await this._api(`/log-runs/${this.currentLogRun.id}/redo-of`, {
+                method: 'POST',
+                body: JSON.stringify({ redo_of: redoOfId }),
+            });
+            this.currentLogRun = { ...this.currentLogRun, ...updated };
+            if (this.currentWell?.id) {
+                const well = await this._api(`/wells/${this.currentWell.id}`);
+                this.currentWell = well;
+                const chosen = (well.log_runs || []).find(r => r.id === this.currentLogRun.id);
+                if (chosen) this.currentLogRun = { ...this.currentLogRun, ...chosen };
+                this._populateLogRunSelector(well.log_runs || [], this.currentLogRun.id);
+            }
+            this._updateScanControls();
+            this._updateRedoLinkControl();
+            this._refreshReadinessSummary();
+            GeoToast.success('Linked as redo of Run ' + (select.options[select.selectedIndex]?.textContent || redoOfId));
+        } catch (e) { GeoToast.error('Failed to link redo: ' + e.message); }
+    }
+
     // Opens the file dialog synchronously (no await first) so the browser keeps
     // the user-gesture, mirroring _uploadLogFormatForWell.
     uploadLogRunScan() {
@@ -1336,6 +1396,7 @@ class GeoLogApp {
                     this._populateLogRunSelector(well.log_runs || [], this.currentLogRun?.id);
                 }
                 this._updateScanControls();
+                this._updateRedoLinkControl();
                 this._refreshReadinessSummary();
             } catch (e) {
                 GeoToast.error('Scan upload failed: ' + e.message);
