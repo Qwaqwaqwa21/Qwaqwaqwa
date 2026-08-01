@@ -1314,6 +1314,7 @@
                         <option value="matrix">Матрица (скв. × метод)</option>
                         <option value="planshet">Планшет по глубине</option>
                         <option value="horizon">Таблица по горизонтам</option>
+                        <option value="registry">Опись исследований</option>
                     </select>
                 </div>
                 <span id="coverageMatrixControls" style="display:contents">
@@ -1329,6 +1330,11 @@
                 <span id="coverageHorizonControls" style="display:none">
                     <button class="btn-sm" onclick="ResearchCoverageView.exportHorizons('xlsx')"><i data-lucide="file-spreadsheet"></i> Экспорт XLSX</button>
                     <button class="btn-sm" onclick="ResearchCoverageView.exportHorizons('csv')"><i data-lucide="download"></i> Экспорт CSV</button>
+                </span>
+                <span id="coverageRegistryControls" style="display:none">
+                    <input id="registryImportInput" type="file" accept=".xlsx,.xlsm,.xltx,.csv,.tsv" style="display:none">
+                    <button id="registryImportBtn" class="btn-sm"><i data-lucide="upload"></i> Импортировать опись</button>
+                    <label style="display:flex;align-items:center;gap:6px"><input id="registryReplace" type="checkbox"> заменить</label>
                 </span>
                 <button class="btn-sm" onclick="ResearchCoverageView.load()"><i data-lucide="refresh-cw"></i> Обновить</button>
                 <span id="coverageInfo" class="toolbar-hint"></span>

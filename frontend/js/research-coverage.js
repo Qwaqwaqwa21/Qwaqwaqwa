@@ -27,8 +27,14 @@
       + Math.round(90 + 23 * t) + ',' + (0.18 + 0.72 * t).toFixed(3) + ')';
   }
 
+  var MATCH_LABEL = {
+    matched: { text: 'найдено', color: '#2ea043', bg: 'rgba(46,160,67,.18)' },
+    well_found_no_depth_match: { text: 'скважина есть, интервал не совпадает', color: '#d29922', bg: 'rgba(210,153,34,.18)' },
+    missing: { text: 'не найдено', color: '#f85149', bg: 'rgba(248,81,73,.18)' }
+  };
+
   window.ResearchCoverageView = {
-    data: null, logData: null, horizonData: null,
+    data: null, logData: null, horizonData: null, registryData: null,
 
     _mode: function () {
       return (document.getElementById('coverageViewMode') || {}).value || 'matrix';
@@ -40,6 +46,9 @@
       if (mc) mc.style.display = (m === 'matrix') ? 'contents' : 'none';
       var hx = document.getElementById('coverageHorizonControls');
       if (hx) hx.style.display = (m === 'horizon') ? 'contents' : 'none';
+      var rx = document.getElementById('coverageRegistryControls');
+      if (rx) rx.style.display = (m === 'registry') ? 'contents' : 'none';
+      if (m === 'registry') this._bindRegistryControls();
       this.load();
     },
 
@@ -52,6 +61,7 @@
       try {
         if (m === 'planshet') this.logData = await app._api('/projects/' + pid + '/coverage-log?bins=300');
         else if (m === 'horizon') this.horizonData = await app._api('/projects/' + pid + '/coverage-by-horizon');
+        else if (m === 'registry') this.registryData = await app._api('/projects/' + pid + '/study-registry');
         else this.data = await app._api('/projects/' + pid + '/research-coverage?depth_bins=24');
       } catch (e) {
         if (host) host.innerHTML = '<p style="color:#f85149">Ошибка: ' + esc(e.message || e) + '</p>';
@@ -65,6 +75,7 @@
       var m = this._mode();
       if (m === 'planshet') return this.renderPlanshet();
       if (m === 'horizon') return this.renderHorizons();
+      if (m === 'registry') return this.renderRegistry();
       return this.renderMatrix();
     },
 
@@ -303,6 +314,80 @@
       a.href = url; a.download = '';
       document.body.appendChild(a); a.click(); a.remove();
       GeoToast.success('Экспорт охвата по горизонтам (' + (fmt || 'csv').toUpperCase() + ')');
+    },
+
+    // ── Опись исследований (внешний реестр, сверка по имени+площади+глубине) ──
+    _bindRegistryControls: function () {
+      var self = this;
+      if (this._registryBound) return;
+      this._registryBound = true;
+      var btn = document.getElementById('registryImportBtn');
+      var input = document.getElementById('registryImportInput');
+      if (btn && input) btn.onclick = function () { input.click(); };
+      if (input) input.onchange = function () { self.importRegistry(input.files[0]); input.value = ''; };
+    },
+
+    importRegistry: async function (file) {
+      if (!file) return;
+      var pid = projectId();
+      if (!pid) { GeoToast.warn('Откройте проект'); return; }
+      var replace = !!(document.getElementById('registryReplace') || {}).checked;
+      try {
+        var fd = new FormData();
+        fd.append('file', file);
+        var resp = await fetch('/api/projects/' + pid + '/study-registry/import?replace=' + (replace ? 'true' : 'false'), {
+          method: 'POST', headers: { 'X-User-Role': app.currentRole || 'viewer' }, body: fd
+        });
+        var j = await resp.json();
+        if (!resp.ok) throw new Error(j.detail || ('HTTP ' + resp.status));
+        GeoToast.success('Импортировано строк описи: ' + j.imported);
+        await this.load();
+      } catch (e) { GeoToast.error('Импорт описи не удался: ' + (e.message || e)); }
+    },
+
+    renderRegistry: function () {
+      var host = document.getElementById('coverageContent'), d = this.registryData;
+      if (!host) return;
+      var info = document.getElementById('coverageInfo');
+      if (!d || !d.entry_count) {
+        if (info) info.textContent = '0 из 0 найдено';
+        host.innerHTML = '<p style="color:#8b949e">Опись исследований не загружена. Импортируйте Excel/CSV-реестр'
+          + ' (скважина, площадь, вид исследования, глубины) кнопкой «Импортировать опись».</p>';
+        return;
+      }
+      if (info) info.textContent = d.matched_count + ' из ' + d.entry_count + ' найдено'
+        + (d.partial_count ? ' · ' + d.partial_count + ' частично' : '')
+        + (d.missing_count ? ' · ' + d.missing_count + ' отсутствует' : '');
+
+      var h = '<div style="overflow-x:auto"><table style="border-collapse:collapse;font-size:12px;white-space:nowrap">';
+      h += '<tr style="color:#8b949e;border-bottom:1px solid #30363d">'
+        + '<th style="text-align:left;padding:6px 8px">Скважина</th>'
+        + '<th style="text-align:left;padding:6px 8px">Площадь</th>'
+        + '<th style="text-align:left;padding:6px 8px">Вид исследования</th>'
+        + '<th style="padding:6px 8px">Интервал, м</th>'
+        + '<th style="text-align:left;padding:6px 8px">Статус</th>'
+        + '<th style="text-align:left;padding:6px 8px">Найденный рейс</th></tr>';
+      d.entries.forEach(function (e) {
+        var st = MATCH_LABEL[e.match_status] || { text: e.match_status, color: '#8b949e', bg: 'transparent' };
+        var interval = (e.depth_top != null && e.depth_bottom != null) ? (e.depth_top + '–' + e.depth_bottom) : '—';
+        var matchInfo = '—';
+        if (e.matched_well_id != null) {
+          matchInfo = 'скв. #' + e.matched_well_id
+            + (e.matched_run_id != null ? ', рейс #' + e.matched_run_id : '')
+            + (e.matched_digitization_status ? ' (' + esc(e.matched_digitization_status) + ')' : '');
+        }
+        h += '<tr style="border-bottom:1px solid #21262d">'
+          + '<td style="padding:5px 8px;color:#c9d1d9">' + esc(e.well_name) + '</td>'
+          + '<td style="padding:5px 8px;color:#8b949e">' + esc(e.field_name) + '</td>'
+          + '<td style="padding:5px 8px;color:#8b949e">' + esc(e.study_type) + '</td>'
+          + '<td style="padding:5px 8px;text-align:right;color:#8b949e">' + esc(interval) + '</td>'
+          + '<td style="padding:5px 8px"><span style="padding:2px 8px;border-radius:10px;background:' + st.bg + ';color:' + st.color + '">'
+          + esc(st.text) + '</span></td>'
+          + '<td style="padding:5px 8px;color:#8b949e">' + esc(matchInfo) + '</td>'
+          + '</tr>';
+      });
+      h += '</table></div>';
+      host.innerHTML = h;
     }
   };
 })();

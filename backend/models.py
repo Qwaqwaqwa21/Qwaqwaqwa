@@ -276,6 +276,25 @@ class PetroParams(Base):
     well = relationship("Well")
 
 
+class StudyRegistryEntry(Base):
+    """Одна строка внешнего Excel-реестра "опись исследований" — что должно
+    существовать по скважине/площади, независимо от того, оцифровано ли это
+    уже и загружено в GeoLog. У реестра и у LAS/скан-данных нет общего UWI,
+    поэтому сверка с фактическими Well/LogRun идёт по имени скважины,
+    площади и интервалу глубин (см. backend/routers/study_registry.py)."""
+    __tablename__ = "study_registry"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False)
+    well_name = Column(String(200), nullable=False)
+    field_name = Column(String(200), default="")
+    study_type = Column(String(200), default="")
+    depth_top = Column(Float, nullable=True)
+    depth_bottom = Column(Float, nullable=True)
+    source_row = Column(Text, default="")   # исходная строка Excel — для трассировки
+    imported_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+
 class LogRunDepthShift(Base):
     __tablename__ = "log_run_depth_shifts"
 

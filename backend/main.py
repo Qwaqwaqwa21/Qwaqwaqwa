@@ -30,6 +30,7 @@ try:
     from routers.inclinometry import _find_survey as _find_deviation_survey
     from routers.maps import router as maps_router
     from routers.duplicates import router as duplicates_router
+    from routers.study_registry import router as study_registry_router
 except ImportError:
     from backend.routers.qc import router as qc_router
     from backend.routers.qc import _run_advanced_qc
@@ -43,6 +44,7 @@ except ImportError:
     from backend.routers.inclinometry import _find_survey as _find_deviation_survey
     from backend.routers.maps import router as maps_router
     from backend.routers.duplicates import router as duplicates_router
+    from backend.routers.study_registry import router as study_registry_router
 
 
 class SafeJSONResponse(JSONResponse):
@@ -546,6 +548,7 @@ app.include_router(research_router)
 app.include_router(inkl_router)
 app.include_router(maps_router)
 app.include_router(duplicates_router)
+app.include_router(study_registry_router)
 
 JOB_EXECUTOR = ThreadPoolExecutor(max_workers=2)
 JOBS = {}
