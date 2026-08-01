@@ -190,6 +190,15 @@ class LogRenderer {
         this.requestRender();
     }
 
+    // Metric log scale (1:250, 1:500, 1:1000, ...): denominator N means
+    // 1 screen cm = N cm of real depth. Assumes 96 DPI (~37.8 px/cm).
+    setScaleRatio(denominator) {
+        this.scaleDenominator = denominator;
+        const range_m = (this.height * 2.54 / 96 / 100) * denominator;
+        this.setView(this.viewStart, this.viewStart + range_m);
+        this._updateDepthInputs();
+    }
+
     // ─── Mouse Events ───────────────────────────────────────
     _onMouseMove(e) {
         const rect = this.canvas.getBoundingClientRect();
@@ -259,17 +268,23 @@ class LogRenderer {
 
     _onWheel(e) {
         e.preventDefault();
+        if (!this.depthData.length) return;
+        const factor = e.deltaY > 0 ? 1.15 : 1 / 1.15;
+        const anchor = this.hoverDepth > 0 ? this.hoverDepth : (this.viewStart + this.viewStop) / 2;
         const range = this.viewStop - this.viewStart;
-        const delta = e.deltaY > 0 ? range * 0.1 : -range * 0.1;
-        const newStart = this.viewStart + delta;
-        const newStop = this.viewStop + delta;
-        if (newStart >= this.depthData[0] && newStop <= this.depthData[this.depthData.length - 1]) {
-            this.viewStart = newStart;
-            this.viewStop = newStop;
-            this.requestRender();
-            this._updateDepthInputs();
-            if (typeof this.onViewChanged === 'function') this.onViewChanged(this.viewStart, this.viewStop);
-        }
+        const minRange = 1;
+        const maxRange = this.depthData[this.depthData.length - 1] - this.depthData[0];
+        const newRange = Math.min(Math.max(range * factor, minRange), maxRange);
+        const ratio = (anchor - this.viewStart) / range;   // keep the depth under the cursor stationary
+        let newStart = anchor - newRange * ratio;
+        let newStop = newStart + newRange;
+        if (newStart < this.depthData[0]) { newStart = this.depthData[0]; newStop = newStart + newRange; }
+        if (newStop > this.depthData[this.depthData.length - 1]) { newStop = this.depthData[this.depthData.length - 1]; newStart = newStop - newRange; }
+        this.viewStart = newStart;
+        this.viewStop = newStop;
+        this.requestRender();
+        this._updateDepthInputs();
+        if (typeof this.onViewChanged === 'function') this.onViewChanged(this.viewStart, this.viewStop);
     }
 
     _dragStart = null;

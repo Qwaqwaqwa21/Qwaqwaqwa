@@ -346,7 +346,7 @@ class GeoLogApp {
         if (scaleSelect) {
             scaleSelect.addEventListener('change', () => {
                 const scale = parseInt(scaleSelect.value);
-                this.renderer.scale = scale;
+                this.renderer.setScaleRatio(scale);
                 localStorage.setItem('geolog_scale', String(scale));
                 this._loadCurveData();
             });
@@ -652,7 +652,7 @@ class GeoLogApp {
         if (Number.isFinite(savedScale)) {
             const scaleSelect = document.getElementById('scaleSelect');
             if (scaleSelect) scaleSelect.value = String(savedScale);
-            if (this.renderer) this.renderer.scale = savedScale;
+            if (this.renderer) this.renderer.scaleDenominator = savedScale;
         }
 
         const top = parseFloat(localStorage.getItem('geolog_depth_top') || '');
@@ -1028,6 +1028,7 @@ class GeoLogApp {
                 await this._loadCurveData();
                 await this._loadFormationTops();
                 await this._loadZones();
+                this.jumpToData({ silent: true });   // crop straight to where the curves actually have data
             } else {
                 this.currentLogRun = null;
                 this._populateLogRunSelector([], null);
@@ -1075,6 +1076,7 @@ class GeoLogApp {
             await this._loadCurveData();
             await this._loadFormationTops();
             await this._loadZones();
+            this.jumpToData({ silent: true });   // crop straight to where the curves actually have data
             this._renderWellHeader(well);
             if (this.currentLogRun) localStorage.setItem('geolog_last_run', logRunId);
         } catch (e) { console.error('Failed to select log run:', e); }
@@ -1175,7 +1177,7 @@ class GeoLogApp {
      * whole borehole (STRT/STOP) while most curves only carry data over a
      * fraction of it, so the default view can look empty at first glance.
      */
-    jumpToData() {
+    jumpToData({ silent = false } = {}) {
         if (!this.renderer) return;
         const DEPTH_MNEMONICS = new Set(['MD', 'DEPT', 'DEPTH', 'TVD']);
         const depth = this.renderer.depthData || [];
@@ -1183,7 +1185,7 @@ class GeoLogApp {
         const dataArrays = Object.entries(curveData)
             .filter(([mn]) => !DEPTH_MNEMONICS.has((mn || '').toUpperCase()))
             .map(([, arr]) => arr);
-        if (!dataArrays.length) { GeoToast.warn('Нет данных ни по одной кривой'); return; }
+        if (!dataArrays.length) { if (!silent) GeoToast.warn('Нет данных ни по одной кривой'); return; }
 
         // A run declared over the whole borehole often has one broadly-sparse
         // curve (e.g. a gas log) spanning almost the full depth while the
@@ -1224,7 +1226,7 @@ class GeoLogApp {
                 if (hasValue) { if (start === null) start = depth[i]; stop = depth[i]; }
             }
         }
-        if (start === null) { GeoToast.warn('Нет данных ни по одной кривой'); return; }
+        if (start === null) { if (!silent) GeoToast.warn('Нет данных ни по одной кривой'); return; }
 
         const topInput = document.getElementById('depthTop');
         const bottomInput = document.getElementById('depthBottom');
@@ -1258,8 +1260,8 @@ class GeoLogApp {
         this._autoFitCurveScales(curveData);
         this.renderer.setData(depth, curveData, this.formationTops, this.curveConfig);
         this.renderer.setBadHoleIntervals([]);
-        const scale = parseInt(document.getElementById('scaleSelect')?.value || '100', 10);
-        this.renderer.scale = scale;
+        const scale = parseInt(document.getElementById('scaleSelect')?.value || '500', 10);
+        this.renderer.scaleDenominator = scale;
         this._renderCurvePanel(curves);
         this._populateCurveSelectors(curves);
         this._populateEditCurveSelector(curves);
