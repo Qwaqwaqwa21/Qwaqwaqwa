@@ -79,6 +79,10 @@ class LogRun(Base):
     digitization_notes = Column(Text, default="")
     reviewed_by = Column(String(120), default="")
     reviewed_at = Column(DateTime, nullable=True)
+    # Source scan (PDF or scanned image) the digitized LAS should be reviewed against.
+    scan_binary = Column(LargeBinary, nullable=True)
+    scan_mime = Column(String(100), nullable=True)
+    scan_filename = Column(String(255), nullable=True)
 
     well = relationship("Well", back_populates="log_runs")
     curve_data = relationship("CurveData", back_populates="log_run", cascade="all, delete-orphan")

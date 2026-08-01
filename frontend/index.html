@@ -174,6 +174,8 @@
                     <select id="logRunSelect" class="depth-select" style="min-width:200px" title="Select active log run">
                         <option value="">Select log run…</option>
                     </select>
+                    <button class="btn-sm" onclick="app.uploadLogRunScan()" title="Upload the original scan (PDF/image) to review this log run against" aria-label="Upload scan">📎 Upload Scan</button>
+                    <button class="btn-sm" id="viewScanBtn" style="display:none" onclick="app.viewLogRunScan()" title="Open the original scan in a new tab" aria-label="View scan">🔍 View Scan</button>
                     <button class="btn-sm" onclick="app.reviewCurrentLogRun('accepted')" title="Accept current log run (matches original scan)" aria-label="Accept log run">✅ Accept</button>
                     <button class="btn-sm" onclick="app.reviewCurrentLogRun('rejected')" title="Reject current log run (needs re-digitization)" aria-label="Reject log run">❌ Reject</button>
                 </div>

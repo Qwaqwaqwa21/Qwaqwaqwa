@@ -1096,6 +1096,7 @@ class GeoLogApp {
             }
 
             this._renderWellHeader(well);
+            this._updateScanControls();
             localStorage.setItem('geolog_last_well', wellId);
             this._updateWorkflowStrip();
 
@@ -1139,6 +1140,7 @@ class GeoLogApp {
             await this._loadZones();
             this.jumpToData({ silent: true });   // crop straight to where the curves actually have data
             this._renderWellHeader(well);
+            this._updateScanControls();
             if (this.currentLogRun) localStorage.setItem('geolog_last_run', logRunId);
         } catch (e) { console.error('Failed to select log run:', e); }
     }
@@ -1190,8 +1192,76 @@ class GeoLogApp {
                 this.currentWell.log_runs = this.currentWell.log_runs.map(r => r.id === updated.id ? { ...r, ...updated } : r);
                 this._populateLogRunSelector(this.currentWell.log_runs, this.currentLogRun.id);
             }
+            this._updateScanControls();
             GeoToast.success(status === 'accepted' ? 'Log run accepted' : 'Log run rejected');
         } catch (e) { GeoToast.error('Failed to record review: ' + e.message); }
+    }
+
+    _updateScanControls() {
+        const btn = document.getElementById('viewScanBtn');
+        if (!btn) return;
+        btn.style.display = this.currentLogRun?.has_scan ? '' : 'none';
+    }
+
+    // Opens the file dialog synchronously (no await first) so the browser keeps
+    // the user-gesture, mirroring _uploadLogFormatForWell.
+    uploadLogRunScan() {
+        if (!this.currentLogRun?.id) { GeoToast.error('No log run selected'); return; }
+        const targetLogRunId = this.currentLogRun.id;
+
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = '.pdf,application/pdf,image/*';
+        input.style.display = 'none';
+        document.body.appendChild(input);
+        const cleanupInput = () => { if (input.parentNode) input.remove(); };
+        input.addEventListener('cancel', cleanupInput);
+        window.addEventListener('focus', () => {
+            setTimeout(() => { if (!input.files || !input.files.length) cleanupInput(); }, 400);
+        }, { once: true });
+        input.onchange = async () => {
+            const file = input.files[0];
+            cleanupInput();
+            if (!file) return;
+
+            const formData = new FormData();
+            formData.append('file', file);
+            GeoLoading.show(`Uploading ${file.name}...`);
+            try {
+                const resp = await fetch(`/api/log-runs/${targetLogRunId}/scan`, {
+                    method: 'POST',
+                    headers: { 'X-User-Role': this.currentRole || 'viewer' },
+                    body: formData,
+                });
+                if (!resp.ok) {
+                    let detail = `Upload failed: ${resp.status}`;
+                    try { const j = await resp.json(); detail = j.detail || detail; } catch {}
+                    if (resp.status === 403) detail += ' — switch the role selector (top bar) to Interpreter or Admin to upload.';
+                    throw new Error(detail);
+                }
+                const result = await resp.json();
+                GeoToast.success(`Uploaded scan ${result.scan_filename}`);
+                if (this.currentWell?.id) {
+                    const well = await this._api(`/wells/${this.currentWell.id}`);
+                    this.currentWell = well;
+                    const chosen = (well.log_runs || []).find(r => r.id === targetLogRunId);
+                    if (chosen) this.currentLogRun = { ...this.currentLogRun, ...chosen };
+                    this._populateLogRunSelector(well.log_runs || [], this.currentLogRun?.id);
+                }
+                this._updateScanControls();
+            } catch (e) {
+                GeoToast.error('Scan upload failed: ' + e.message);
+            } finally {
+                GeoLoading.hide();
+            }
+        };
+        input.click();
+    }
+
+    viewLogRunScan() {
+        if (!this.currentLogRun?.id) { GeoToast.error('No log run selected'); return; }
+        if (!this.currentLogRun?.has_scan) { GeoToast.warn('No scan uploaded for this log run'); return; }
+        window.open(`/api/log-runs/${this.currentLogRun.id}/scan`, '_blank');
     }
 
     _formatRunVersion(version, filename = '') {

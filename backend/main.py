@@ -205,6 +205,26 @@ def _ensure_project_logo_columns():
 _ensure_project_logo_columns()
 
 
+def _ensure_log_run_scan_columns():
+    """Add log_runs.scan_binary/scan_mime/scan_filename if missing (idempotent)."""
+    with engine.begin() as conn:
+        try:
+            conn.execute(text("ALTER TABLE log_runs ADD COLUMN scan_binary BLOB;"))
+        except Exception:
+            pass
+        try:
+            conn.execute(text("ALTER TABLE log_runs ADD COLUMN scan_mime VARCHAR(100);"))
+        except Exception:
+            pass
+        try:
+            conn.execute(text("ALTER TABLE log_runs ADD COLUMN scan_filename VARCHAR(255);"))
+        except Exception:
+            pass
+
+
+_ensure_log_run_scan_columns()
+
+
 def _normalize_depth_unit(unit: str) -> str:
     """Map a raw LAS/DLIS/LIS index-curve unit string to 'M' or 'FT'."""
     u = (unit or "").strip().upper()
@@ -1093,6 +1113,14 @@ def _project_dict(p: Project) -> dict:
     return d
 
 
+def _log_run_dict(lr: "LogRun") -> dict:
+    """Serialize a LogRun row, replacing the raw scan bytes with metadata
+    (scan_binary is a BLOB and isn't JSON-serializable as-is)."""
+    d = {c.name: getattr(lr, c.name) for c in LogRun.__table__.columns if c.name != "scan_binary"}
+    d["has_scan"] = lr.scan_binary is not None
+    return d
+
+
 @app.get("/api/projects/")
 def list_projects(db: Session = Depends(get_db)):
     projects = db.query(Project).all()
@@ -1181,7 +1209,7 @@ def get_well(wid: int, db: Session = Depends(get_db)):
     if not w:
         raise HTTPException(404, "Well not found")
     d = {c.name: getattr(w, c.name) for c in Well.__table__.columns}
-    d["log_runs"] = [{c.name: getattr(lr, c.name) for c in LogRun.__table__.columns} for lr in w.log_runs]
+    d["log_runs"] = [_log_run_dict(lr) for lr in w.log_runs]
     d["formation_tops"] = [{c.name: getattr(ft, c.name) for c in FormationTop.__table__.columns} for ft in w.formation_tops]
     return d
 
@@ -1210,6 +1238,7 @@ def update_well(wid: int, data: dict, db: Session = Depends(get_db)):
 # ─── LAS Upload ───────────────────────────────────────────────
 MAX_UPLOAD_SIZE = 50 * 1024 * 1024  # 50MB
 MAX_LOGO_UPLOAD_SIZE = 2 * 1024 * 1024  # 2MB — project logos are small images
+MAX_SCAN_UPLOAD_SIZE = 20 * 1024 * 1024  # 20MB — multi-page PDF/TIFF scans, bigger than a logo, capped below a full LAS upload
 
 
 def _persist_non_las_runs(db: Session, well: Well, filename: str, parsed, source_format: str):
@@ -1499,7 +1528,48 @@ def review_log_run(lr_id: int, data: dict = None, db: Session = Depends(get_db),
     _log_audit(db, "log_run_review", "log_run", entity_id=lr_id, well_id=lr.well_id,
                details=f"status={status};reviewer={reviewer}")
 
-    return {c.name: getattr(lr, c.name) for c in LogRun.__table__.columns}
+    return _log_run_dict(lr)
+
+
+@app.post("/api/log-runs/{lr_id}/scan", status_code=201)
+async def upload_log_run_scan(lr_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """Upload/replace the source scan (PDF or scanned image) a reviewer checks
+    the digitized LAS against before accepting/rejecting it."""
+    lr = db.query(LogRun).filter(LogRun.id == lr_id).first()
+    if not lr:
+        raise HTTPException(404, "Log run not found")
+
+    content_type = file.content_type or ""
+    if content_type != "application/pdf" and not content_type.startswith("image/"):
+        raise HTTPException(400, "File must be a PDF or an image")
+
+    content = await file.read()
+    if len(content) == 0:
+        raise HTTPException(400, "Empty file")
+    if len(content) > MAX_SCAN_UPLOAD_SIZE:
+        raise HTTPException(413, f"File too large (max {MAX_SCAN_UPLOAD_SIZE // 1024 // 1024}MB)")
+
+    lr.scan_binary = content
+    lr.scan_mime = content_type
+    lr.scan_filename = file.filename or "scan"
+    db.commit()
+
+    _log_audit(db, "log_run_scan_upload", "log_run", entity_id=lr_id, well_id=lr.well_id,
+               details=f"filename={lr.scan_filename}")
+
+    return {"status": "ok", "scan_mime": lr.scan_mime, "scan_filename": lr.scan_filename, "size": len(content)}
+
+
+@app.get("/api/log-runs/{lr_id}/scan")
+def get_log_run_scan(lr_id: int, db: Session = Depends(get_db)):
+    """Return the stored source scan bytes so a reviewer can view it alongside the app."""
+    lr = db.query(LogRun).filter(LogRun.id == lr_id).first()
+    if not lr:
+        raise HTTPException(404, "Log run not found")
+    if not lr.scan_binary:
+        raise HTTPException(404, "No scan set for this log run")
+    headers = {"Content-Disposition": f'inline; filename="{lr.scan_filename or "scan"}"'}
+    return Response(content=lr.scan_binary, media_type=lr.scan_mime or "application/octet-stream", headers=headers)
 
 
 # ─── Log Run Diff (LAS comparison) ─────────────────────────────
@@ -2106,7 +2176,7 @@ def export_package(wid: int, db: Session = Depends(get_db)):
             for t in db.query(FormationTop).filter(FormationTop.well_id == wid).order_by(FormationTop.depth).all()]
     zones = [{c.name: getattr(z, c.name) for c in Zone.__table__.columns}
              for z in db.query(Zone).filter(Zone.well_id == wid).order_by(Zone.sort_order.asc()).all()]
-    runs = [{c.name: getattr(lr, c.name) for c in LogRun.__table__.columns}
+    runs = [_log_run_dict(lr)
             for lr in db.query(LogRun).filter(LogRun.well_id == wid).all()]
     return {"well": well_dict, "formation_tops": tops, "zones": zones, "log_runs": runs}
 
