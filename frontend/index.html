@@ -255,6 +255,9 @@
                 <button class="btn-sm" id="btnLithTrack" onclick="app.toggleLithTrack()" title="Toggle lithology track">
                     <i data-lucide="paintbrush"></i> Lithology
                 </button>
+                <button class="btn-sm" id="btnJumpToData" title="Zoom to the depth interval where the loaded curves actually have data">
+                    <i data-lucide="crosshair"></i> К данным
+                </button>
                 <button class="btn-sm" onclick="document.getElementById('bottomPanels').style.display = document.getElementById('bottomPanels').style.display === 'none' ? 'grid' : 'none'" title="Toggle details panels">
                     <i data-lucide="panel-bottom"></i> Details
                 </button>
@@ -514,6 +517,13 @@
 
         <!-- Statistics Panel -->
         <div id="statisticsPanel" class="panel" style="display:none">
+            <div class="panel-toolbar">
+                <label style="display:flex;align-items:center;gap:6px">
+                    <input id="statsPerWellToggle" type="checkbox" onchange="app._renderStatistics()">
+                    По скважинам отдельно (линией)
+                </label>
+                <span class="toolbar-hint">Сравнить распределение каждой кривой по всем скважинам проекта</span>
+            </div>
             <div id="statsContent" class="stats-container">
                 <p style="color:#8b949e">Load a well to view curve statistics.</p>
             </div>

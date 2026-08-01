@@ -368,6 +368,7 @@ class GeoLogApp {
             topInput.addEventListener('change', applyDepth);
             bottomInput.addEventListener('change', applyDepth);
         }
+        document.getElementById('btnJumpToData')?.addEventListener('click', () => this.jumpToData());
 
         // Search
         const searchInput = document.getElementById('wellSearch');
@@ -445,8 +446,8 @@ class GeoLogApp {
             if (!Number.isFinite(depth) || depth < 0) return;
             this.addFormationTopAtDepth(depth);
         });
-        document.getElementById('corrWellA')?.addEventListener('change', () => { this._corrLoadedKey = null; this.renderCorrelation(); });
-        document.getElementById('corrWellB')?.addEventListener('change', () => { this._corrLoadedKey = null; this.renderCorrelation(); });
+        document.getElementById('corrWellA')?.addEventListener('change', () => { this._corrLoadedKey = null; this._populateCorrelationCurveOptions().then(() => this.renderCorrelation()); });
+        document.getElementById('corrWellB')?.addEventListener('change', () => { this._corrLoadedKey = null; this._populateCorrelationCurveOptions().then(() => this.renderCorrelation()); });
         document.getElementById('corrShowTops')?.addEventListener('click', () => this.toggleCorrelationTops());
 
         document.getElementById('editModeToggle')?.addEventListener('click', () => this.toggleEditMode());
@@ -583,7 +584,7 @@ class GeoLogApp {
         if (view === 'qc') this._renderQC();
         if (view === 'correlation') {
             this._renderCorrelationMarkerTable();
-            this.renderCorrelation();
+            this._populateCorrelationCurveOptions().then(() => this.renderCorrelation());
         }
         if (view === 'statistics') this._renderStatistics();
         if (view === 'sensitivity') { /* auto-loads on click */ }
@@ -1153,6 +1154,41 @@ class GeoLogApp {
         return data;
     }
 
+    /**
+     * Zooms the viewer to the depth interval where the loaded curves
+     * actually have values. Sparse РИГИС runs are often declared over the
+     * whole borehole (STRT/STOP) while most curves only carry data over a
+     * fraction of it, so the default view can look empty at first glance.
+     */
+    jumpToData() {
+        if (!this.renderer) return;
+        const DEPTH_MNEMONICS = new Set(['MD', 'DEPT', 'DEPTH', 'TVD']);
+        const depth = this.renderer.depthData || [];
+        const curveData = this.renderer.curveData || {};
+        const dataArrays = Object.entries(curveData)
+            .filter(([mn]) => !DEPTH_MNEMONICS.has((mn || '').toUpperCase()))
+            .map(([, arr]) => arr);
+        let start = null, stop = null;
+        for (let i = 0; i < depth.length; i++) {
+            const hasValue = dataArrays.some(arr => {
+                const v = arr?.[i];
+                return v !== null && v !== undefined && !Number.isNaN(v);
+            });
+            if (hasValue) {
+                if (start === null) start = depth[i];
+                stop = depth[i];
+            }
+        }
+        if (start === null) { GeoToast.warn('Нет данных ни по одной кривой'); return; }
+        const topInput = document.getElementById('depthTop');
+        const bottomInput = document.getElementById('depthBottom');
+        if (topInput) topInput.value = start;
+        if (bottomInput) bottomInput.value = stop;
+        this.renderer.setView(start, stop);
+        localStorage.setItem('geolog_depth_top', String(start));
+        localStorage.setItem('geolog_depth_bottom', String(stop));
+    }
+
     _applyCurveDataToRenderer(data, curves) {
         const depth = data.DEPTH || [];
         const curveData = {};
@@ -1520,7 +1556,8 @@ class GeoLogApp {
         const corr = document.getElementById('corrCurve');
         if (!cpX || !cpY || !corr) return;
 
-        const uniqueMnemonics = [...new Set(curves.map(c => (c.mnemonic || '').toUpperCase()).filter(Boolean))];
+        const DEPTH_MNEMONICS = new Set(['MD', 'DEPT', 'DEPTH', 'TVD']);
+        const uniqueMnemonics = [...new Set(curves.map(c => (c.mnemonic || '').toUpperCase()).filter(m => m && !DEPTH_MNEMONICS.has(m)))];
         if (!uniqueMnemonics.length) return;
 
         const toOpt = (mn) => `<option value="${mn}">${mn} (${this._curveFamilyLabel(mn)})</option>`;
@@ -1533,9 +1570,12 @@ class GeoLogApp {
         cpY.innerHTML = options;
         corr.innerHTML = options;
 
-        cpX.value = uniqueMnemonics.includes(keepX) ? keepX : (uniqueMnemonics.includes('RHOB') ? 'RHOB' : uniqueMnemonics[0]);
-        cpY.value = uniqueMnemonics.includes(keepY) ? keepY : (uniqueMnemonics.includes('NPHI') ? 'NPHI' : uniqueMnemonics[0]);
-        corr.value = uniqueMnemonics.includes(keepC) ? keepC : (uniqueMnemonics.includes('GR') ? 'GR' : uniqueMnemonics[0]);
+        // Depth curve is filtered out above; prefer a Western default, then
+        // its РИГИС equivalent, falling back to whatever curve is first.
+        const pick = (preferred, val) => uniqueMnemonics.includes(val) ? val : (preferred.find(p => uniqueMnemonics.includes(p)) || uniqueMnemonics[0]);
+        cpX.value = pick(['RHOB', 'GGKP', 'NGK'], keepX);
+        cpY.value = pick(['NPHI', 'NGK', 'GGKP'], keepY);
+        corr.value = pick(['GR', 'GK', 'KS'], keepC);
     }
 
     _populateEditCurveSelector(curves = []) {
@@ -1722,6 +1762,29 @@ class GeoLogApp {
             if (same) return same;
         }
         return well.log_runs[0];
+    }
+
+    async _populateCorrelationCurveOptions() {
+        const corr = document.getElementById('corrCurve');
+        const { wellAId, wellBId } = this._currentCorrPair();
+        if (!corr || !wellAId || !wellBId) return;
+        try {
+            const [wa, wb] = await Promise.all([this._api(`/wells/${wellAId}`), this._api(`/wells/${wellBId}`)]);
+            const runA = this._activeLogRunForWell(wa);
+            const runB = this._activeLogRunForWell(wb);
+            const curvesOf = (run) => { try { return JSON.parse(run?.curves_json || '[]'); } catch { return []; } };
+            const DEPTH_MNEMONICS = new Set(['MD', 'DEPT', 'DEPTH', 'TVD']);
+            const uniqueMnemonics = [...new Set([...curvesOf(runA), ...curvesOf(runB)]
+                .map(c => (c.mnemonic || '').toUpperCase())
+                .filter(m => m && !DEPTH_MNEMONICS.has(m)))];
+            if (!uniqueMnemonics.length) return;
+            const keepC = corr.value;
+            corr.innerHTML = uniqueMnemonics.map(mn => `<option value="${mn}">${mn} (${this._curveFamilyLabel(mn)})</option>`).join('');
+            const preferred = ['GR', 'GK', 'KS'];
+            corr.value = uniqueMnemonics.includes(keepC) ? keepC : (preferred.find(p => uniqueMnemonics.includes(p)) || uniqueMnemonics[0]);
+        } catch (e) {
+            console.error('Failed to populate correlation curve options:', e);
+        }
     }
 
     async renderCorrelation() {
@@ -4220,6 +4283,10 @@ class GeoLogApp {
         if (!this.renderer) return;
         const panel = document.getElementById('statsContent');
         if (!panel) return;
+        if (document.getElementById('statsPerWellToggle')?.checked) {
+            this._renderStatisticsMultiWell();
+            return;
+        }
 
         let html = '<div class="stats-table">';
         html += '<div class="stats-header"><span>Curve</span><span>Unit</span><span>Min</span><span>Max</span><span>Mean</span><span>Median</span><span>Std</span><span>Count</span><span>Null%</span><span>Skewness</span></div>';
@@ -4324,6 +4391,125 @@ class GeoLogApp {
         ctx.textAlign = 'right';
         ctx.fillText(maxBin.toString(), margin.left - 4, margin.top + 10);
         ctx.fillText('0', margin.left - 4, margin.top + ph);
+    }
+
+    // Per-well curve distributions, overlaid as frequency-polygon lines so
+    // multiple wells can be compared on one chart (bars would just occlude
+    // each other). Each well's histogram only ever sees its own valid
+    // (non-null) samples, i.e. the depth window that method actually
+    // covers in that well.
+    static STATS_WELL_PALETTE = ['#58a6ff', '#f85149', '#3fb950', '#d29922', '#a371f7', '#39c5cf', '#ff7b72', '#e3b341'];
+
+    async _renderStatisticsMultiWell() {
+        const panel = document.getElementById('statsContent');
+        if (!panel) return;
+        panel.innerHTML = '<p style="color:#8b949e">Loading per-well distributions…</p>';
+
+        const DEPTH_MNEMONICS = new Set(['MD', 'DEPT', 'DEPTH', 'TVD']);
+        const wellsWithLogs = (this.wells || []).filter(w => (w.log_run_count || 0) > 0);
+        if (!wellsWithLogs.length) { panel.innerHTML = '<p style="color:#8b949e">No wells with log data.</p>'; return; }
+
+        const perWellData = [];
+        for (let i = 0; i < wellsWithLogs.length; i++) {
+            const w = wellsWithLogs[i];
+            try {
+                const full = await this._api(`/wells/${w.id}`);
+                const run = this._activeLogRunForWell(full);
+                if (!run) continue;
+                let curveDefs = [];
+                try { curveDefs = JSON.parse(run.curves_json || '[]'); } catch { /* ignore */ }
+                const mnemonics = [...new Set(curveDefs.map(c => (c.mnemonic || '').toUpperCase())
+                    .filter(m => m && !DEPTH_MNEMONICS.has(m)))];
+                if (!mnemonics.length) continue;
+                const data = await this._api(`/log-runs/${run.id}/data`, {
+                    method: 'POST',
+                    body: JSON.stringify({ curve_mnemonics: mnemonics, start_depth: run.start_depth, stop_depth: run.stop_depth }),
+                });
+                const curves = {};
+                for (const mn of mnemonics) {
+                    const arr = (data[mn] || []).filter(v => v !== null && v !== undefined && !Number.isNaN(v));
+                    if (arr.length > 10) curves[mn] = arr;
+                }
+                perWellData.push({ well: w, color: GeoLogApp.STATS_WELL_PALETTE[i % GeoLogApp.STATS_WELL_PALETTE.length], curves });
+            } catch (e) {
+                console.error('Multi-well statistics fetch failed for', w.name, e);
+            }
+        }
+
+        const allMnemonics = [...new Set(perWellData.flatMap(d => Object.keys(d.curves)))].sort();
+        if (!allMnemonics.length) { panel.innerHTML = '<p style="color:#8b949e">No curve data across wells.</p>'; return; }
+
+        let html = '<div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:12px">';
+        for (const d of perWellData) {
+            if (!Object.keys(d.curves).length) continue;
+            html += `<span style="color:${d.color};font-weight:600">● ${d.well.name}</span>`;
+        }
+        html += '</div>';
+        html += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(380px,1fr));gap:12px">';
+        for (const mn of allMnemonics) {
+            html += `<div style="background:#161b22;border:1px solid #30363d;border-radius:8px;padding:12px">
+                <div style="color:#c9d1d9;font-weight:600;margin-bottom:6px">${mn}</div>
+                <canvas id="mstat_${mn}" width="360" height="140"></canvas>
+            </div>`;
+        }
+        html += '</div>';
+        panel.innerHTML = html;
+
+        for (const mn of allMnemonics) {
+            const series = perWellData.filter(d => d.curves[mn]).map(d => ({ data: d.curves[mn], color: d.color }));
+            this._drawMultiLineHistogram(`mstat_${mn}`, series);
+        }
+    }
+
+    _drawMultiLineHistogram(canvasId, series) {
+        const canvas = document.getElementById(canvasId);
+        if (!canvas || !series.length) return;
+        const ctx = canvas.getContext('2d');
+        const w = canvas.width, ht = canvas.height;
+        const margin = { top: 8, right: 12, bottom: 22, left: 8 };
+        const pw = w - margin.left - margin.right;
+        const ph = ht - margin.top - margin.bottom;
+        ctx.fillStyle = '#0d1117';
+        ctx.fillRect(0, 0, w, ht);
+
+        const sortedAll = series.flatMap(s => s.data).sort((a, b) => a - b);
+        const min = sortedAll[Math.floor(sortedAll.length * 0.01)];
+        const max = sortedAll[Math.floor(sortedAll.length * 0.99)];
+        if (!(max > min)) return;
+        const nBins = 25;
+        const binW = (max - min) / nBins;
+
+        // Normalize each well's bins by its own sample count so wells with
+        // very different numbers of valid points still compare fairly.
+        let maxFreq = 0;
+        const seriesBins = series.map(s => {
+            const bins = new Array(nBins).fill(0);
+            for (const v of s.data) {
+                if (v < min || v > max) continue;
+                bins[Math.min(nBins - 1, Math.floor((v - min) / binW))]++;
+            }
+            const norm = bins.map(c => c / s.data.length);
+            maxFreq = Math.max(maxFreq, ...norm);
+            return { ...s, bins: norm };
+        });
+
+        for (const s of seriesBins) {
+            ctx.strokeStyle = s.color;
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            for (let i = 0; i < nBins; i++) {
+                const x = margin.left + (i + 0.5) * (pw / nBins);
+                const y = margin.top + ph - (s.bins[i] / (maxFreq || 1)) * ph;
+                if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+            }
+            ctx.stroke();
+        }
+
+        ctx.fillStyle = '#8b949e';
+        ctx.font = '9px IBM Plex Mono';
+        ctx.textAlign = 'center';
+        ctx.fillText(min.toFixed(2), margin.left + 10, ht - 4);
+        ctx.fillText(max.toFixed(2), w - margin.right - 10, ht - 4);
     }
 
     // ─── Sensitivity Analysis ────────────────────────────────
