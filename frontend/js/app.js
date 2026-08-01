@@ -111,8 +111,6 @@ class GeoLogApp {
         this.corrSelectedTop = null;
         this._petroCache = null;
         this.permResults = null;
-        this.zoneUndoStack = [];
-        this.zoneRedoStack = [];
         this._undoStack = [];
         this._redoStack = [];
         this._maxUndoEntries = 50;
@@ -209,6 +207,38 @@ class GeoLogApp {
                     await this.loadAnnotations();
                     break;
                 }
+                case 'delete_top': {
+                    const payload = entry?.data?.payload;
+                    const wellId = entry?.data?.well_id;
+                    if (!payload || !wellId) throw new Error('Missing top payload for undo');
+                    const created = await this._api(`/wells/${wellId}/tops`, {
+                        method: 'POST',
+                        body: JSON.stringify(payload),
+                    });
+                    if (created?.id) entry.data.top_id = created.id;
+                    await this._loadFormationTops();
+                    break;
+                }
+                case 'edit_top': {
+                    const topId = entry?.data?.top_id;
+                    const before = entry?.data?.before;
+                    if (!topId || !before) throw new Error('Missing top data for undo');
+                    await this._api(`/tops/${topId}`, { method: 'PUT', body: JSON.stringify(before) });
+                    await this._loadFormationTops();
+                    break;
+                }
+                case 'delete_annotation': {
+                    const payload = entry?.data?.payload;
+                    const wellId = entry?.data?.well_id;
+                    if (!payload || !wellId) throw new Error('Missing annotation payload for undo');
+                    const created = await this._api(`/wells/${wellId}/annotations`, {
+                        method: 'POST',
+                        body: JSON.stringify(payload),
+                    });
+                    if (created?.id) entry.data.annotation_id = created.id;
+                    await this.loadAnnotations();
+                    break;
+                }
                 case 'add_zone': {
                     if (!this.currentWell) throw new Error('No active well for zone undo');
                     const zonesBefore = Array.isArray(entry?.data?.zones_before) ? entry.data.zones_before : null;
@@ -266,6 +296,28 @@ class GeoLogApp {
                         body: JSON.stringify(payload),
                     });
                     if (created?.id) entry.data.annotation_id = created.id;
+                    await this.loadAnnotations();
+                    break;
+                }
+                case 'delete_top': {
+                    const topId = entry?.data?.top_id;
+                    if (!topId) throw new Error('Missing top id for redo');
+                    await this._api(`/tops/${topId}`, { method: 'DELETE' });
+                    await this._loadFormationTops();
+                    break;
+                }
+                case 'edit_top': {
+                    const topId = entry?.data?.top_id;
+                    const after = entry?.data?.after;
+                    if (!topId || !after) throw new Error('Missing top data for redo');
+                    await this._api(`/tops/${topId}`, { method: 'PUT', body: JSON.stringify(after) });
+                    await this._loadFormationTops();
+                    break;
+                }
+                case 'delete_annotation': {
+                    const annId = entry?.data?.annotation_id;
+                    if (!annId) throw new Error('Missing annotation id for redo');
+                    await this._api(`/annotations/${annId}`, { method: 'DELETE' });
                     await this.loadAnnotations();
                     break;
                 }
@@ -1393,8 +1445,6 @@ class GeoLogApp {
                 color: z.color || '#1f6feb',
             })).filter(z => Number.isFinite(z.top) && Number.isFinite(z.bottom) && z.bottom > z.top);
             this.renderer.setZones(zones);
-            this.zoneUndoStack = [];
-            this.zoneRedoStack = [];
             this._renderZonesList();
             this._updateWorkflowStrip();
         } catch (e) {
@@ -1447,13 +1497,6 @@ class GeoLogApp {
             method: 'POST',
             body: JSON.stringify({ well_a_id: wellAId, well_b_id: wellBId, curve, depth_shift: shift, stretch, snap_to_tops: snap }),
         });
-    }
-
-    _pushZoneHistory() {
-        if (!this.renderer) return;
-        this.zoneUndoStack.push(JSON.parse(JSON.stringify(this.renderer.zones || [])));
-        if (this.zoneUndoStack.length > 50) this.zoneUndoStack.shift();
-        this.zoneRedoStack = [];
     }
 
     async undoZone() {
@@ -2624,9 +2667,24 @@ class GeoLogApp {
     }
 
     async deleteTop(id) {
+        const top = this.formationTops.find(t => t.id === id);
         try {
             await this._api(`/tops/${id}`, { method: 'DELETE' });
             await this._loadFormationTops();
+            if (top) {
+                const payload = {
+                    formation_name: top.formation_name,
+                    depth: top.depth,
+                    color: top.color || '#f0883e',
+                    lithology: top.lithology || '',
+                    depth_unit: top.depth_unit || 'FT',
+                };
+                if (top.top_depth != null && top.base_depth != null) {
+                    payload.top_depth = top.top_depth;
+                    payload.base_depth = top.base_depth;
+                }
+                this._pushUndo('delete_top', { well_id: this.currentWell?.id, payload });
+            }
         } catch (e) { GeoToast.error('Failed to delete top: ' + e.message); }
     }
 
@@ -2640,17 +2698,25 @@ class GeoLogApp {
             { id: 'lithology', label: 'Lithology (optional)', value: top.lithology || '' },
         ]});
         if (!r?.formation_name || isNaN(parseFloat(r.depth))) return;
+        const before = {
+            formation_name: top.formation_name,
+            depth: top.depth,
+            color: top.color || '#f0883e',
+            lithology: top.lithology || '',
+        };
+        const after = {
+            formation_name: r.formation_name,
+            depth: parseFloat(r.depth),
+            color: r.color || '#f0883e',
+            lithology: r.lithology || '',
+        };
         try {
             await this._api(`/tops/${id}`, {
                 method: 'PUT',
-                body: JSON.stringify({
-                    formation_name: r.formation_name,
-                    depth: parseFloat(r.depth),
-                    color: r.color || '#f0883e',
-                    lithology: r.lithology || '',
-                }),
+                body: JSON.stringify(after),
             });
             await this._loadFormationTops();
+            this._pushUndo('edit_top', { top_id: id, before, after });
             GeoToast.success('Formation top updated');
         } catch (e) { GeoToast.error('Failed to update top: ' + e.message); }
     }
@@ -3143,7 +3209,6 @@ class GeoLogApp {
         ]});
         if (!r?.name || isNaN(parseFloat(r.top)) || isNaN(parseFloat(r.bottom))) return;
         const name = r.name, top = parseFloat(r.top), bottom = parseFloat(r.bottom);
-        this._pushZoneHistory();
         const zonesBefore = JSON.parse(JSON.stringify(this.renderer.zones || []));
         const zonePayload = { name, top, bottom };
         const zones = [...zonesBefore, zonePayload];
@@ -3163,12 +3228,14 @@ class GeoLogApp {
     }
 
     async removeZone(index) {
-        this._pushZoneHistory();
+        const zonesBefore = JSON.parse(JSON.stringify(this.renderer.zones || []));
         const zones = [...(this.renderer.zones || [])];
         zones.splice(index, 1);
         this.renderer.setZones(zones);
         this._renderZonesList();
         await this._saveZones();
+        const zonesAfter = JSON.parse(JSON.stringify(this.renderer.zones || []));
+        this._pushUndo('add_zone', { well_id: this.currentWell?.id, zones_before: zonesBefore, zones_after: zonesAfter });
     }
 
     _renderZonesList() {
@@ -3216,11 +3283,13 @@ class GeoLogApp {
         if (!r?.name || isNaN(parseFloat(r.top)) || isNaN(parseFloat(r.bottom))) return;
         const top = parseFloat(r.top), bottom = parseFloat(r.bottom);
         if (bottom <= top) return GeoToast.warn('Bottom must be > Top');
-        this._pushZoneHistory();
+        const zonesBefore = JSON.parse(JSON.stringify(this.renderer.zones || []));
         zones[index] = { ...z, name: r.name, top, bottom };
         this.renderer.setZones(zones);
         this._renderZonesList();
         await this._saveZones();
+        const zonesAfter = JSON.parse(JSON.stringify(this.renderer.zones || []));
+        this._pushUndo('add_zone', { well_id: this.currentWell?.id, zones_before: zonesBefore, zones_after: zonesAfter });
     }
 
     async splitZone(index) {
@@ -3233,37 +3302,43 @@ class GeoLogApp {
         ]});
         const d = parseFloat(r?.depth);
         if (!Number.isFinite(d) || d <= z.top || d >= z.bottom) return GeoToast.warn('Invalid split depth');
-        this._pushZoneHistory();
+        const zonesBefore = JSON.parse(JSON.stringify(this.renderer.zones || []));
         zones.splice(index, 1, { ...z, name: `${z.name}-A`, bottom: d }, { ...z, name: `${z.name}-B`, top: d });
         this.renderer.setZones(zones);
         this._renderZonesList();
         await this._saveZones();
+        const zonesAfter = JSON.parse(JSON.stringify(this.renderer.zones || []));
+        this._pushUndo('add_zone', { well_id: this.currentWell?.id, zones_before: zonesBefore, zones_after: zonesAfter });
     }
 
     async moveZoneUp(index) {
         const zones = [...(this.renderer.zones || [])];
         if (index <= 0 || index >= zones.length) return;
-        this._pushZoneHistory();
+        const zonesBefore = JSON.parse(JSON.stringify(this.renderer.zones || []));
         [zones[index - 1], zones[index]] = [zones[index], zones[index - 1]];
         this.renderer.setZones(zones);
         this._renderZonesList();
         await this._saveZones();
+        const zonesAfter = JSON.parse(JSON.stringify(this.renderer.zones || []));
+        this._pushUndo('add_zone', { well_id: this.currentWell?.id, zones_before: zonesBefore, zones_after: zonesAfter });
     }
 
     async moveZoneDown(index) {
         const zones = [...(this.renderer.zones || [])];
         if (index < 0 || index >= zones.length - 1) return;
-        this._pushZoneHistory();
+        const zonesBefore = JSON.parse(JSON.stringify(this.renderer.zones || []));
         [zones[index], zones[index + 1]] = [zones[index + 1], zones[index]];
         this.renderer.setZones(zones);
         this._renderZonesList();
         await this._saveZones();
+        const zonesAfter = JSON.parse(JSON.stringify(this.renderer.zones || []));
+        this._pushUndo('add_zone', { well_id: this.currentWell?.id, zones_before: zonesBefore, zones_after: zonesAfter });
     }
 
     async mergeZone(index) {
         const zones = [...(this.renderer.zones || [])];
         if (index < 0 || index >= zones.length - 1) return GeoToast.warn('No next zone to merge');
-        this._pushZoneHistory();
+        const zonesBefore = JSON.parse(JSON.stringify(this.renderer.zones || []));
         const a = zones[index];
         const b = zones[index + 1];
         const merged = {
@@ -3276,6 +3351,8 @@ class GeoLogApp {
         this.renderer.setZones(zones);
         this._renderZonesList();
         await this._saveZones();
+        const zonesAfter = JSON.parse(JSON.stringify(this.renderer.zones || []));
+        this._pushUndo('add_zone', { well_id: this.currentWell?.id, zones_before: zonesBefore, zones_after: zonesAfter });
         GeoToast.success('Zones merged');
     }
 
@@ -5417,8 +5494,19 @@ class GeoLogApp {
     }
 
     async deleteAnnotation(aid) {
+        let payload = null;
+        if (this.currentWell) {
+            try {
+                const anns = await this._api('/wells/' + this.currentWell.id + '/annotations');
+                const ann = (anns || []).find(a => a.id === aid);
+                if (ann) payload = { depth: ann.depth, text: ann.text, annotation_type: ann.annotation_type || 'note' };
+            } catch { /* ignore lookup failure, still proceed with delete */ }
+        }
         await this._api('/annotations/' + aid, { method: 'DELETE' });
         await this.loadAnnotations();
+        if (payload) {
+            this._pushUndo('delete_annotation', { well_id: this.currentWell?.id, payload });
+        }
     }
 
     async loadDST() {
