@@ -1097,6 +1097,7 @@ class GeoLogApp {
 
             this._renderWellHeader(well);
             this._updateScanControls();
+            this._refreshReadinessSummary();
             localStorage.setItem('geolog_last_well', wellId);
             this._updateWorkflowStrip();
 
@@ -1141,6 +1142,7 @@ class GeoLogApp {
             this.jumpToData({ silent: true });   // crop straight to where the curves actually have data
             this._renderWellHeader(well);
             this._updateScanControls();
+            this._refreshReadinessSummary();
             if (this.currentLogRun) localStorage.setItem('geolog_last_run', logRunId);
         } catch (e) { console.error('Failed to select log run:', e); }
     }
@@ -1193,8 +1195,93 @@ class GeoLogApp {
                 this._populateLogRunSelector(this.currentWell.log_runs, this.currentLogRun.id);
             }
             this._updateScanControls();
+            this._refreshReadinessSummary();
             GeoToast.success(status === 'accepted' ? 'Log run accepted' : 'Log run rejected');
         } catch (e) { GeoToast.error('Failed to record review: ' + e.message); }
+    }
+
+    // ─── Well readiness widget ──────────────────────────────
+    // Compact "is this well ready to hand off" summary next to the log-run
+    // controls, aggregating lock/QC/digitization sign-off, duplicate curves,
+    // duplicate studies and study-registry completeness in one round trip
+    // (backend: GET /api/wells/{wid}/readiness-summary). Refreshed whenever
+    // the well/log-run selection changes or a review/scan action happens —
+    // same lifecycle as _updateScanControls.
+    async _refreshReadinessSummary() {
+        const widget = document.getElementById('readinessWidget');
+        if (!widget) return;
+        if (!this.currentWell?.id) { widget.style.display = 'none'; this.readinessSummary = null; return; }
+        try {
+            const summary = await this._api(`/wells/${this.currentWell.id}/readiness-summary`);
+            this.readinessSummary = summary;
+            this._renderReadinessWidget(summary);
+        } catch (e) {
+            // A newer selection/refresh superseded this in-flight request (see
+            // _api's dedupe logic) — the newer call will render the widget,
+            // so this isn't a real failure and shouldn't be logged as one.
+            if (e === 'dedupe' || e?.message === 'Request superseded by a newer call') return;
+            console.error('Failed to load readiness summary:', e);
+            widget.style.display = 'none';
+        }
+    }
+
+    _renderReadinessWidget(summary) {
+        const widget = document.getElementById('readinessWidget');
+        if (!widget) return;
+        const qc = summary.qc_rating || '—';
+        const chips = [
+            `QC: ${qc}`,
+            `Дубли: ${summary.duplicate_curve_count + summary.duplicate_study_count}`,
+            `Опись: ${summary.registry_matched_count}/${summary.registry_total_count}`,
+            summary.locked ? '🔒 подписано' : '🔓 не подписано',
+        ];
+        widget.innerHTML = chips.map(c => `<span class="readiness-chip">${c}</span>`).join('');
+        widget.classList.remove('readiness-good', 'readiness-warn', 'readiness-bad');
+        if (summary.ready) {
+            widget.classList.add('readiness-good');
+        } else if (qc === 'POOR' || !summary.locked) {
+            widget.classList.add('readiness-bad');
+        } else {
+            widget.classList.add('readiness-warn');
+        }
+        widget.style.display = 'flex';
+    }
+
+    // Small dedicated popover (not GeoModal.show — that only accepts
+    // {title, fields, onConfirm} and throws on a raw HTML string).
+    toggleReadinessPopover(event) {
+        event.stopPropagation();
+        let pop = document.getElementById('readiness-popover');
+        const isOpen = pop && pop.style.display === 'block';
+        if (pop) pop.style.display = 'none';
+        if (isOpen) return;
+        if (!this.readinessSummary) return;
+
+        if (!pop) {
+            pop = document.createElement('div');
+            pop.id = 'readiness-popover';
+            document.body.appendChild(pop);
+            document.addEventListener('click', () => { pop.style.display = 'none'; });
+        }
+        const summary = this.readinessSummary;
+        const items = summary.issues && summary.issues.length
+            ? summary.issues.map(i => `<li>${this._escapeHtml(i)}</li>`).join('')
+            : '<li class="rp-clean">No issues — ready for handoff</li>';
+        pop.innerHTML = `<div class="rp-title">Well readiness</div><ul>${items}</ul>`;
+        pop.style.display = 'block';
+        const rect = event.currentTarget.getBoundingClientRect();
+        pop.style.left = rect.left + 'px';
+        pop.style.top = (rect.bottom + 6) + 'px';
+        const popRect = pop.getBoundingClientRect();
+        if (popRect.right > window.innerWidth) {
+            pop.style.left = Math.max(8, window.innerWidth - popRect.width - 8) + 'px';
+        }
+    }
+
+    _escapeHtml(s) {
+        const div = document.createElement('div');
+        div.textContent = String(s ?? '');
+        return div.innerHTML;
     }
 
     _updateScanControls() {
@@ -1249,6 +1336,7 @@ class GeoLogApp {
                     this._populateLogRunSelector(well.log_runs || [], this.currentLogRun?.id);
                 }
                 this._updateScanControls();
+                this._refreshReadinessSummary();
             } catch (e) {
                 GeoToast.error('Scan upload failed: ' + e.message);
             } finally {

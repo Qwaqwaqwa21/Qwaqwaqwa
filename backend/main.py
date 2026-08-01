@@ -30,7 +30,14 @@ try:
     from routers.inclinometry import _find_survey as _find_deviation_survey
     from routers.maps import router as maps_router
     from routers.duplicates import router as duplicates_router
+    from routers.duplicates import (
+        _well_curves, _find_duplicates, _find_duplicate_studies, _normalize_well_name,
+        DEFAULT_TOLERANCE, DEFAULT_MIN_POINTS, DEFAULT_MIN_COVERAGE,
+        DEFAULT_MIN_DEPTH_OVERLAP, DEFAULT_MIN_METHOD_OVERLAP,
+    )
     from routers.study_registry import router as study_registry_router
+    from routers.study_registry import _match_entry
+    from routers.study_registry import DEFAULT_MIN_DEPTH_OVERLAP as DEFAULT_STUDY_REGISTRY_MIN_DEPTH_OVERLAP
 except ImportError:
     from backend.routers.qc import router as qc_router
     from backend.routers.qc import _run_advanced_qc
@@ -44,7 +51,14 @@ except ImportError:
     from backend.routers.inclinometry import _find_survey as _find_deviation_survey
     from backend.routers.maps import router as maps_router
     from backend.routers.duplicates import router as duplicates_router
+    from backend.routers.duplicates import (
+        _well_curves, _find_duplicates, _find_duplicate_studies, _normalize_well_name,
+        DEFAULT_TOLERANCE, DEFAULT_MIN_POINTS, DEFAULT_MIN_COVERAGE,
+        DEFAULT_MIN_DEPTH_OVERLAP, DEFAULT_MIN_METHOD_OVERLAP,
+    )
     from backend.routers.study_registry import router as study_registry_router
+    from backend.routers.study_registry import _match_entry
+    from backend.routers.study_registry import DEFAULT_MIN_DEPTH_OVERLAP as DEFAULT_STUDY_REGISTRY_MIN_DEPTH_OVERLAP
 
 
 class SafeJSONResponse(JSONResponse):
@@ -93,13 +107,13 @@ from email.utils import format_datetime, parsedate_to_datetime
 
 try:
     from database import engine, Base, get_db, SessionLocal
-    from models import Project, Well, LogRun, CurveData, FormationTop, Annotation, DSTTest, RFTPoint, CompletionData, ProductionData, Zone, CorrelationMarker, CorrelationProfile, PetroParams, LogRunDepthShift, CurveAlias, DeviationSurvey, AuditLog, User
+    from models import Project, Well, LogRun, CurveData, FormationTop, Annotation, DSTTest, RFTPoint, CompletionData, ProductionData, Zone, CorrelationMarker, CorrelationProfile, PetroParams, LogRunDepthShift, CurveAlias, DeviationSurvey, AuditLog, User, StudyRegistryEntry
     from las_parser import LASParser, CURVE_TRACKS
     from dlis_lis_parser import parse_dlis_content, parse_lis_content
     from security import AuthConfig, resolve_auth_context, require_min_role, role_from_request, ROLE_RANK
 except ImportError:
     from backend.database import engine, Base, get_db, SessionLocal
-    from backend.models import Project, Well, LogRun, CurveData, FormationTop, Annotation, DSTTest, RFTPoint, CompletionData, ProductionData, Zone, CorrelationMarker, CorrelationProfile, PetroParams, LogRunDepthShift, CurveAlias, DeviationSurvey, AuditLog, User
+    from backend.models import Project, Well, LogRun, CurveData, FormationTop, Annotation, DSTTest, RFTPoint, CompletionData, ProductionData, Zone, CorrelationMarker, CorrelationProfile, PetroParams, LogRunDepthShift, CurveAlias, DeviationSurvey, AuditLog, User, StudyRegistryEntry
     from backend.las_parser import LASParser, CURVE_TRACKS
     from backend.dlis_lis_parser import parse_dlis_content, parse_lis_content
     from backend.security import AuthConfig, resolve_auth_context, require_min_role, role_from_request, ROLE_RANK
@@ -9450,13 +9464,17 @@ def well_analogs(pid: int, reference_well_id: int, db: Session = Depends(get_db)
 
 
 # ─── Sign-off gate for interpretation handoff exports ────────
-def _check_export_signoff(wid: int, db: Session, force: bool) -> dict:
-    """Verify a well is ready to hand off to another interpretation package:
-    it must have been signed off (locked via an approved interpretation
-    snapshot) and must not have a POOR advanced-QC rating. Returns an info
-    dict (locked, qc_rating, issues) for audit logging. Raises HTTPException
-    409 with every issue found when the well isn't ready and `force` is not
-    set — callers should still log the export attempt after catching it.
+def _compute_export_readiness(wid: int, db: Session) -> dict:
+    """Compute whether a well is ready to hand off to another interpretation
+    package: it must have been signed off (locked via an approved
+    interpretation snapshot) and must not have a POOR advanced-QC rating,
+    and every curve-bearing log run must have passed digitization review.
+
+    Returns {"locked": ..., "qc_rating": ..., "issues": [...]}. Never raises
+    for business-logic reasons (an empty `well` simply yields no digitization
+    issues) — this is the read-only, queryable counterpart to
+    `_check_export_signoff`, which raises. Real errors (e.g. a DB failure)
+    still propagate naturally.
     """
     issues = []
 
@@ -9495,6 +9513,21 @@ def _check_export_signoff(wid: int, db: Session, force: bool) -> dict:
         elif status == "pending_review":
             issues.append(f"log run {r.run_number} ({r.filename}) has not been reviewed yet (still pending_review)")
 
+    return {"locked": locked, "qc_rating": qc_rating, "issues": issues}
+
+
+def _check_export_signoff(wid: int, db: Session, force: bool) -> dict:
+    """Verify a well is ready to hand off to another interpretation package.
+    Returns an info dict (locked, qc_rating, issues, force) for audit
+    logging. Raises HTTPException 409 with every issue found when the well
+    isn't ready and `force` is not set — callers should still log the export
+    attempt after catching it.
+    """
+    readiness = _compute_export_readiness(wid, db)
+    locked = readiness["locked"]
+    qc_rating = readiness["qc_rating"]
+    issues = readiness["issues"]
+
     info = {"locked": locked, "qc_rating": qc_rating, "issues": issues, "force": force}
 
     if issues and not force:
@@ -9507,6 +9540,78 @@ def _check_export_signoff(wid: int, db: Session, force: bool) -> dict:
         })
 
     return info
+
+
+@app.get("/api/wells/{wid}/readiness-summary")
+def well_readiness_summary(wid: int, db: Session = Depends(get_db)) -> dict:
+    """One-stop "is this well ready to hand off" view for reviewers, combining
+    the four checks that used to live in separate panels: lock/QC/digitization
+    sign-off (`_compute_export_readiness`, same logic the export gate uses),
+    duplicate curves, duplicate studies, and study-registry completeness —
+    all scoped to this one well."""
+    well = db.query(Well).filter(Well.id == wid).first()
+    if not well:
+        raise HTTPException(404, "Well not found")
+
+    readiness = _compute_export_readiness(wid, db)
+    digitization_issues = readiness["issues"]
+
+    # Duplicate curves within this well.
+    well_curves = _well_curves(well)
+    dup_curves = _find_duplicates(well_curves, DEFAULT_TOLERANCE, DEFAULT_MIN_POINTS, DEFAULT_MIN_COVERAGE)
+
+    # Duplicate studies for this well's project, filtered to pairs touching this well.
+    project = well.project
+    all_dup_studies = _find_duplicate_studies(
+        project.wells if project else [well], DEFAULT_MIN_DEPTH_OVERLAP, DEFAULT_MIN_METHOD_OVERLAP
+    )
+    dup_studies = [
+        d for d in all_dup_studies
+        if d["well_a"]["id"] == wid or d["well_b"]["id"] == wid
+    ]
+
+    # Study-registry entries that reference this well (by normalized name),
+    # scoped out of the rest of the project's registry.
+    registry_matched_count = 0
+    registry_total_count = 0
+    if project:
+        registry_entries = (
+            db.query(StudyRegistryEntry)
+            .filter(StudyRegistryEntry.project_id == project.id)
+            .order_by(StudyRegistryEntry.id)
+            .all()
+        )
+        well_norm = _normalize_well_name(well.name)
+        relevant_entries = [
+            e for e in registry_entries
+            if well_norm and _normalize_well_name(e.well_name) == well_norm
+        ]
+        registry_total_count = len(relevant_entries)
+        matched = [_match_entry(e, project.wells, DEFAULT_STUDY_REGISTRY_MIN_DEPTH_OVERLAP) for e in relevant_entries]
+        registry_matched_count = sum(1 for m in matched if m["match_status"] == "matched")
+
+    issues = list(digitization_issues)
+    if dup_curves:
+        issues.append(f"{len(dup_curves)} duplicate curve pair(s) detected for this well")
+    if dup_studies:
+        issues.append(f"{len(dup_studies)} duplicate study pair(s) involve this well")
+    if registry_total_count and registry_matched_count < registry_total_count:
+        issues.append(
+            f"only {registry_matched_count}/{registry_total_count} study-registry entries for this well are matched"
+        )
+
+    return {
+        "well_id": wid,
+        "ready": len(issues) == 0,
+        "locked": readiness["locked"],
+        "qc_rating": readiness["qc_rating"],
+        "digitization_issues": digitization_issues,
+        "duplicate_curve_count": len(dup_curves),
+        "duplicate_study_count": len(dup_studies),
+        "registry_matched_count": registry_matched_count,
+        "registry_total_count": registry_total_count,
+        "issues": issues,
+    }
 
 
 # ─── Sprint 28: LAS Export with All Data ─────────────────────

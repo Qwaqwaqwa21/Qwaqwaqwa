@@ -178,6 +178,7 @@
                     <button class="btn-sm" id="viewScanBtn" style="display:none" onclick="app.viewLogRunScan()" title="Open the original scan in a new tab" aria-label="View scan">🔍 View Scan</button>
                     <button class="btn-sm" onclick="app.reviewCurrentLogRun('accepted')" title="Accept current log run (matches original scan)" aria-label="Accept log run">✅ Accept</button>
                     <button class="btn-sm" onclick="app.reviewCurrentLogRun('rejected')" title="Reject current log run (needs re-digitization)" aria-label="Reject log run">❌ Reject</button>
+                    <div id="readinessWidget" class="readiness-widget" style="display:none" onclick="app.toggleReadinessPopover(event)" title="Handoff readiness — click for details"></div>
                 </div>
             </div>
 
