@@ -1,0 +1,189 @@
+:root {
+  --bg: #0f172a;
+  --panel: #16213a;
+  --panel-2: #1c2b4a;
+  --border: #2a3b5c;
+  --text: #e6ecf5;
+  --text-dim: #9db0cc;
+  --accent: #4da6ff;
+  --accent-2: #7ed7a5;
+  --danger: #ff6b6b;
+  --radius: 8px;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+}
+
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 20px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+header h1 {
+  font-size: 18px;
+  margin: 0;
+  font-weight: 600;
+}
+
+header .subtitle {
+  color: var(--text-dim);
+  font-size: 12px;
+  margin-top: 2px;
+}
+
+.role-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.role-bar input, .role-bar select {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: var(--radius);
+  padding: 6px 8px;
+  font-size: 13px;
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  min-height: calc(100vh - 64px);
+}
+
+nav.sidebar {
+  border-right: 1px solid var(--border);
+  padding: 16px;
+  overflow-y: auto;
+}
+
+nav.sidebar input[type="search"] {
+  width: 100%;
+  padding: 8px 10px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  margin-bottom: 14px;
+}
+
+.category-group { margin-bottom: 16px; }
+.category-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+}
+
+.wiki-page-card {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  padding: 8px 10px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-size: 13.5px;
+  margin-bottom: 2px;
+}
+.wiki-page-card:hover { background: var(--panel-2); }
+.wiki-page-card.active { background: var(--accent); color: #06121f; font-weight: 600; }
+
+main.content {
+  padding: 28px 40px;
+  max-width: 900px;
+}
+
+.btn {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 7px 14px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-size: 13px;
+}
+.btn:hover { border-color: var(--accent); }
+.btn.primary { background: var(--accent); color: #06121f; border-color: var(--accent); font-weight: 600; }
+.btn.danger { border-color: var(--danger); color: var(--danger); }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.article-toolbar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 18px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.article-meta {
+  color: var(--text-dim);
+  font-size: 12px;
+  margin-bottom: 20px;
+}
+
+.article-body h1, .article-body h2, .article-body h3 { line-height: 1.3; }
+.article-body p { line-height: 1.6; }
+.article-body table { border-collapse: collapse; width: 100%; margin: 14px 0; font-size: 13.5px; }
+.article-body th, .article-body td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
+.article-body th { background: var(--panel-2); }
+.article-body code { background: var(--panel-2); padding: 2px 5px; border-radius: 4px; font-size: 13px; }
+.article-body pre { background: var(--panel-2); padding: 12px 14px; border-radius: var(--radius); overflow-x: auto; }
+.article-body pre code { background: none; padding: 0; }
+.article-body ul, .article-body ol { line-height: 1.6; }
+.article-body a { color: var(--accent); }
+
+textarea#editContent {
+  width: 100%;
+  min-height: 420px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: var(--radius);
+  padding: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+
+input#editTitle, input#editCategory {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  font-size: 14px;
+  margin-bottom: 10px;
+  width: 100%;
+}
+
+.field-label { font-size: 12px; color: var(--text-dim); margin-bottom: 4px; }
+
+.history-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 8px;
+}
+
+.empty-state { color: var(--text-dim); padding: 40px 0; }
