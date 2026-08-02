@@ -1369,6 +1369,16 @@ async def upload_las(wid: int, file: UploadFile = File(...), db: Session = Depen
     except Exception as e:
         raise HTTPException(400, f"Failed to parse LAS file: {str(e)}")
 
+    # LASParser is lenient — a file with no ~ASCII section (e.g. a plain-text
+    # file with a .las extension) parses "successfully" with zero curves and
+    # zero depth points instead of raising. Left unchecked, that creates a
+    # real, permanent, empty LogRun that reports as a normal upload ("0
+    # curves, 0 points" easy to miss in a success toast) and can then get
+    # silently picked up as "the" log run by anything that selects by
+    # recency instead of by which run actually has data.
+    if not las.curves or len(las.depth) == 0:
+        raise HTTPException(400, "No curve data found in file — not a valid LAS file")
+
     # Create log run
     curves_def = [
         {"mnemonic": c.mnemonic, "unit": c.unit, "description": c.description}
@@ -2263,10 +2273,25 @@ def update_top(tid: int, data: dict, db: Session = Depends(get_db)):
 
 # ─── Bulk Export ─────────────────────────────────────────────
 @app.get("/api/wells/{wid}/export-package")
-def export_package(wid: int, db: Session = Depends(get_db)):
+def export_package(wid: int, force: bool = Query(False), db: Session = Depends(get_db)):
+    """JSON snapshot of a well (metadata, tops, zones, log-run info) for
+    client handoff — same sign-off gate as export-las/export-bundle
+    (_check_export_signoff, defined further down in this file). This and
+    delivery_bundle (which wraps it in a zip) were the only export paths
+    that shipped well data without the gate other export endpoints already
+    enforce; found via a UI walkthrough that used the "Export -> Full
+    Package" button, which called this endpoint directly."""
     well = db.query(Well).filter(Well.id == wid).first()
     if not well:
         raise HTTPException(404, "Well not found")
+
+    try:
+        _check_export_signoff(wid, db, force)
+    except HTTPException as exc:
+        _log_audit(db, "export_package", entity_type="well", entity_id=wid, well_id=wid,
+                   details=f"blocked: {exc.detail}")
+        raise
+
     well_dict = {c.name: getattr(well, c.name) for c in Well.__table__.columns}
     tops = [{c.name: getattr(t, c.name) for c in FormationTop.__table__.columns}
             for t in db.query(FormationTop).filter(FormationTop.well_id == wid).order_by(FormationTop.depth).all()]
@@ -2616,12 +2641,14 @@ def diff_snapshot(wid: int, base_id: str, target_id: str):
 
 
 @app.get("/api/wells/{wid}/delivery-bundle")
-def delivery_bundle(wid: int, db: Session = Depends(get_db)):
+def delivery_bundle(wid: int, force: bool = Query(False), db: Session = Depends(get_db)):
     well = db.query(Well).filter(Well.id == wid).first()
     if not well:
         raise HTTPException(404, "Well not found")
 
-    package = export_package(wid, db)
+    # export_package raises (and audits) if the well isn't signed off; let
+    # it propagate rather than duplicating the check here.
+    package = export_package(wid, force=force, db=db)
     snaps = _load_snapshots(wid)
     manifest = {
         "well_id": wid,

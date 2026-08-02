@@ -157,6 +157,55 @@ def test_export_succeeds_after_snapshot_approved():
     assert "~Version Information" in r.text
 
 
+def test_upload_las_rejects_file_with_no_curve_data():
+    """A plain-text (or otherwise non-LAS) file uploaded with a .las
+    extension used to "succeed" with 0 curves and 0 points instead of being
+    rejected — LASParser doesn't raise on a missing ~ASCII section, it just
+    returns empty curves/depth. That silently created a real, permanent,
+    empty LogRun (easy to miss in a "0 curves, 0 points" success toast) that
+    could then get picked up as "the" log run by anything selecting the
+    well's most recent upload instead of the one with actual data — this is
+    exactly what broke report-pdf/zone-stats/zonation-report for a well
+    that had picked up one of these empty runs during manual UI testing."""
+    proj = client.post("/api/projects/", headers=_h("admin"), json={"name": "BadUploadTestProject"})
+    assert proj.status_code == 201
+    pid = proj.json()["id"]
+    well = client.post("/api/wells/", headers=_h("admin"), json={"project_id": pid, "name": "BadUploadWell"})
+    assert well.status_code == 201
+    wid = well.json()["id"]
+
+    up = client.post(
+        f"/api/wells/{wid}/upload-las", headers=_h("admin"),
+        files={"file": ("notreally.las", b"this is not a LAS file, just plain text", "text/plain")},
+    )
+    assert up.status_code == 400
+
+    well_after = client.get(f"/api/wells/{wid}").json()
+    assert well_after["log_runs"] == []
+
+
+def test_export_package_and_delivery_bundle_blocked_when_not_signed_off():
+    """export-package and delivery-bundle (both JSON/zip "full package"
+    exports reachable from the UI's Export menu) used to ship well data
+    with no sign-off check at all, unlike export-las/export-bundle — found
+    via a UI walkthrough where "Export -> Full Package" succeeded on an
+    unreviewed, unlocked well with no warning."""
+    _pid, wid, _lr_id = _make_well_with_run()
+
+    pkg = client.get(f"/api/wells/{wid}/export-package")
+    assert pkg.status_code == 409
+
+    bundle = client.get(f"/api/wells/{wid}/delivery-bundle")
+    assert bundle.status_code == 409
+
+    pkg_forced = client.get(f"/api/wells/{wid}/export-package", params={"force": "true"})
+    assert pkg_forced.status_code == 200
+    assert pkg_forced.json()["well"]["id"] == wid
+
+    bundle_forced = client.get(f"/api/wells/{wid}/delivery-bundle", params={"force": "true"})
+    assert bundle_forced.status_code == 200
+
+
 def test_export_bundle_with_formation_tops_and_zones():
     """export-bundle used to crash with AttributeError on any well that had
     formation tops or zones — it referenced FormationTop.name (the model
