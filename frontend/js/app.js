@@ -1134,6 +1134,11 @@ class GeoLogApp {
             this._updateScanControls();
             this._updateRedoLinkControl();
             this._refreshReadinessSummary();
+            // _updateStatusBar was previously only called from switchView,
+            // so the status bar's well name never refreshed on a well
+            // switch unless the user also happened to change tabs — it just
+            // sat on whatever (or nothing) it last showed.
+            this._updateStatusBar();
             localStorage.setItem('geolog_last_well', wellId);
             this._updateWorkflowStrip();
 
@@ -8207,7 +8212,7 @@ class GeoLogApp {
     // ─── Sprint 26: Status Bar ──────────────────────────────────
     _updateStatusBar(view) {
         const el = document.getElementById('statusView');
-        if (el) {
+        if (el && view) {
             const names = { viewer: 'Log Viewer', crossplot: 'Cross Plot', pickett: 'Pickett', mnplot: 'M-N Plot',
                 petrophysics: 'Petrophysics', qc: 'QC', statistics: 'Statistics', sensitivity: 'Sensitivity',
                 comparison: 'Cross Section', correlation: 'Correlation', striplog: 'Strip Log', facies: 'Facies',
