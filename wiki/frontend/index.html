@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Петрофизическая вики</title>
+<link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+<header>
+  <div>
+    <h1>Петрофизическая вики</h1>
+    <div class="subtitle">Внутренняя база знаний по ГИС и петрофизике — отдельный сайт, не связан с GeoLog</div>
+  </div>
+  <div class="role-bar">
+    <label>Имя: <input id="editorName" type="text" placeholder="ваше имя" size="12"></label>
+    <label>Роль:
+      <select id="activeRoleSelect">
+        <option value="viewer">Читатель</option>
+        <option value="editor">Редактор</option>
+        <option value="admin">Администратор</option>
+      </select>
+    </label>
+  </div>
+</header>
+
+<div class="layout">
+  <nav class="sidebar">
+    <input type="search" id="searchBox" placeholder="Поиск по вики...">
+    <button class="btn primary" id="newPageBtn" style="width:100%; margin-bottom:14px;">+ Новая страница</button>
+    <div id="pageList"></div>
+  </nav>
+
+  <main class="content" id="content">
+    <div class="empty-state">Загрузка...</div>
+  </main>
+</div>
+
+<script src="/static/js/markdown.js"></script>
+<script src="/static/js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,11 @@
+services:
+  wiki:
+    build: .
+    ports:
+      - "8010:8010"
+    volumes:
+      - wiki-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  wiki-data:
