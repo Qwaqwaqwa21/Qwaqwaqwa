@@ -741,6 +741,8 @@ class GeoLogApp {
         const role = String(this.currentRole || 'viewer').toLowerCase();
         const rank = { viewer: 1, interpreter: 2, admin: 3 };
         const roleByAction = {
+            // admin-only actions
+            addWell: 'admin',
             // interpreter/admin actions
             lockTemplateSignature: 'interpreter,admin',
             unlockTemplateSignature: 'interpreter,admin',
@@ -8216,9 +8218,13 @@ class GeoLogApp {
             el.textContent = names[view] || view;
         }
         if (this.currentWell) {
-            const w = this.wells.find(w => w.id === this.currentWell);
+            // this.currentWell is already the well object (see e.g.
+            // _refreshReadinessSummary's this.currentWell.id/.name), not a
+            // bare id — searching this.wells by `w.id === this.currentWell`
+            // compared a number to an object and always failed, so the
+            // status bar kept showing its initial "No well" text forever.
             const el2 = document.getElementById('statusWell');
-            if (el2 && w) el2.textContent = w.name;
+            if (el2 && this.currentWell.name) el2.textContent = this.currentWell.name;
         }
         if (this.renderer) {
             const el3 = document.getElementById('statusDepth');
