@@ -63,6 +63,13 @@ DEFAULT_MIN_COVERAGE = 0.9
 DEFAULT_MIN_DEPTH_OVERLAP = 0.5
 DEFAULT_MIN_METHOD_OVERLAP = 0.5
 
+# _find_duplicates compares every pair of curves in the project
+# (itertools.combinations), so cost grows with the *square* of curve count.
+# A few hundred wells is enough to reach tens of millions of pairs — at that
+# point a synchronous request would tie up a worker for minutes and should
+# refuse instead of hanging. See project_duplicate_curves.
+MAX_PROJECT_CURVES_FOR_DUPLICATE_SCAN = 3000
+
 _NAME_NOISE_RE = re.compile(r"скв\.|скважина|well|№|[.\-_]")
 _WS_RE = re.compile(r"\s+")
 
@@ -107,6 +114,8 @@ def _well_curves(well: Well) -> List[Dict[str, Any]]:
             n = min(len(depth), len(val))
             if n < 2:
                 continue
+            value = val[:n]
+            finite = value[np.isfinite(value)]
             out.append({
                 "well_id": well.id,
                 "well_name": well.name,
@@ -115,7 +124,14 @@ def _well_curves(well: Well) -> List[Dict[str, Any]]:
                 "mnemonic": cd.mnemonic,
                 "unit": cd.unit,
                 "depth": depth[:n],
-                "value": val[:n],
+                "value": value,
+                # Precomputed once per curve (not per pair) so _compare_pair
+                # can cheaply reject non-overlapping-range pairs before
+                # paying for a full depth-keyed join. None for an all-NaN
+                # curve, which the valid_a/valid_b==0 check already rejects.
+                "vmin": float(finite.min()) if finite.size else None,
+                "vmax": float(finite.max()) if finite.size else None,
+                "valid_count": int(finite.size),
             })
     return out
 
@@ -123,13 +139,25 @@ def _well_curves(well: Well) -> List[Dict[str, Any]]:
 def _compare_pair(
     a: Dict[str, Any], b: Dict[str, Any], tol: float, min_points: int, min_coverage: float
 ) -> Optional[Dict[str, Any]]:
-    va, vb = a["value"], b["value"]
-    da, db_ = a["depth"], b["depth"]
-
-    valid_a = int(np.count_nonzero(np.isfinite(va)))
-    valid_b = int(np.count_nonzero(np.isfinite(vb)))
+    valid_a = a["valid_count"]
+    valid_b = b["valid_count"]
     if valid_a == 0 or valid_b == 0:
         return None
+
+    # Cheap range-overlap pre-check: two curves can only share points within
+    # `tol` of each other if their value ranges overlap (with `tol` slack).
+    # A project-wide scan compares every pair of curves regardless of
+    # mnemonic, so most pairs are physically unrelated (e.g. GR vs RHOB) —
+    # this rejects them in O(1) instead of paying for a full depth-keyed
+    # join, which is what made a few hundred wells' worth of curves turn
+    # into a multi-minute (or longer) synchronous request.
+    vmin_a, vmax_a = a["vmin"], a["vmax"]
+    vmin_b, vmax_b = b["vmin"], b["vmax"]
+    if vmax_a < vmin_b - tol or vmax_b < vmin_a - tol:
+        return None
+
+    va, vb = a["value"], b["value"]
+    da, db_ = a["depth"], b["depth"]
 
     if a["run_id"] == b["run_id"] and len(va) == len(vb):
         # Same run → same index = same depth, compare directly (fast path).
@@ -215,6 +243,28 @@ def project_duplicate_curves(
     curves: List[Dict[str, Any]] = []
     for well in project.wells:
         curves.extend(_well_curves(well))
+
+    # A full pairwise scan is O(curve_count^2); beyond a few thousand curves
+    # that's tens of millions of pairs on a single synchronous request. Refuse
+    # rather than tie up a worker for minutes — the per-well endpoint above
+    # still works for any individual well in a project this size.
+    if len(curves) > MAX_PROJECT_CURVES_FOR_DUPLICATE_SCAN:
+        return {
+            "project_id": pid,
+            "well_count": len(project.wells),
+            "curve_count": len(curves),
+            "duplicate_count": None,
+            "cross_well_duplicate_count": None,
+            "duplicates": [],
+            "scan_skipped": True,
+            "scan_skipped_reason": (
+                f"project has {len(curves)} curves, over the "
+                f"{MAX_PROJECT_CURVES_FOR_DUPLICATE_SCAN}-curve limit for a full "
+                "pairwise project scan; check individual wells via "
+                "/api/wells/{wid}/duplicate-curves instead"
+            ),
+        }
+
     dupes = _find_duplicates(curves, tolerance, min_points, min_coverage)
     return {
         "project_id": pid,
@@ -223,6 +273,7 @@ def project_duplicate_curves(
         "duplicate_count": len(dupes),
         "cross_well_duplicate_count": sum(1 for d in dupes if d["cross_well"]),
         "duplicates": dupes,
+        "scan_skipped": False,
     }
 
 
@@ -280,12 +331,21 @@ def _run_side(well: Well, run: LogRun) -> Dict[str, Any]:
 def _compare_study_pair(
     well_a: Well, run_a: LogRun, well_b: Well, run_b: LogRun,
     min_depth_overlap: float, min_method_overlap: float,
+    methods_a: Optional[set] = None, methods_b: Optional[set] = None,
 ) -> Optional[Dict[str, Any]]:
     depth_overlap = _depth_overlap_fraction(run_a, run_b)
     if depth_overlap is None or depth_overlap < min_depth_overlap:
         return None
 
-    methods_a, methods_b = _run_methods(run_a), _run_methods(run_b)
+    # A project-wide scan calls this once per pair of runs (see
+    # _find_duplicate_studies) — recomputing _run_methods (a JSON parse) on
+    # every call turns a few thousand runs into millions of redundant
+    # parses. Callers that already have the methods cached (precomputed once
+    # per run) pass them in; direct/test callers still get the old behavior.
+    if methods_a is None:
+        methods_a = _run_methods(run_a)
+    if methods_b is None:
+        methods_b = _run_methods(run_b)
     if not methods_a or not methods_b:
         return None
     shared = methods_a & methods_b
@@ -324,31 +384,84 @@ def _compare_study_pair(
     }
 
 
+def _live_runs(well: Well) -> List[LogRun]:
+    """A well's log runs, excluding a rejected run already corrected by an
+    accepted redo (LogRun.redo_of on the redo pointing back at it) — that
+    run is, by construction, the same well with an overlapping depth range
+    and the same methods as its own replacement, exactly what
+    _compare_study_pair calls a duplicate. Without excluding it, a well
+    could never clear duplicate-study checks after a single digitization
+    rejection+redo cycle, even though the digitization-review gate itself
+    treats that case as resolved (see backend.main._exportable_curve_runs)."""
+    superseded_run_ids = {
+        getattr(r, "redo_of", None) for r in well.log_runs if getattr(r, "redo_of", None) is not None
+    }
+    return [r for r in well.log_runs if r.id not in superseded_run_ids]
+
+
 def _find_duplicate_studies(
     wells: List[Well], min_depth_overlap: float, min_method_overlap: float
 ) -> List[Dict[str, Any]]:
     runs = []
     for well in wells:
-        # A rejected run already corrected by an accepted redo (LogRun.redo_of
-        # on the redo pointing back at it) is, by construction, the same well
-        # with an overlapping depth range and the same methods as its own
-        # replacement — exactly what _compare_study_pair calls a duplicate.
-        # Without excluding it, a well could never clear duplicate-study
-        # checks after a single digitization rejection+redo cycle, even
-        # though the digitization-review gate itself treats that case as
-        # resolved (see backend.main._exportable_curve_runs).
-        superseded_run_ids = {
-            getattr(r, "redo_of", None) for r in well.log_runs if getattr(r, "redo_of", None) is not None
-        }
-        for run in well.log_runs:
-            if run.id in superseded_run_ids:
-                continue
+        for run in _live_runs(well):
             runs.append((well, run))
+
+    # Precompute each run's methods once (an itertools.combinations scan
+    # would otherwise call _run_methods, a JSON parse, twice per pair —
+    # millions of redundant parses once a project has a few thousand runs).
+    methods_by_run_id = {run.id: _run_methods(run) for _, run in runs}
+
     results = []
     for (well_a, run_a), (well_b, run_b) in itertools.combinations(runs, 2):
-        match = _compare_study_pair(well_a, run_a, well_b, run_b, min_depth_overlap, min_method_overlap)
+        match = _compare_study_pair(
+            well_a, run_a, well_b, run_b, min_depth_overlap, min_method_overlap,
+            methods_a=methods_by_run_id.get(run_a.id), methods_b=methods_by_run_id.get(run_b.id),
+        )
         if match:
             results.append(match)
+    results.sort(key=lambda r: (-r["depth_overlap_fraction"], -r["method_overlap_fraction"]))
+    return results
+
+
+def _duplicate_studies_for_well(
+    well: Well, wells: List[Well], min_depth_overlap: float, min_method_overlap: float
+) -> List[Dict[str, Any]]:
+    """Same matching as _find_duplicate_studies, but only the pairs that
+    involve `well` — O(this well's run count x total project run count)
+    instead of O(total project run count ^2). well_readiness_summary only
+    needs the subset touching one well, but used to get it by running the
+    full project-wide scan and filtering afterward, so a readiness check on
+    any single well in a large project paid for comparing every other well
+    against every other well too."""
+    target_runs = _live_runs(well)
+    if not target_runs:
+        return []
+
+    methods_cache: Dict[int, set] = {r.id: _run_methods(r) for r in target_runs}
+    results = []
+
+    for run_a, run_b in itertools.combinations(target_runs, 2):
+        match = _compare_study_pair(
+            well, run_a, well, run_b, min_depth_overlap, min_method_overlap,
+            methods_a=methods_cache[run_a.id], methods_b=methods_cache[run_b.id],
+        )
+        if match:
+            results.append(match)
+
+    for other_well in wells:
+        if other_well.id == well.id:
+            continue
+        for run_b in _live_runs(other_well):
+            methods_b = methods_cache.setdefault(run_b.id, _run_methods(run_b))
+            for run_a in target_runs:
+                match = _compare_study_pair(
+                    well, run_a, other_well, run_b, min_depth_overlap, min_method_overlap,
+                    methods_a=methods_cache[run_a.id], methods_b=methods_b,
+                )
+                if match:
+                    results.append(match)
+
     results.sort(key=lambda r: (-r["depth_overlap_fraction"], -r["method_overlap_fraction"]))
     return results
 

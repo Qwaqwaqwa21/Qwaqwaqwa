@@ -31,7 +31,7 @@ try:
     from routers.maps import router as maps_router
     from routers.duplicates import router as duplicates_router
     from routers.duplicates import (
-        _well_curves, _find_duplicates, _find_duplicate_studies, _normalize_well_name,
+        _well_curves, _find_duplicates, _duplicate_studies_for_well, _normalize_well_name,
         DEFAULT_TOLERANCE, DEFAULT_MIN_POINTS, DEFAULT_MIN_COVERAGE,
         DEFAULT_MIN_DEPTH_OVERLAP, DEFAULT_MIN_METHOD_OVERLAP,
     )
@@ -52,7 +52,7 @@ except ImportError:
     from backend.routers.maps import router as maps_router
     from backend.routers.duplicates import router as duplicates_router
     from backend.routers.duplicates import (
-        _well_curves, _find_duplicates, _find_duplicate_studies, _normalize_well_name,
+        _well_curves, _find_duplicates, _duplicate_studies_for_well, _normalize_well_name,
         DEFAULT_TOLERANCE, DEFAULT_MIN_POINTS, DEFAULT_MIN_COVERAGE,
         DEFAULT_MIN_DEPTH_OVERLAP, DEFAULT_MIN_METHOD_OVERLAP,
     )
@@ -9771,15 +9771,14 @@ def well_readiness_summary(wid: int, db: Session = Depends(get_db)) -> dict:
     well_curves = _well_curves(well)
     dup_curves = _find_duplicates(well_curves, DEFAULT_TOLERANCE, DEFAULT_MIN_POINTS, DEFAULT_MIN_COVERAGE)
 
-    # Duplicate studies for this well's project, filtered to pairs touching this well.
+    # Duplicate studies involving this well specifically — not the full
+    # project-wide O(run_count^2) scan filtered down afterward, which used
+    # to make a readiness check on any one well in a large project pay for
+    # comparing every other well against every other well too.
     project = well.project
-    all_dup_studies = _find_duplicate_studies(
-        project.wells if project else [well], DEFAULT_MIN_DEPTH_OVERLAP, DEFAULT_MIN_METHOD_OVERLAP
+    dup_studies = _duplicate_studies_for_well(
+        well, project.wells if project else [well], DEFAULT_MIN_DEPTH_OVERLAP, DEFAULT_MIN_METHOD_OVERLAP
     )
-    dup_studies = [
-        d for d in all_dup_studies
-        if d["well_a"]["id"] == wid or d["well_b"]["id"] == wid
-    ]
 
     # Study-registry entries that reference this well (by normalized name),
     # scoped out of the rest of the project's registry.
