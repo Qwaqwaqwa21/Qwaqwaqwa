@@ -27,7 +27,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 try:
     from database import get_db
@@ -549,7 +549,17 @@ def project_inventory(pid: int, db: Session = Depends(get_db)) -> Dict[str, Any]
     INKL_M = {"INKL", "INCL", "AZ", "AZIM", "ZENIT"}
     RIGIS_M = {"KP", "KGL", "KNG", "KPR", "LITH", "COLL", "SAT"}
 
-    wells = db.query(Well).filter(Well.project_id == pid).order_by(Well.name).all()
+    # Without eager loading, iterating log_runs and curve_data below is a
+    # classic N+1: one query per well for its runs, then one query per run
+    # for its curve data — a project with a few hundred wells turns into a
+    # few thousand lazy-load round trips and the request times out.
+    wells = (
+        db.query(Well)
+        .filter(Well.project_id == pid)
+        .options(selectinload(Well.log_runs).selectinload(LogRun.curve_data))
+        .order_by(Well.name)
+        .all()
+    )
     rows: List[dict] = []
     for w in wells:
         gis, rigis, inkl_pts = set(), set(), 0
