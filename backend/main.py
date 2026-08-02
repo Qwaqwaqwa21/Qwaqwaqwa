@@ -103,6 +103,7 @@ import hashlib
 import hmac
 import urllib.request
 import urllib.error
+import urllib.parse
 from email.utils import format_datetime, parsedate_to_datetime
 
 try:
@@ -1663,7 +1664,7 @@ def get_log_run_scan(lr_id: int, db: Session = Depends(get_db)):
         raise HTTPException(404, "Log run not found")
     if not lr.scan_binary:
         raise HTTPException(404, "No scan set for this log run")
-    headers = {"Content-Disposition": f'inline; filename="{lr.scan_filename or "scan"}"'}
+    headers = {"Content-Disposition": _content_disposition(lr.scan_filename or "scan", "inline")}
     return Response(content=lr.scan_binary, media_type=lr.scan_mime or "application/octet-stream", headers=headers)
 
 
@@ -2649,7 +2650,7 @@ def delivery_bundle(wid: int, db: Session = Depends(get_db)):
     return StreamingResponse(
         mem,
         media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{well.name}_delivery_bundle.zip"'},
+        headers={"Content-Disposition": _content_disposition(f"{well.name}_delivery_bundle.zip")},
     )
 
 
@@ -9824,6 +9825,22 @@ def well_readiness_summary(wid: int, db: Session = Depends(get_db)) -> dict:
     }
 
 
+def _content_disposition(filename: str, disposition: str = "attachment") -> str:
+    """Build a Content-Disposition header value safe for any filename.
+
+    A header value must be latin-1 encodable — Starlette raises on anything
+    outside that range — so a plain `filename="{well.name}.las"` crashes
+    for any Cyrillic well name (a first-class case here: this is a
+    Russian-language GIS app, see tests/test_cyrillic_custom.py). Falls back
+    to an ASCII-safe name and adds the RFC 6266/5987 `filename*` parameter
+    (percent-encoded UTF-8) so browsers that support it still show the real
+    name.
+    """
+    ascii_fallback = filename.encode("ascii", "replace").decode("ascii").replace('"', "'") or "export"
+    encoded = urllib.parse.quote(filename, safe="")
+    return f"{disposition}; filename=\"{ascii_fallback}\"; filename*=UTF-8''{encoded}"
+
+
 # ─── Sprint 28: LAS Export with All Data ─────────────────────
 def _build_las_text(well: Well, lr: LogRun, curves: list, depth_unit: str) -> str:
     """Render one log run as a LAS 2.0 text body. Shared by export-las and
@@ -9906,7 +9923,7 @@ def export_las(wid: int, force: bool = Query(False), db: Session = Depends(get_d
                        f"locked={signoff['locked']} qc_rating={signoff['qc_rating']} "
                        f"force={signoff['force']} issues={signoff['issues']}")
 
-    headers = {"Content-Disposition": f'attachment; filename="{well.name}.las"'}
+    headers = {"Content-Disposition": _content_disposition(f"{well.name}.las")}
     return StreamingResponse(iter([las]), media_type="text/plain", headers=headers)
 
 
@@ -10262,16 +10279,16 @@ def export_client_bundle(wid: int, force: bool = Query(False), db: Session = Dep
 
         # 3. Tops CSV
         if tops:
-            tops_csv = "depth,name,formation_name,color\n"
+            tops_csv = "depth,formation_name,color\n"
             for t in tops:
-                tops_csv += f"{t.depth},{t.name or ''},{t.formation_name or ''},{t.color or ''}\n"
+                tops_csv += f"{t.depth},{t.formation_name or ''},{t.color or ''}\n"
             zf.writestr("tops.csv", tops_csv)
 
         # 4. Zones CSV
         if zones:
-            zones_csv = "name,top_depth,bottom_depth,sw_avg,vsh_avg,phie_avg,ntg\n"
+            zones_csv = "name,top_depth,bottom_depth,color\n"
             for z in zones:
-                zones_csv += f"{z.zone_name or ''},{z.top_depth},{z.bottom_depth},{z.sw_avg or ''},{z.vsh_avg or ''},{z.phie_avg or ''},{z.net_to_gross or ''}\n"
+                zones_csv += f"{z.name or ''},{z.top_depth},{z.bottom_depth},{z.color or ''}\n"
             zf.writestr("zones.csv", zones_csv)
 
         # 5. Petro params JSON
@@ -10291,10 +10308,10 @@ def export_client_bundle(wid: int, force: bool = Query(False), db: Session = Dep
         report += f"- Included ({len(survey[2])} stations)\n" if survey else "- Not available for this well\n"
         report += f"\n## Formation Tops ({len(tops)} entries)\n"
         for t in tops:
-            report += f"- {t.depth:.1f} {depth_unit_label}: {t.name or t.formation_name}\n"
+            report += f"- {t.depth:.1f} {depth_unit_label}: {t.formation_name or ''}\n"
         report += f"\n## Zones ({len(zones)} entries)\n"
         for z in zones:
-            report += f"- {z.zone_name}: {z.top_depth:.1f} - {z.bottom_depth:.1f} {depth_unit_label} (NTG: {z.net_to_gross or 'N/A'})\n"
+            report += f"- {z.name}: {z.top_depth:.1f} - {z.bottom_depth:.1f} {depth_unit_label}\n"
         zf.writestr("report.md", report)
 
     buf.seek(0)
@@ -10304,7 +10321,7 @@ def export_client_bundle(wid: int, force: bool = Query(False), db: Session = Dep
                        f"force={signoff['force']} issues={signoff['issues']}")
 
     return StreamingResponse(buf, media_type="application/zip", headers={
-        "Content-Disposition": f"attachment; filename={well.name}_bundle.zip"
+        "Content-Disposition": _content_disposition(f"{well.name}_bundle.zip")
     })
 
 

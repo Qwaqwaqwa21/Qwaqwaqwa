@@ -155,3 +155,56 @@ def test_export_succeeds_after_snapshot_approved():
     r = client.get(f"/api/wells/{wid}/export-las")
     assert r.status_code == 200
     assert "~Version Information" in r.text
+
+
+def test_export_bundle_with_formation_tops_and_zones():
+    """export-bundle used to crash with AttributeError on any well that had
+    formation tops or zones — it referenced FormationTop.name (the model
+    only has formation_name) and Zone.zone_name / net_to_gross / sw_avg /
+    vsh_avg / phie_avg (the model only has name, top_depth, bottom_depth,
+    color). Neither field ever existed, so any real well with tops or zones
+    (a completely ordinary case) made the client-handoff export unusable."""
+    import zipfile
+    import io
+
+    _pid, wid, _lr_id = _make_well_with_run()
+    top = client.post(f"/api/wells/{wid}/tops", headers=_h("admin"),
+                       json={"formation_name": "Test Formation", "depth": 105.0, "color": "#123456"})
+    assert top.status_code == 201
+    zone = client.post(f"/api/wells/{wid}/zones", headers=_h("admin"),
+                        json={"zones": [{"name": "Zone A", "top": 100.0, "bottom": 110.0}]})
+    assert zone.status_code == 201
+
+    exp = client.get(f"/api/wells/{wid}/export-bundle", params={"force": "true"})
+    assert exp.status_code == 200
+    zf = zipfile.ZipFile(io.BytesIO(exp.content))
+    tops_csv = zf.read("tops.csv").decode()
+    zones_csv = zf.read("zones.csv").decode()
+    report = zf.read("report.md").decode()
+    assert "Test Formation" in tops_csv
+    assert "Zone A" in zones_csv
+    assert "Test Formation" in report
+    assert "Zone A" in report
+
+
+def test_export_las_and_bundle_handle_cyrillic_well_name():
+    """Content-Disposition is an HTTP header value, which Starlette encodes
+    as latin-1 — a plain filename="{well.name}.las" crashed with a 500 for
+    any well with a Cyrillic name, a first-class case in this
+    Russian-language app (see tests/test_cyrillic_custom.py)."""
+    proj = client.post("/api/projects/", headers=_h("admin"), json={"name": "CyrillicExportProject"})
+    assert proj.status_code == 201
+    pid = proj.json()["id"]
+    well = client.post("/api/wells/", headers=_h("admin"), json={"project_id": pid, "name": "СКВ-105"})
+    assert well.status_code == 201
+    wid = well.json()["id"]
+    up = client.post(
+        f"/api/wells/{wid}/upload-las", headers=_h("admin"),
+        files={"file": ("cyr.las", SAMPLE_LAS.encode(), "text/plain")},
+    )
+    assert up.status_code == 200
+
+    for path in (f"/api/wells/{wid}/export-las", f"/api/wells/{wid}/export-bundle"):
+        r = client.get(path, params={"force": "true"})
+        assert r.status_code == 200, r.text
+        assert "Content-Disposition" in r.headers
