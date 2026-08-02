@@ -935,15 +935,36 @@ class GeoLogApp {
                 let detail = `API error: ${resp.status}`;
                 try {
                     const j = await resp.json();
-                    detail = j?.detail || j?.message || j?.error || detail;
+                    let d = j?.detail || j?.message || j?.error || detail;
+                    // The export sign-off gate (and any endpoint like it)
+                    // returns a structured detail object ({detail, locked,
+                    // issues, ...}), not a plain string — new Error(d) on a
+                    // raw object stringifies to the useless "[object
+                    // Object]". Prefer its own human-readable .detail
+                    // string; otherwise fall back to JSON so the real
+                    // content is at least visible instead of silently lost.
+                    if (d && typeof d === 'object') {
+                        d = typeof d.detail === 'string' ? d.detail : JSON.stringify(d);
+                    }
+                    detail = d;
                 } catch {}
                 throw new Error(detail);
             }
             if (resp.status === 204) return null;
             return resp.json();
         } catch (e) {
-            if (e.name === 'AbortError') {
-                if (controller.signal?.reason === 'dedupe') {
+            // controller.abort('dedupe') above makes fetch() reject with the
+            // raw string reason itself, not a DOMException — per spec, a
+            // custom abort reason is what the promise rejects with. So a
+            // bare string has no `.name`, and `e.name === 'AbortError'`
+            // silently falls through to the generic "Network error" branch
+            // below on every single deduped request, which fires on
+            // essentially every well/log-run switch (selectWell and
+            // selectLogRun both call _refreshReadinessSummary for the same
+            // well back-to-back). Check the signal itself instead of `e`,
+            // which is correct for both this case and a real timeout/abort.
+            if (controller.signal.aborted) {
+                if (controller.signal.reason === 'dedupe') {
                     throw new Error('Request superseded by a newer call');
                 }
                 const msg = timeoutMs > 0 ? `Request timed out after ${Math.round(timeoutMs / 1000)}s` : 'Request was cancelled';
@@ -1230,11 +1251,22 @@ class GeoLogApp {
         const widget = document.getElementById('readinessWidget');
         if (!widget) return;
         if (!this.currentWell?.id) { widget.style.display = 'none'; this.readinessSummary = null; return; }
+        // selectWell/selectLogRun call this for the *current* well's id each
+        // time, so two calls for two different wells fired close together
+        // have different dedupe keys (the well id is in the path) and don't
+        // cancel each other — _api's dedupe only catches same-well repeats.
+        // Without re-checking which well is still selected when the
+        // response actually arrives, a slow/out-of-order response for a
+        // well the user already navigated away from can overwrite the
+        // widget with the wrong well's readiness/sign-off state.
+        const requestedWellId = this.currentWell.id;
         try {
-            const summary = await this._api(`/wells/${this.currentWell.id}/readiness-summary`);
+            const summary = await this._api(`/wells/${requestedWellId}/readiness-summary`);
+            if (this.currentWell?.id !== requestedWellId) return;
             this.readinessSummary = summary;
             this._renderReadinessWidget(summary);
         } catch (e) {
+            if (this.currentWell?.id !== requestedWellId) return;
             // A newer selection/refresh superseded this in-flight request (see
             // _api's dedupe logic) — the newer call will render the widget,
             // so this isn't a real failure and shouldn't be logged as one.
@@ -3351,53 +3383,29 @@ class GeoLogApp {
     }
 
     // ─── Export ──────────────────────────────────────────────
-    _exportLAS() {
-        if (!this.currentLogRun) { GeoToast.warn('No log run selected.'); return; }
-        // Generate LAS content from current data
-        const depth = this.renderer?.depthData;
-        if (!depth || depth.length === 0) { GeoToast.warn('No data loaded.'); return; }
-
-        let las = `~Version Information\n`;
-        las += `VERS.   2.0 : CWLS Log ASCII Standard - VERSION 2.0\n`;
-        las += `WRAP.   NO  : One line per depth step\n`;
-        las += `~Well Information\n`;
-        las += `STRT.${this.renderer.viewStart.toFixed(2)}\n`;
-        las += `STOP.${this.renderer.viewStop.toFixed(2)}\n`;
-        las += `STEP.0.1\n`;
-        las += `NULL.-999.25\n`;
-        las += `WELL.${this.currentWell?.name || 'Unknown'}\n`;
-        las += `~Curve Information\n`;
-
-        // Depth curve
-        las += `DEPT.FT       : DEPTH\n`;
-
-        // Curve definitions
-        const curveNames = [];
-        for (const track of this.renderer.tracks) {
-            for (const mn of track.curves) {
-                if (this.renderer.curveData[mn] && this.renderer.curveData[mn].length > 0) {
-                    const cfg = this.curveConfig[mn] || {};
-                    las += `${mn}.${cfg.unit || ''}       : ${cfg.name || mn}\n`;
-                    curveNames.push(mn);
-                }
-            }
-        }
-
-        las += `~ASCII Data\n`;
-        for (let i = 0; i < depth.length; i++) {
-            let line = `${depth[i].toFixed(2)}`;
-            for (const mn of curveNames) {
-                const val = this.renderer.curveData[mn]?.[i];
-                line += ` ${val !== null && val !== undefined ? val.toFixed(4) : '-999.25'}`;
-            }
-            las += line + '\n';
-        }
-
-        const blob = new Blob([las], { type: 'text/plain' });
-        const link = document.createElement('a');
-        link.download = `${this.currentWell?.name || 'export'}_${Date.now()}.las`;
-        link.href = URL.createObjectURL(blob);
-        link.click();
+    async _exportLAS() {
+        if (!this.currentWell) { GeoToast.warn('Select a well first'); return; }
+        // This used to build a LAS file client-side from whatever the
+        // renderer currently had loaded (only the visible depth window, and
+        // with zero awareness of the export sign-off gate — see
+        // _check_export_signoff in backend/main.py). It's the button
+        // literally labeled "Export LAS", so a user has every reason to
+        // expect it to behave like the rest of the Export menu: routed
+        // through the real, gated backend endpoint instead, same as
+        // _exportClientBundle below.
+        try {
+            GeoLoading.show('Preparing LAS export...');
+            const blob = await this._apiBlob(`/wells/${this.currentWell.id}/export-las`);
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.download = `${this.currentWell.name || 'export'}.las`;
+            link.href = url;
+            link.click();
+            URL.revokeObjectURL(url);
+            GeoToast.info('LAS exported');
+        } catch (e) {
+            GeoToast.error('LAS export failed: ' + (e.message || e));
+        } finally { GeoLoading.hide(); }
     }
 
     exportInterpretationSummary() {
@@ -9793,7 +9801,13 @@ class GeoLogApp {
             a.href = url; a.download = 'all_wells_export.csv';
             document.body.appendChild(a); a.click(); document.body.removeChild(a);
             URL.revokeObjectURL(url);
-            // Also export each well LAS
+            // Also export each well LAS. A non-ok response here is most
+            // often the sign-off gate blocking an unreviewed/unlocked well
+            // (409) — silently skipping it and then reporting "complete: N
+            // wells" regardless made the one UI path that DID hit the gate
+            // hide that outcome from the user entirely.
+            let exported = 0;
+            const skipped = [];
             for (const w of wells) {
                 try {
                     const lasResp = await fetch(`/api/wells/${w.id}/export-las`);
@@ -9804,10 +9818,18 @@ class GeoLogApp {
                         la.href = lasUrl; la.download = `${w.name}.las`;
                         document.body.appendChild(la); la.click(); document.body.removeChild(la);
                         URL.revokeObjectURL(lasUrl);
+                        exported++;
+                    } else {
+                        skipped.push(w.name || w.id);
                     }
-                } catch(e) {}
+                } catch(e) {
+                    skipped.push(w.name || w.id);
+                }
             }
-            this._showOpenDownloadsCTA('Batch export complete: ' + wells.length + ' wells');
+            if (skipped.length > 0) {
+                GeoToast.warn(`Batch export: ${exported}/${wells.length} wells exported, ${skipped.length} skipped (not signed off or export error): ${skipped.slice(0, 10).join(', ')}${skipped.length > 10 ? '…' : ''}`);
+            }
+            this._showOpenDownloadsCTA(`Batch export complete: ${exported}/${wells.length} wells`);
         } catch(e) {
             GeoToast.error('Batch export failed: ' + e.message);
         }

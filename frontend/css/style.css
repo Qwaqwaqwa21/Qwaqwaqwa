@@ -354,6 +354,8 @@ body {
 .toolbar {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
+    row-gap: 4px;
     gap: 16px;
     padding: 8px 20px;
     background: var(--bg-tertiary);
@@ -1289,9 +1291,17 @@ label,
 }
 
 @media (max-width: 1024px) {
-  .sidebar { display: none; }
+  /* Below 900px .sidebar switches to a fixed slide-in panel toggled by
+     .open (see the max-width:900px block above) — display:none here
+     unconditionally overrides that (display wins over the .open rule's
+     `left:0`, they don't conflict, display just wins outright), so the
+     hamburger button looked like it did nothing. Scope this rule to the
+     medium range only, above where the slide-in panel takes over. */
   :root { --sidebar-width: 0px; }
   .topbar-nav { overflow-x: auto; flex-wrap: nowrap; }
+}
+@media (min-width: 901px) and (max-width: 1024px) {
+  .sidebar { display: none; }
 }
 
 
@@ -1524,9 +1534,13 @@ tr:hover td {
 }
 
 @media (max-width: 1024px) {
-    .sidebar { display: none; }
+    /* See the matching block earlier in this file for why .sidebar's
+       display:none is scoped away from the mobile slide-in range. */
     :root { --sidebar-width: 0px; }
     .topbar-nav { overflow-x: auto; flex-wrap: nowrap; }
+}
+@media (min-width: 901px) and (max-width: 1024px) {
+    .sidebar { display: none; }
 }
 
 /* ─── Selection color ────────────────────────────────────── */
