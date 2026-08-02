@@ -327,7 +327,23 @@ def _compare_study_pair(
 def _find_duplicate_studies(
     wells: List[Well], min_depth_overlap: float, min_method_overlap: float
 ) -> List[Dict[str, Any]]:
-    runs = [(well, run) for well in wells for run in well.log_runs]
+    runs = []
+    for well in wells:
+        # A rejected run already corrected by an accepted redo (LogRun.redo_of
+        # on the redo pointing back at it) is, by construction, the same well
+        # with an overlapping depth range and the same methods as its own
+        # replacement — exactly what _compare_study_pair calls a duplicate.
+        # Without excluding it, a well could never clear duplicate-study
+        # checks after a single digitization rejection+redo cycle, even
+        # though the digitization-review gate itself treats that case as
+        # resolved (see backend.main._exportable_curve_runs).
+        superseded_run_ids = {
+            getattr(r, "redo_of", None) for r in well.log_runs if getattr(r, "redo_of", None) is not None
+        }
+        for run in well.log_runs:
+            if run.id in superseded_run_ids:
+                continue
+            runs.append((well, run))
     results = []
     for (well_a, run_a), (well_b, run_b) in itertools.combinations(runs, 2):
         match = _compare_study_pair(well_a, run_a, well_b, run_b, min_depth_overlap, min_method_overlap)

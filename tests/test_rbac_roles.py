@@ -416,6 +416,80 @@ def test_audit_verify_endpoint_reports_ok_for_clean_chain():
     assert isinstance(data["issues"], list)
 
 
+_CHAIN_SAMPLE_LAS = """~Version Information
+VERS.                  2.0 :   CWLS LOG ASCII STANDARD -VERSION 2.0
+WRAP.                  NO  :   ONE LINE PER DEPTH STEP
+~Well Information
+STRT.M              100.000 :
+STOP.M              101.000 :
+STEP.M                1.000 :
+NULL.              -999.25  :
+~Curve Information
+DEPT.M                   :   DEPTH
+GR  .GAPI               :   GAMMA RAY
+~ASCII
+100.0 50.0
+101.0 55.0
+"""
+
+
+def test_log_audit_helper_writes_chain_correctly_with_middleware_writes():
+    """Endpoints that log through the plain `_log_audit()` helper (e.g. the
+    digitization-review endpoint) instead of `ImmutableAuditTrailMiddleware`
+    write into the same audit_log table that /api/audit-log/verify walks as
+    one sequential hash chain. If `_log_audit()` doesn't chain its rows the
+    same way, every entry written after it fails verification with a
+    spurious tamper report even though nothing was tampered with.
+
+    Only the rows this test itself writes are checked (by id, above a
+    baseline captured up front) — the shared dev DB this suite runs against
+    also carries genuinely unchained legacy rows from before the hash-chain
+    feature existed and a deliberately-tampered row from
+    test_audit_verify_endpoint_detects_tamper_gap (append-only table, so
+    neither can be cleaned up), which is exactly why
+    test_audit_verify_endpoint_reports_ok_for_clean_chain next to this one
+    never asserts ok is True either."""
+    db = SessionLocal()
+    try:
+        prev = db.query(AuditLog).order_by(AuditLog.id.desc()).first()
+        before_id = prev.id if prev else 0
+    finally:
+        db.close()
+
+    proj = client.post("/api/projects/", headers=_h("admin"), json={"name": "AuditChainLogAuditProject"})
+    assert proj.status_code == 201
+    pid = proj.json()["id"]
+    well = client.post("/api/wells/", headers=_h("admin"), json={"project_id": pid, "name": "AuditChainWell"})
+    assert well.status_code == 201
+    wid = well.json()["id"]
+
+    up = client.post(
+        f"/api/wells/{wid}/upload-las", headers=_h("admin"),
+        files={"file": ("chain.las", _CHAIN_SAMPLE_LAS.encode(), "text/plain")},
+    )
+    assert up.status_code == 200
+    lr_id = up.json()["log_run_id"]
+
+    # Goes through _log_audit(), not the middleware — this is the row that
+    # used to break the chain for everything written after it.
+    rev = client.post(f"/api/log-runs/{lr_id}/review", headers=_h("interpreter"), json={"status": "accepted"})
+    assert rev.status_code == 200
+
+    # An ordinary middleware-tracked write right after, so the _log_audit
+    # row sits in the middle of the chain, like the reported bug.
+    other = client.get("/api/wells", headers=_h("viewer")).json()
+    other_wid = next(w["id"] for w in other if w["id"] != wid)
+    r2 = client.post("/api/correlation-markers", headers=_h("interpreter"),
+                      json={"well_a_id": wid, "well_b_id": other_wid, "depth_a": 1.0, "depth_b": 2.0, "label": "x"})
+    assert r2.status_code in (200, 201)
+
+    v = client.get("/api/audit-log/verify", headers=_h("viewer"), params={"limit": 50})
+    assert v.status_code == 200
+    data = v.json()
+    new_issues = [i for i in data["issues"] if i["id"] > before_id]
+    assert new_issues == []
+
+
 def test_audit_log_immutability_status_endpoint_reports_triggers_present():
     r = client.get("/api/audit-log/immutability-status", headers=_h("viewer"))
     assert r.status_code == 200

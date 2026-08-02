@@ -9,9 +9,11 @@ from sqlalchemy.orm import Session
 try:
     from database import get_db
     from models import Well, LogRun, CurveData
+    from routers.inclinometry import _find_survey
 except ImportError:
     from backend.database import get_db
     from backend.models import Well, LogRun, CurveData
+    from backend.routers.inclinometry import _find_survey
 
 
 router = APIRouter(prefix="/api/wells/{wid}", tags=["qc"])
@@ -55,16 +57,28 @@ def _get_latest_log_run(db: Session, wid: int) -> LogRun:
     # A well can also carry a small deviation-survey run (MD/INKL/AZ) uploaded
     # after the main curve set; "latest uploaded" would pick that instead of
     # the actual log data. Prefer the run with the most points/curves, same
-    # heuristic already used by the LAS/bundle export endpoints.
-    lr = (
-        db.query(LogRun)
-        .filter(LogRun.well_id == wid)
-        .order_by(LogRun.num_points.desc(), LogRun.id.desc())
-        .first()
-    )
-    if not lr:
+    # heuristic used by the LAS/bundle export endpoints (backend.main's
+    # _best_export_run) — kept in sync manually since qc.py can't import
+    # from main (main imports this router, so the reverse would be circular).
+    #
+    # Also exclude a rejected run once its re-digitized redo has been linked
+    # (LogRun.redo_of): otherwise the QC rating this feeds into the sign-off
+    # gate (_compute_export_readiness) could still be computed off data that
+    # was rejected during review, even after the correction was accepted.
+    survey_run_id = None
+    try:
+        survey = _find_survey(well)
+        survey_run_id = survey[1].id if survey else None
+    except Exception:
+        survey_run_id = None
+    candidates = [r for r in well.log_runs if r.id != survey_run_id and r.num_points]
+    if not candidates:
         raise HTTPException(status_code=404, detail="No log run found for well")
-    return lr
+    superseded_run_ids = {r.redo_of for r in candidates if r.redo_of is not None}
+    usable = [r for r in candidates if r.id not in superseded_run_ids]
+    non_rejected = [r for r in usable if (r.digitization_status or "pending_review") != "rejected"]
+    pool = non_rejected or usable or candidates
+    return max(pool, key=lambda r: (r.num_points, r.id))
 
 
 def _curve_array(cd: CurveData, n: int) -> np.ndarray:

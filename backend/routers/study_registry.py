@@ -20,7 +20,9 @@ _normalize_well_name / _depth_overlap_fraction, которые переиспо�
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
+import json
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -43,10 +45,23 @@ def _log_audit(db: Session, action: str, entity_type: str = "", entity_id: int =
                well_id: int = None, project_id: int = None, details: str = ""):
     """Write an audit trail entry. Mirrors backend.main._log_audit — duplicated
     here (rather than imported) because main.py imports this router, so the
-    reverse import would be circular."""
+    reverse import would be circular. Must stay in sync with it, including
+    the prev_hash/entry_hash chaining: both write into the same audit_log
+    table that main._compute_audit_chain_report walks as one sequential
+    chain, so leaving these blank here would break verification for every
+    row written after this one."""
+    prev = db.query(AuditLog).order_by(AuditLog.id.desc()).first()
+    prev_hash = getattr(prev, "entry_hash", "") if prev else ""
+    canonical = json.dumps({
+        "request_id": "", "subject": "", "role": "viewer", "method": "", "path": "",
+        "status": 0, "payload_hash": "", "prev_hash": prev_hash,
+        "well_id": well_id, "project_id": project_id,
+    }, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    entry_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     db.add(AuditLog(
         project_id=project_id, well_id=well_id, action=action,
-        entity_type=entity_type, entity_id=entity_id, details=details
+        entity_type=entity_type, entity_id=entity_id, details=details,
+        prev_hash=prev_hash, entry_hash=entry_hash,
     ))
     db.commit()
 
@@ -272,7 +287,15 @@ def _match_entry(entry: StudyRegistryEntry, wells: List[Well], min_depth_overlap
     entry_run = _RunLike(entry.depth_top, entry.depth_bottom)
     best_well, best_run, best_overlap = None, None, -1.0
     for w in candidates:
+        # A rejected run already corrected by an accepted redo shouldn't win
+        # the match over its own replacement — same depth range, same well,
+        # so it would otherwise report the study as "rejected" forever even
+        # after the correction was reviewed and accepted (see
+        # routers.duplicates._find_duplicate_studies for the same fix).
+        superseded_run_ids = {r.redo_of for r in w.log_runs if r.redo_of is not None}
         for run in w.log_runs:
+            if run.id in superseded_run_ids:
+                continue
             overlap = _depth_overlap_fraction(entry_run, run)
             if overlap is not None and overlap > best_overlap:
                 best_well, best_run, best_overlap = w, run, overlap

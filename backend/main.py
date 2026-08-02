@@ -5879,10 +5879,29 @@ def export_tops_petrel(wid: int, db: Session = Depends(get_db)):
 # ─── Helper: Audit Log ────────────────────────────────────────
 def _log_audit(db: Session, action: str, entity_type: str = "", entity_id: int = None,
                well_id: int = None, project_id: int = None, details: str = ""):
-    """Write an audit trail entry."""
+    """Write an audit trail entry, chained into the same tamper-evident hash
+    chain `ImmutableAuditTrailMiddleware` writes into. Both writers append to
+    the same `audit_log` table that `_compute_audit_chain_report` walks as
+    one sequential chain, so a row written here without prev_hash/entry_hash
+    would make every entry after it fail verification with a spurious
+    mismatch — not because anything was tampered with, but because this
+    helper never linked into the chain. Uses the same empty/default values
+    for the request-shaped fields (request_id, method, path, ...) this
+    helper doesn't have, since `_compute_audit_chain_report` already treats
+    missing values that way when recomputing.
+    """
+    prev = db.query(AuditLog).order_by(AuditLog.id.desc()).first()
+    prev_hash = getattr(prev, "entry_hash", "") if prev else ""
+    canonical = json.dumps({
+        "request_id": "", "subject": "", "role": "viewer", "method": "", "path": "",
+        "status": 0, "payload_hash": "", "prev_hash": prev_hash,
+        "well_id": well_id, "project_id": project_id,
+    }, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    entry_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     db.add(AuditLog(
         project_id=project_id, well_id=well_id, action=action,
-        entity_type=entity_type, entity_id=entity_id, details=details
+        entity_type=entity_type, entity_id=entity_id, details=details,
+        prev_hash=prev_hash, entry_hash=entry_hash,
     ))
     db.commit()
 
@@ -9604,6 +9623,56 @@ def _is_survey_shaped_run(lr: "LogRun") -> bool:
 
 
 # ─── Sign-off gate for interpretation handoff exports ────────
+def _exportable_curve_runs(well: "Well", db: Session):
+    """The LogRuns for `well` that represent real curve data, as opposed to
+    a deviation-survey upload — plus which of them are rejected runs already
+    superseded by an accepted redo (see LogRun.redo_of).
+
+    This is the single source of truth `_compute_export_readiness` (the
+    sign-off gate), `export_las`, and `export_bundle` all build on. They
+    used to each reimplement this filtering independently and drifted apart
+    — the gate learned about redo-supersession (see `superseded_run_ids`
+    below) but the actual export endpoints never did, so a well could pass
+    the "ready to export" check while export-las still shipped the rejected
+    run's data (picked by raw point count) and export-bundle shipped it
+    alongside its own accepted replacement with nothing to tell them apart.
+
+    Returns (curve_runs, superseded_run_ids, survey_run_id).
+    """
+    survey_run_id = None
+    try:
+        survey = _find_deviation_survey(well)
+        survey_run_id = survey[1].id if survey else None
+    except Exception:
+        survey_run_id = None
+    curve_runs = db.query(LogRun).filter(LogRun.well_id == well.id).order_by(
+        LogRun.run_number.asc(), LogRun.id.asc()
+    ).all()
+    curve_runs = [
+        r for r in curve_runs
+        if r.id != survey_run_id and r.num_points and not _is_survey_shaped_run(r)
+    ]
+    superseded_run_ids = {r.redo_of for r in curve_runs if r.redo_of is not None}
+    return curve_runs, superseded_run_ids, survey_run_id
+
+
+def _best_export_run(well: "Well", db: Session):
+    """Pick the single run export-las ships for `well`: prefer a
+    non-rejected run, and never a rejected run that's already been
+    superseded by an accepted redo — otherwise "biggest run wins" can ship
+    exactly the digitization the sign-off gate exists to hold back. Falls
+    back to a rejected/superseded run only when it's the only curve data
+    the well has at all (export only gets this far on rejected-only data
+    when the caller passed force=true)."""
+    curve_runs, superseded_run_ids, _ = _exportable_curve_runs(well, db)
+    if not curve_runs:
+        return None
+    usable = [r for r in curve_runs if r.id not in superseded_run_ids]
+    non_rejected = [r for r in usable if (r.digitization_status or "pending_review") != "rejected"]
+    pool = non_rejected or usable or curve_runs
+    return max(pool, key=lambda r: r.num_points)
+
+
 def _compute_export_readiness(wid: int, db: Session) -> dict:
     """Compute whether a well is ready to hand off to another interpretation
     package: it must have been signed off (locked via an approved
@@ -9637,18 +9706,7 @@ def _compute_export_readiness(wid: int, db: Session) -> dict:
     # single biggest run for export-las, or the full set export-bundle sends)
     # must have been reviewed and accepted against the original scan.
     well = db.query(Well).filter(Well.id == wid).first()
-    survey_run_id = None
-    if well:
-        try:
-            survey = _find_deviation_survey(well)
-            survey_run_id = survey[1].id if survey else None
-        except Exception:
-            survey_run_id = None
-    curve_runs = db.query(LogRun).filter(LogRun.well_id == wid).order_by(LogRun.run_number.asc(), LogRun.id.asc()).all()
-    curve_runs = [
-        r for r in curve_runs
-        if r.id != survey_run_id and r.num_points and not _is_survey_shaped_run(r)
-    ]
+    curve_runs, superseded_run_ids, _survey_run_id = _exportable_curve_runs(well, db) if well else ([], set(), None)
     # A rejected run that has already been linked to its re-digitized redo
     # (LogRun.redo_of on some other run pointing at this one) is a resolved
     # issue: the redo run is the one actually being shipped for that slot,
@@ -9657,7 +9715,6 @@ def _compute_export_readiness(wid: int, db: Session) -> dict:
     # single rejection even once the correction had been reviewed and
     # accepted, because the original rejected run would keep re-raising the
     # same stale issue forever.
-    superseded_run_ids = {r.redo_of for r in curve_runs if r.redo_of is not None}
     for r in curve_runs:
         status = r.digitization_status or "pending_review"
         if status == "rejected":
@@ -9837,7 +9894,7 @@ def export_las(wid: int, force: bool = Query(False), db: Session = Depends(get_d
                    details=f"blocked: {exc.detail}")
         raise
 
-    lr = db.query(LogRun).filter(LogRun.well_id == wid).order_by(LogRun.num_points.desc()).first()
+    lr = _best_export_run(well, db)
     if not lr:
         raise HTTPException(404, "No log run")
 
@@ -9846,7 +9903,8 @@ def export_las(wid: int, force: bool = Query(False), db: Session = Depends(get_d
     las = _build_las_text(well, lr, curves, depth_unit)
 
     _log_audit(db, "export_las", entity_type="well", entity_id=wid, well_id=wid,
-               details=f"ok: locked={signoff['locked']} qc_rating={signoff['qc_rating']} "
+               details=f"ok: run={lr.run_number} digitization_status={lr.digitization_status} "
+                       f"locked={signoff['locked']} qc_rating={signoff['qc_rating']} "
                        f"force={signoff['force']} issues={signoff['issues']}")
 
     headers = {"Content-Disposition": f'attachment; filename="{well.name}.las"'}
@@ -10162,14 +10220,20 @@ def export_client_bundle(wid: int, force: bool = Query(False), db: Session = Dep
                    details=f"blocked: {exc.detail}")
         raise
 
-    all_runs = db.query(LogRun).filter(LogRun.well_id == wid).order_by(LogRun.run_number.asc(), LogRun.id.asc()).all()
     tops = db.query(FormationTop).filter(FormationTop.well_id == wid).order_by(FormationTop.depth).all()
     zones = db.query(Zone).filter(Zone.well_id == wid).order_by(Zone.top_depth).all()
     params = db.query(PetroParams).filter(PetroParams.well_id == wid).first()
 
     survey = _find_deviation_survey(well)  # (n, run, md, incl, azim) or None
-    survey_run_id = survey[1].id if survey else None
-    curve_runs = [r for r in all_runs if r.id != survey_run_id and r.num_points]
+    curve_runs, superseded_run_ids, survey_run_id = _exportable_curve_runs(well, db)
+    # A rejected run already superseded by an accepted redo is dead weight
+    # the recipient shouldn't see at all — this used to ship it alongside
+    # its own replacement with nothing to tell them apart (see
+    # _exportable_curve_runs). A rejected run that hasn't been redone yet
+    # only reaches this point when the caller passed force=true; keep it in
+    # the bundle since it's the only data available for that slot, but flag
+    # it clearly below rather than passing it off as accepted data.
+    curve_runs = [r for r in curve_runs if r.id not in superseded_run_ids]
     main_lr = max(curve_runs, key=lambda r: r.num_points, default=None)
 
     buf = io.BytesIO()
@@ -10181,7 +10245,8 @@ def export_client_bundle(wid: int, force: bool = Query(False), db: Session = Dep
                 continue
             depth_unit = run.depth_unit or well.depth_unit or "FT"
             las_text = _build_las_text(well, run, cds, depth_unit)
-            fname = f"{well.name}.las" if len(curve_runs) == 1 else f"{well.name}_run{run.run_number}.las"
+            rejected_tag = "_REJECTED" if (run.digitization_status or "pending_review") == "rejected" else ""
+            fname = f"{well.name}{rejected_tag}.las" if len(curve_runs) == 1 else f"{well.name}_run{run.run_number}{rejected_tag}.las"
             zf.writestr(fname, las_text)
 
         # 2. Deviation survey, if one was uploaded — own file, standard columns
@@ -10220,7 +10285,9 @@ def export_client_bundle(wid: int, force: bool = Query(False), db: Session = Dep
         report = f"# GeoLog Export Report\nWell: {well.name}\nDate: {__import__('datetime').datetime.now().isoformat()}\n\n"
         report += f"## Log Runs ({len(curve_runs)} included)\n"
         for run in curve_runs:
-            report += f"- Run {run.run_number} ({run.filename}): {run.start_depth} - {run.stop_depth} {depth_unit_label}, {run.num_points} points\n"
+            status = run.digitization_status or "pending_review"
+            status_note = "" if status == "accepted" else f" [{status.upper()} — not an accepted digitization]"
+            report += f"- Run {run.run_number} ({run.filename}): {run.start_depth} - {run.stop_depth} {depth_unit_label}, {run.num_points} points{status_note}\n"
         report += f"\n## Deviation Survey\n"
         report += f"- Included ({len(survey[2])} stations)\n" if survey else "- Not available for this well\n"
         report += f"\n## Formation Tops ({len(tops)} entries)\n"
