@@ -743,9 +743,16 @@ class GeoLogApp {
         const roleByAction = {
             // admin-only actions
             addWell: 'admin',
+            // Server-side /api/wells/{wid}/template-unlock requires admin
+            // specifically (unlike template-lock, which allows
+            // interpreter too) — locking/signing is easy, undoing a QA
+            // sign-off deliberately isn't. This entry had the same
+            // 'interpreter,admin' spec as lock, so an interpreter saw the
+            // button enabled and only found out it was blocked after
+            // clicking (403).
+            unlockTemplateSignature: 'admin',
             // interpreter/admin actions
             lockTemplateSignature: 'interpreter,admin',
-            unlockTemplateSignature: 'interpreter,admin',
             saveCorrelationSettings: 'interpreter,admin',
             savePetroParams: 'interpreter,admin',
             applyWorkflowTemplate: 'interpreter,admin',
