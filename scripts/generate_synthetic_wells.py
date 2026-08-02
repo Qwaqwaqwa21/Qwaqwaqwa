@@ -61,7 +61,7 @@ def make_curve(rng: np.random.Generator, n: int, lo: float, hi: float, log_space
         vals = lo * (hi / lo) ** frac
     else:
         vals = lo + frac * (hi - lo)
-    vals = vals.astype(np.float32)
+    vals = vals.astype(np.float64)
     # occasional short null gaps, like real tool outages
     if n > 200 and rng.random() < 0.3:
         gap_start = rng.integers(0, n - 50)
@@ -111,10 +111,10 @@ def build_run(rng, well_total_depth, run_number, digitization_status):
 def build_survey_run(rng, well_total_depth):
     step = 25.0
     n = max(int(well_total_depth / step), 10)
-    depths = np.arange(n, dtype=np.float32) * step
+    depths = np.arange(n, dtype=np.float64) * step
     max_inc = rng.uniform(15, 65)
-    inc = np.clip(np.linspace(0, max_inc, n) + rng.normal(0, 1.0, n), 0, 90).astype(np.float32)
-    azi = np.clip(rng.uniform(0, 360) + np.cumsum(rng.normal(0, 2, n)), 0, 360).astype(np.float32)
+    inc = np.clip(np.linspace(0, max_inc, n) + rng.normal(0, 1.0, n), 0, 90).astype(np.float64)
+    azi = np.clip(rng.uniform(0, 360) + np.cumsum(rng.normal(0, 2, n)), 0, 360).astype(np.float64)
     curves_def = [
         {"mnemonic": "DEPT", "unit": "M", "description": "Depth"},
         {"mnemonic": "INKL", "unit": "DEG", "description": "Inclination"},

@@ -240,14 +240,42 @@ def project_duplicate_curves(
     project = db.query(Project).filter(Project.id == pid).first()
     if not project:
         raise HTTPException(404, "Project not found")
+
+    # Cheap upper-bound count first: _well_curves decodes every curve's
+    # binary array with numpy just to measure it, so running that over every
+    # well before checking the size limit below paid the full O(curve_count)
+    # decode cost even on a project that was always going to be skipped.
+    # This raw row count includes depth curves _well_curves excludes, so
+    # it's a safe over-estimate — never skips a scan that would've fit.
+    raw_curve_count = (
+        db.query(CurveData)
+        .join(LogRun, CurveData.log_run_id == LogRun.id)
+        .filter(LogRun.well_id.in_([w.id for w in project.wells]))
+        .count()
+    ) if project.wells else 0
+    if raw_curve_count > MAX_PROJECT_CURVES_FOR_DUPLICATE_SCAN:
+        return {
+            "project_id": pid,
+            "well_count": len(project.wells),
+            "curve_count": raw_curve_count,
+            "duplicate_count": None,
+            "cross_well_duplicate_count": None,
+            "duplicates": [],
+            "scan_skipped": True,
+            "scan_skipped_reason": (
+                f"project has at least {raw_curve_count} curves, over the "
+                f"{MAX_PROJECT_CURVES_FOR_DUPLICATE_SCAN}-curve limit for a full "
+                "pairwise project scan; check individual wells via "
+                "/api/wells/{wid}/duplicate-curves instead"
+            ),
+        }
+
     curves: List[Dict[str, Any]] = []
     for well in project.wells:
         curves.extend(_well_curves(well))
 
-    # A full pairwise scan is O(curve_count^2); beyond a few thousand curves
-    # that's tens of millions of pairs on a single synchronous request. Refuse
-    # rather than tie up a worker for minutes — the per-well endpoint above
-    # still works for any individual well in a project this size.
+    # Re-check with the exact (depth-curve-excluded) count in case the raw
+    # count was an overestimate close to the limit.
     if len(curves) > MAX_PROJECT_CURVES_FOR_DUPLICATE_SCAN:
         return {
             "project_id": pid,
